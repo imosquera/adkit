@@ -5,7 +5,7 @@ A collection of Claude Code skills for managing Google Ads campaigns.
 ## Install
 
 ```bash
-npx add skills git+ssh://git@github.com/imosquera/adkit.git
+npx skills add git@github.com:imosquera/adkit.git
 ```
 
 ## Skills
