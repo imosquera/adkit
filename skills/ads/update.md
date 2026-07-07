@@ -35,7 +35,7 @@ The `update` validator accepts this shape (all sections optional — include onl
 ```json
 {
   "customerId": "8911925499",
-  "landingUrl": "https://www.vonteva.com/ideas/<slug>",
+  "landingUrl": "https://www.example.com/ideas/<slug>",
   "rewrites":        [{"adId": 813530865969, "headlines": ["…15…"], "descriptions": ["…4…"]}],
   "appendHeadlines": [{"adId": 813624796200, "add": ["Affordable Close Add-On", "No Full-Suite Lock-In"]}],
   "sitelinks":       [{"campaignId": 23966750362, "add": [{"text": "Book a Demo", "finalUrl": "https://…", "description1": "…≤35…", "description2": "…≤35…"}]}],

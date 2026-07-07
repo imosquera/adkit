@@ -1,4 +1,4 @@
-"""Interactively seed Google Ads secrets into Secret Manager (project vonteva-prod)."""
+"""Interactively seed Google Ads secrets into Secret Manager (project your-project-prod)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 
-PROJECT = os.environ.get("GOOGLE_ADS_SECRETS_PROJECT", "vonteva-prod")
+PROJECT = os.environ.get("GOOGLE_ADS_SECRETS_PROJECT", "your-project-prod")
 SECRETS = [
     "google-ads-developer-token",
     "google-ads-client-id",

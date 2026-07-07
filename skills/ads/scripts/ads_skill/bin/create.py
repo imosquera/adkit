@@ -78,10 +78,10 @@ def _scaffold_brief_from_processed(md_path: Path, brief_path: Path, max_per_them
                 # The published slug is the timestamped name from `Idea HTML`, not this
                 # processed-file slug — fill it in. The pre-publish URL check rejects a
                 # leftover TODO because it 404s.
-                "finalUrl": "https://www.vonteva.com/ideas/TODO-published-slug",
+                "finalUrl": "https://www.example.com/ideas/TODO-published-slug",
                 # Display-URL "pretty URL" paths (optional): the shown URL is the
                 # finalUrl host + these two keyword-rich segments — e.g.
-                # www.vonteva.com/review-replies/free-trial — while the click still
+                # www.example.com/review-replies/free-trial — while the click still
                 # lands on the long finalUrl. Each ≤15 chars, no spaces or "/",
                 # always lower case (mixed case is coerced down at validation).
                 # Fill with this theme's keyword, or DELETE both lines to omit.
@@ -113,7 +113,7 @@ def _scaffold_brief_from_processed(md_path: Path, brief_path: Path, max_per_them
             "negativeKeywords": negatives,
             # Exactly 6 sitelinks (link_text ≤25 chars). finalUrl under /ideas/<slug> (clean URL).
             "sitelinks": [
-                {"text": f"TODO sitelink {i} (≤25)", "finalUrl": "https://www.vonteva.com/ideas/TODO-published-slug"}
+                {"text": f"TODO sitelink {i} (≤25)", "finalUrl": "https://www.example.com/ideas/TODO-published-slug"}
                 for i in range(1, 7)
             ],
             # At least 4 callouts (≤25 chars each), short benefit phrases shown
@@ -124,7 +124,7 @@ def _scaffold_brief_from_processed(md_path: Path, brief_path: Path, max_per_them
                 "languageCode": "en",
                 "currencyCode": "USD",
                 "offerings": [
-                    {"header": f"TODO price {i}", "description": "TODO benefit", "priceMicros": 1_000_000, "finalUrl": "https://www.vonteva.com/ideas/TODO-published-slug"}
+                    {"header": f"TODO price {i}", "description": "TODO benefit", "priceMicros": 1_000_000, "finalUrl": "https://www.example.com/ideas/TODO-published-slug"}
                     for i in range(1, 4)
                 ],
             },

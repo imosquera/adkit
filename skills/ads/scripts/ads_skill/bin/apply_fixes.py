@@ -7,7 +7,7 @@ Plan JSON shape (all sections optional):
 {
   "customerId": "8911925499",
   "loginCustomerId": null,
-  "landingUrl": "https://www.vonteva.com/ideas/<slug>",   # default for new sitelinks
+  "landingUrl": "https://www.example.com/ideas/<slug>",   # default for new sitelinks
   "rewrites":  [{"adId": 123, "headlines": [<15>], "descriptions": [<4>]}],   # full replace
   "appendHeadlines": [{"adId": 123, "add": ["..."]}],      # merge with live, keep existing
   "sitelinks": [{"campaignId": 456, "add": [{"text","finalUrl","description1","description2"}]}],
