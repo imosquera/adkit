@@ -9,7 +9,19 @@ user-invocable: true
 
 Read the [shared conventions](reference/conventions.md) once before any subcommand — it covers credentials, customer-id resolution, and the JSON envelope contract.
 
-**Resolved subcommand:** read its reference file immediately and follow its instructions. The reference file defines the full workflow — do not proceed without it.
+---
+
+## Routing Rules
+
+**No argument:** Do not assume or default. Ask the user which subcommand they want and show the commands table below.
+
+**First word matches a command** (see table below): Read that command's reference file immediately and follow its instructions. Everything after the command name is the target or additional context.
+
+**First word doesn't match any command, but intent clearly maps to one:** Read that command's reference file and proceed as if explicitly invoked.
+
+**Intent could map to two commands:** Ask once which the user means. Do not guess.
+
+**IMPORTANT:** Whichever command is resolved, you MUST read its reference file before doing anything else. Non-optional. The reference file defines the full workflow — without it you will skip steps the user expects.
 
 ---
 
