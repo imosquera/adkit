@@ -1,6 +1,6 @@
 ---
-name: ads
-description: "Manage Google Ads search campaigns — create, audit, update, report, and GTM keyword/ad-copy generation. Usage: /ads:create | /ads:audit | /ads:update | /ads:report | /ads:gtm"
+name: adkit
+description: "Manage Google Ads search campaigns — create, audit, update, report, and GTM keyword/ad-copy generation. Usage: /adkit create | /adkit audit | /adkit update | /adkit report | /adkit gtm"
 argument-hint: "create | audit | update | report | gtm"
 user-invocable: true
 ---
