@@ -11,6 +11,9 @@ disable-model-invocation: false
 $ARGUMENTS
 ```
 
+**Before proceeding, read:**
+- [`reference/google/6-analyze.md`](google/6-analyze.md) — scaling signals, auction insights, and the three-way STR decision framework
+
 ## Execution
 
 You are generating a Google Ads performance report. Three steps: pull, analyze,
