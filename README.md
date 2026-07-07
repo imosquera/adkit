@@ -16,7 +16,7 @@ npx skills add git@github.com:imosquera/adkit.git
 | `/ads:audit` | Audit live ad strength and surface actionable fixes |
 | `/ads:update` | Apply headline/description rewrites and sitelink changes to live ads |
 | `/ads:report` | Pull performance metrics for a campaign |
-| `/ads:gtm` | Google Tag Manager helpers |
+| `/ads:gtm` | Generate keyword tiers and RSA ad copy for a processed idea (Go-To-Market) |
 
 ## Setup
 
