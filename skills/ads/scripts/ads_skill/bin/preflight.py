@@ -6,43 +6,52 @@ Unlike the old MCP-era preflight, this script now does the actual API check itse
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import sys
 from pathlib import Path
 
-from ..cli.output import emit_json, error_envelope, ok
-from ..lib.auth import credentials_path, load_client
-from ..lib.schema import CUSTOMER_ID_PATTERN
+_CREDS_PATH = Path.home() / ".config" / "google-ads" / "google-ads.yaml"
+_CUSTOMER_RE = re.compile(r"^\d{10}$")
+
+
+def _ok(**kwargs) -> None:
+    print(json.dumps({"ok": True, **kwargs}))
 
 
 def _fail(step: str, message: str) -> int:
-    emit_json(error_envelope(message, step=step))
+    print(json.dumps({"ok": False, "error": {"step": step, "message": message}}))
     return 1
 
 
 def main() -> int:
+    # --- simple checks (no package imports required) ---
     customer_id = os.environ.get("GOOGLE_ADS_CUSTOMER_ID", "").strip()
-    if not customer_id or not CUSTOMER_ID_PATTERN.match(customer_id):
+    if not customer_id or not _CUSTOMER_RE.match(customer_id):
         return _fail(
             "env",
             "GOOGLE_ADS_CUSTOMER_ID must be set to a 10-digit Google Ads customer id (no dashes).",
         )
 
-    cred_path = credentials_path()
-    if not Path(cred_path).exists():
+    cred_path = Path(os.environ.get("GOOGLE_ADS_CREDENTIALS", str(_CREDS_PATH)))
+    if not cred_path.exists():
         return _fail(
             "credentials",
-            f"Missing {cred_path}. Render it with: .claude/commands/ads/scripts/ads.sh render-yaml",
+            f"Missing {cred_path}. Render it with: ads.sh render-yaml",
         )
 
-    # Live API check: confirm the OAuth identity can see the target customer.
+    # --- live API check (requires package) ---
     try:
-        client = load_client()
+        from ..lib.auth import load_client  # noqa: PLC0415
     except ImportError:
         return _fail(
             "deps",
-            "google-ads package not installed. Run: uv sync --project .claude/commands/ads/scripts",
+            "ads_skill package not importable. Run: uv sync inside the scripts/ directory.",
         )
+
+    try:
+        client = load_client()
     except Exception as exc:  # noqa: BLE001
         return _fail("auth", f"failed to load credentials from {cred_path}: {exc}")
 
@@ -62,12 +71,10 @@ def main() -> int:
             "Confirm the login_customer_id in google-ads.yaml is the MCC that manages this customer.",
         )
 
-    emit_json(
-        ok(
-            customerIdEnv=customer_id,
-            credentialsYaml=cred_path,
-            accessibleCustomerCount=len(accessible_ids),
-        )
+    _ok(
+        customerIdEnv=customer_id,
+        credentialsYaml=str(cred_path),
+        accessibleCustomerCount=len(accessible_ids),
     )
     return 0
 
