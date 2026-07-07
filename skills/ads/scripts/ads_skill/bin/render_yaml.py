@@ -1,4 +1,4 @@
-"""Render ~/.config/google-ads/google-ads.yaml from Secret Manager (project example-prod)."""
+"""Render ~/.config/google-ads/google-ads.yaml from Secret Manager (project your-project-prod)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-PROJECT = os.environ.get("GOOGLE_ADS_SECRETS_PROJECT", "example-prod")
+PROJECT = os.environ.get("GOOGLE_ADS_SECRETS_PROJECT", "your-project-prod")
 DEFAULT_TARGET = Path.home() / ".config" / "google-ads" / "google-ads.yaml"
 
 # (field, secret_name, required). target_customer_id is skill-local, not a real

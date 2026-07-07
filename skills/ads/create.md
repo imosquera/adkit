@@ -67,7 +67,7 @@ These rules exist to earn an **Excellent** ad strength. POOR strength is almost 
 1. **Fill all 15.** Provide exactly 15 unique headlines — never publish fewer. POOR strength is usually "well under 15"; give Google the full set so it has combinations to test. All must stand alone (Google mixes them in any order; assume no neighbor context). ≤30 characters each (schema-enforced).
 2. **Make them distinct — different *angles*, not reworded twins.** "AI Chatbot Tool" and "AI Chatbot Software" are the *same* headline and don't count as variety. Across the 15, cover: value prop, feature, social proof, urgency, offer/free, pricing, audience callout, objection, brand. Ad strength keys off lexical *and* angle diversity.
 3. **Put the ad group's main keyword in the headlines — across ≥3 of them, not just headline 1.** Google explicitly rewards keyword inclusion. E.g. a *Best Ai Chatbot* ad group → ≥2-3 headlines containing "AI chatbot"; a *Conversational Ai* ad group → "conversational AI". Use the shared concept, not every literal phrase; small surface variants (singular/plural, modifier swaps) are fine. No keyword stuffing — connection > literal match.
-4. Focus on bottom-of-funnel intent: include terms such as **software**, **platform**, or **demo**, and explicitly mention **ROI** or **margin protection** where it fits. example sells specialized retail and communication tools; write to the action-ready buyer and the pain the software resolves.
+4. Focus on bottom-of-funnel intent: include terms such as **software**, **platform**, or **demo**, and explicitly mention **ROI** or **margin protection** where it fits. Write to the action-ready buyer and the pain the software resolves.
 
 **Description rules**
 

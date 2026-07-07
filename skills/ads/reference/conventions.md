@@ -22,9 +22,9 @@ Every ads subcommand goes through one wrapper:
 
 ## Customer-id vs login-customer-id
 
-- **`--customer <id>`** (a.k.a. `customerId` / `GOOGLE_ADS_CUSTOMER_ID`) is the **leaf account** the operation reads or mutates. Default leaf is acme (`1111111111`).
-- **`--login-customer-id <MCC>`** (a.k.a. `--manager`) is only needed when the leaf is reached *through* a manager account. **Omit it for directly-accessible accounts** — the default `None` is correct for acme and most clients. example MCC is `2222222222`.
-- **Format rule:** every customer/manager id is **10 digits, no dashes** (`1111111111`, not `111-111-1111`). Strip any dashes a human typed before passing them through.
+- **`--customer <id>`** (a.k.a. `customerId` / `GOOGLE_ADS_CUSTOMER_ID`) is the **leaf account** the operation reads or mutates.
+- **`--login-customer-id <MCC>`** (a.k.a. `--manager`) is only needed when the leaf is reached *through* a manager account. **Omit it for directly-accessible accounts** — the default `None` is correct for directly-accessible clients.
+- **Format rule:** every customer/manager id is **10 digits, no dashes**. Strip any dashes a human typed before passing them through.
 
 ## JSON envelope contract
 
@@ -41,7 +41,7 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 
 ## Credentials & preflight
 
-- Credentials live in `~/.config/google-ads/google-ads.yaml` (or the `GOOGLE_ADS_CREDENTIALS` env). Secrets are in Google Secret Manager (project `example-prod`).
+- Credentials live in `~/.config/google-ads/google-ads.yaml` (or the `GOOGLE_ADS_CREDENTIALS` env). Secrets are in Google Secret Manager (project `your-project-prod`).
 - If the yaml is missing, render it once: `ads.sh render-yaml` (one-time seed of the secrets: `ads.sh bootstrap-secrets`).
 - Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
 
