@@ -22,6 +22,10 @@ You audit live Google Ads campaigns against the same best practices `/ads:create
 
 Mechanics (ads.sh invocation, customer-id resolution, the JSON envelope, credentials/preflight) are in **`reference/conventions.md`** — read it once. Run `ads.sh preflight` once per session.
 
+**Before proceeding, read:**
+- [`reference/google/6-analyze.md`](google/6-analyze.md) — STR audit workflow, asset report, quality score diagnostics
+- [`reference/google/4-ad-copy.md`](google/4-ad-copy.md) — headline pool rules (used to judge what's missing)
+
 ## What "EXCELLENT" needs (the four levers Google scores)
 
 Ad strength is a **creative-diversity** score, not a performance score. A POOR ad can be the best converter — never pause a converting ad to chase strength; enrich it. The levers:

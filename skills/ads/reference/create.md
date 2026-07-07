@@ -19,6 +19,10 @@ $ARGUMENTS
 
 Mechanics — ads.sh invocation/venv, customer-id resolution, the JSON envelope, and credentials (`ads.sh render-yaml` / `preflight`) — are in **`reference/conventions.md`**; read it once.
 
+**Before proceeding, read:**
+- [`reference/google/3-account-structure.md`](google/3-account-structure.md) — campaign types, budget splits, match type rules
+- [`reference/google/4-ad-copy.md`](google/4-ad-copy.md) — headline pools, pinning strategy, asset checklist
+
 ## Authoring Rules — STAG + RSA
 
 These rules are baked in. Apply them when filling the scaffolded brief.

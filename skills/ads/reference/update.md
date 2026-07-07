@@ -20,6 +20,10 @@ You apply the updates that an `/ads:audit` identified. The audit is read-only; t
 
 Mechanics (ads.sh invocation, customer-id resolution, the JSON envelope, credentials/preflight) are in **`reference/conventions.md`** — read it once. Run `ads.sh preflight` once per session.
 
+**Before proceeding, read:**
+- [`reference/google/4-ad-copy.md`](google/4-ad-copy.md) — headline pools and pinning rules (used when authoring replacement copy)
+- [`reference/google/5-negative-keywords.md`](google/5-negative-keywords.md) — negative categories and starter buckets (used when adding negatives)
+
 ## Inputs
 
 Start from an `/ads:audit` run (JSON on stdout: per-ad `issues`, `keywords`, `actionItems`, `pathToExcellent`; per-campaign sitelink/callout counts and impression-share recommendations). The audit's `pathToExcellent` is the to-do list this skill closes.
