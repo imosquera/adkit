@@ -16,8 +16,8 @@ Every ads subcommand goes through one wrapper:
 ads.sh <subcommand> [args…]
 ```
 
-- `ads.sh` resolves `uv` (`brew install uv`), auto-creates the Python venv at `~/.cache/lead-drop/ads-skill-venv/` on first run via `uv sync`, then dispatches to `ads_skill.bin.*`.
-- **No persistent server, no MCP** — every invocation is a single Python process.
+- `ads.sh` resolves `node` (Node ≥ 24, https://nodejs.org), ensures the npm deps are installed on first run (`npm ci`, falling back to `npm install`) and that a fresh build exists (`npm run build` → `dist/bin/*.js`, via tsup — rebuilt whenever any `src/` file is newer than the built entrypoint), then dispatches to `node dist/bin/<cmd>.js`.
+- **No persistent server, no MCP** — every invocation is a single Node process.
 - Subcommands: `preflight`, `create`, `audit`, `update`, `keyword-ideas`, `report`, `render-yaml`, `bootstrap-secrets` (`apply-fixes` is a deprecated alias for `update`).
 
 ## Customer-id vs login-customer-id
@@ -45,8 +45,8 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 - If the yaml is missing, render it once: `ads.sh render-yaml` (one-time seed of the secrets: `ads.sh bootstrap-secrets`).
 - Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
 
-## Division of labor — Python is deterministic, the model is creative
+## Division of labor — the CLI is deterministic, the model is creative
 
-- **Python is deterministic.** Counting/validation, finding duplicates, reading Google's own `ad_strength` / `action_items`, computing the per-ad `pathToExcellent`, schema validation, and all live mutations are the executor's job (`ads.sh audit`, `ads.sh update`, `ads.sh create`). It never invents copy.
+- **The CLI is deterministic.** Counting/validation, finding duplicates, reading Google's own `ad_strength` / `action_items`, computing the per-ad `pathToExcellent`, schema validation, and all live mutations are the executor's job (`ads.sh audit`, `ads.sh update`, `ads.sh create`). It never invents copy.
 - **The model is creative.** Authoring RSA headlines/descriptions tuned to an ad group's real keyword, tiering keywords by intent, picking sitelink/callout text, and judging *which* fixes to apply are yours. Templated, keyword-agnostic copy is exactly what grades POOR — write to the specific keyword.
-- **Applying is Python's again.** You hand the executor a structured plan (a brief or a fixes plan); it re-validates against the rules and mutates. Dry-run is the default; mutation needs an explicit `--apply` (or the live `create`).
+- **Applying is the executor's again.** You hand the executor a structured plan (a brief or a fixes plan); it re-validates against the rules and mutates. Dry-run is the default; mutation needs an explicit `--apply` (or the live `create`).

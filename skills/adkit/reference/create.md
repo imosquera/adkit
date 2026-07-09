@@ -1,5 +1,5 @@
 ---
-description: "Publish a fresh Google Ads search campaign from a processed idea markdown file. Calls google-ads-python directly — no MCP server. Publishes are not persisted locally; revise live ads with /adkit audit then /adkit update."
+description: "Publish a fresh Google Ads search campaign from a processed idea markdown file. Calls google-ads-api directly — no MCP server. Publishes are not persisted locally; revise live ads with /adkit audit then /adkit update."
 argument-hint: "path to processed idea markdown (for example: ideas/processed/chatbase-ai-customer-support-v1.md)"
 user-invocable: true
 disable-model-invocation: false
@@ -17,7 +17,7 @@ $ARGUMENTS
 2. That file has a `## Go To Market > ### Keywords` section. If missing, run `/adkit gtm ideas/raw/<basename>.md` first (the `/adkit gtm` skill reads raw and writes the keywords + ad-copy sections into the matching processed file).
 3. `GOOGLE_ADS_CUSTOMER_ID` is exported (or the brief sets `customerId`).
 
-Mechanics — ads.sh invocation/venv, customer-id resolution, the JSON envelope, and credentials (`ads.sh render-yaml` / `preflight`) — are in **`reference/conventions.md`**; read it once.
+Mechanics — ads.sh invocation/build, customer-id resolution, the JSON envelope, and credentials (`ads.sh render-yaml` / `preflight`) — are in **`reference/conventions.md`**; read it once.
 
 **Before proceeding, read:**
 - [`reference/google/3-account-structure.md`](google/3-account-structure.md) — campaign types, budget splits, match type rules
@@ -203,8 +203,8 @@ ads.sh create $ARGUMENTS
 ```
 
 The script:
-1. Validates the brief against the pydantic schema.
-2. Publishes against the Google Ads API via `google-ads-python`: one budget + one campaign + campaign-level sitelinks + campaign-level callouts + per ad group { ad-group, RSA, PHRASE+EXACT keywords }. An existing campaign/ad-group of the same name is **reused** (so a re-run won't duplicate it). Campaign and each RSA are created in **PAUSED** state — nothing serves until you flip status in the Ads UI.
+1. Validates the brief against the zod schema.
+2. Publishes against the Google Ads API via `google-ads-api`: one budget + one campaign + campaign-level sitelinks + campaign-level callouts + per ad group { ad-group, RSA, PHRASE+EXACT keywords }. An existing campaign/ad-group of the same name is **reused** (so a re-run won't duplicate it). Campaign and each RSA are created in **PAUSED** state — nothing serves until you flip status in the Ads UI.
 3. Emits a JSON summary of what was created. **Nothing is written to disk** — the live account and Google's change history are the record (read live state with `/adkit audit`).
 
 Exit non-zero ⇒ the JSON output includes `failure.step` and `failure.message`, plus the partial `created` ids so you can see how far it got.
@@ -217,11 +217,11 @@ Surface the created campaign/ad-group ids, the `status`, and (if applicable) the
 
 Code under `scripts/`:
 
-- `ads.sh` — wrapper. Resolves `uv`, syncs the venv on first run, dispatches to `ads_skill.bin.*`.
-- `pyproject.toml` — declares `google-ads`, `pydantic>=2`, `pyyaml`.
-- `ads_skill/lib/schema.py` — Brief + Failure types (pydantic v2); single source of truth.
-- `ads_skill/lib/executor.py` — google-ads-python wrappers for each step kind + `publish_v1`.
-- `ads_skill/bin/{preflight,create,audit,apply_fixes,keyword_ideas,report,render_yaml,bootstrap_secrets}.py` — entry points.
+- `ads.sh` — wrapper. Resolves `node`, installs npm deps + builds `dist/bin/*.js` (tsup) on first run or after a source change, dispatches to `node dist/bin/<cmd>.js`.
+- `package.json` — declares `google-ads-api`, `zod`, `yaml`.
+- `src/lib/schema.ts` — Brief + Failure types (zod); single source of truth.
+- `src/lib/executor.ts` — google-ads-api wrappers for each step kind + `publishV1`.
+- `src/bin/{preflight,create,audit,apply-fixes,keyword-ideas,report,render-yaml,bootstrap-secrets}.ts` — entry points (built to `dist/bin/*.js`).
 
 ## Reference
 
