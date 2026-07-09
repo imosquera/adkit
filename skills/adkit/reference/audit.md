@@ -15,7 +15,7 @@ $ARGUMENTS
 
 You audit live Google Ads campaigns against the same best practices `/adkit create` enforces, and you tell the operator **exactly what would push each ad to EXCELLENT ad strength**. This skill is **read-only** — it reports, never mutates.
 
-- **Deterministic work is the CLI's** — counting headlines/descriptions, finding duplicates, detecting reused boilerplate across ad groups, flagging off-product contamination, counting sitelinks/callouts, reading Google's own `ad_strength` + `action_items`, computing each ad's `pathToExcellent`. That is `ads.sh audit`.
+- **Deterministic work is the CLI's** — counting headlines/descriptions, finding duplicates, detecting reused boilerplate across ad groups, flagging off-product contamination, counting keywords (flag campaigns under 25), counting sitelinks/callouts, reading Google's own `ad_strength` + `action_items`, computing each ad's `pathToExcellent`. That is `ads.sh audit`.
 - **Creative judgement is yours** — interpreting the gaps and (downstream) authoring the fix copy.
 
 **To apply fixes, use `/adkit update`** — it takes this audit's output, you author the copy, and `ads.sh update` validates + mutates.

@@ -70,6 +70,34 @@ export class ExitError extends Error {
 // ---------- brief scaffold (pure) ----------
 
 /**
+ * A fresh campaign should launch near this many keywords — matches the gtm
+ * generation target and clears the audit's 25-keyword floor by a wide margin.
+ */
+export const TARGET_KEYWORDS = 100;
+/** Acceptable band around {@link TARGET_KEYWORDS}: ±10% (90-110). Outside it, create warns. */
+export const KEYWORD_TARGET_TOLERANCE = 0.1;
+const KEYWORD_TARGET_MIN = Math.round(TARGET_KEYWORDS * (1 - KEYWORD_TARGET_TOLERANCE)); // 90
+const KEYWORD_TARGET_MAX = Math.round(TARGET_KEYWORDS * (1 + KEYWORD_TARGET_TOLERANCE)); // 110
+
+/**
+ * Pure: a one-line nudge when a campaign's total keyword count falls outside the
+ * ±10% band around {@link TARGET_KEYWORDS}, else null (on target → no noise).
+ */
+export function keywordCountWarning(total: number): string | null {
+  if (total >= KEYWORD_TARGET_MIN && total <= KEYWORD_TARGET_MAX) {
+    return null;
+  }
+  const fix =
+    total < KEYWORD_TARGET_MIN
+      ? "add more to the processed idea's ### Keywords tiers"
+      : "trim with --top-n or in the idea";
+  return (
+    `${total} keywords total — aim for ~${TARGET_KEYWORDS} ` +
+    `(${KEYWORD_TARGET_MIN}-${KEYWORD_TARGET_MAX}); ${fix}`
+  );
+}
+
+/**
  * Build the throwaway brief skeleton object from the idea's parsed themes +
  * negatives. Pure — no fs, no stdout. TODO placeholders mark every field the
  * operator must fill; the pre-publish validation/URL checks reject leftover TODOs.
@@ -176,9 +204,14 @@ function scaffoldBriefFromProcessed(mdPath: string, briefPath: string, maxPerThe
   mkdirSync(dirname(briefPath), { recursive: true });
   writeFileSync(briefPath, yamlStringify(skeleton));
   const themesPretty = themes.map(([tier, kws]) => `${tier} (${kws.length} kw)`).join("\n  - ");
+  const totalKeywords = themes.reduce((n, [, kws]) => n + kws.length, 0);
+  const kwWarning = keywordCountWarning(totalKeywords);
   process.stderr.write(
     `scaffolded ${briefPath} from ${mdPath}\n` +
       `${themes.length} STAG ad groups (one per intent theme):\n  - ${themesPretty}\n` +
+      (kwWarning
+        ? `⚠ ${kwWarning}\n`
+        : `${totalKeywords} keywords total (on target ~${TARGET_KEYWORDS})\n`) +
       `${negatives.length} campaign negative keywords seeded from the processed file\n` +
       "6 sitelink + 4 callout + 3 price-offering + structured-snippet placeholders added (fill these in too)\n" +
       "fill in headlines/descriptions/finalUrl per ad group, then re-run\n",
@@ -311,6 +344,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     const customerId = customerIdFor(brief);
     const agNames = brief.adGroups.map((ag) => ag.name);
 
+    const keywordCount = brief.adGroups.reduce((n, ag) => n + ag.keywords.length, 0);
+
     if (dryRun) {
       emitJson({
         ok: true,
@@ -318,6 +353,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         customerIdUsed: customerId,
         adGroupCount: brief.adGroups.length,
         adGroups: agNames,
+        keywordCount,
+        keywordWarning: keywordCountWarning(keywordCount),
         sitelinkCount: brief.campaign.sitelinks.length,
         calloutCount: brief.campaign.callouts.length,
         willPublish:
