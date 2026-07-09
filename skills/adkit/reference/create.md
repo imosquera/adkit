@@ -215,7 +215,7 @@ Surface the created campaign/ad-group ids, the `status`, and (if applicable) the
 
 ## Implementation
 
-Code under `.claude/commands/ads/scripts/`:
+Code under `scripts/`:
 
 - `ads.sh` — wrapper. Resolves `uv`, syncs the venv on first run, dispatches to `ads_skill.bin.*`.
 - `pyproject.toml` — declares `google-ads`, `pydantic>=2`, `pyyaml`.
