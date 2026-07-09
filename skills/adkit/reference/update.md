@@ -16,7 +16,7 @@ $ARGUMENTS
 You apply the updates that an `/adkit audit` identified. The audit is read-only; this skill mutates. The split is deliberate (see `reference/conventions.md` → *Division of labor*):
 
 - **You author the creative update** — when a gap needs new copy, *you* write the 15 headlines / 4 descriptions tuned to that ad group's real keyword (templated, keyword-agnostic copy is what grades POOR).
-- **Python validates and mutates** — you write an update plan (JSON); `ads.sh update` re-validates it against the RSA rules and applies it. **Dry-run unless `--apply`.**
+- **The CLI validates and mutates** — you write an update plan (JSON); `ads.sh update` re-validates it against the RSA rules and applies it. **Dry-run unless `--apply`.**
 
 Mechanics (ads.sh invocation, customer-id resolution, the JSON envelope, credentials/preflight) are in **`reference/conventions.md`** — read it once. Run `ads.sh preflight` once per session.
 

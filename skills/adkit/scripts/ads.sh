@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Thin wrapper: ensures the uv-managed venv exists, then runs one of the bin/* modules.
+# Thin wrapper: ensures the built JS + node deps exist, then runs one of the
+# dist/bin/* entrypoints (the TypeScript port of the ads_skill package).
 # Usage: ads.sh <subcommand> [args...]
 #   subcommands: preflight | create | keyword-ideas | report | audit | update | render-yaml | bootstrap-secrets
 #   (apply-fixes is a deprecated alias for update)
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-REPO_ROOT="$( cd "${SCRIPT_DIR}/../../../.." && pwd )"
 
 if [ "$#" -lt 1 ]; then
   echo "usage: ads.sh <preflight|create|keyword-ideas|report|audit|update|render-yaml|bootstrap-secrets> [args...]" >&2
@@ -15,36 +15,35 @@ fi
 
 cmd="$1"; shift
 case "$cmd" in
-  render-yaml) mod="render_yaml" ;;
-  bootstrap-secrets) mod="bootstrap_secrets" ;;
-  keyword-ideas) mod="keyword_ideas" ;;
-  update|apply-fixes) mod="apply_fixes" ;;  # apply-fixes is a deprecated alias for update
-  preflight|create|report|audit) mod="$cmd" ;;
+  update|apply-fixes) mod="apply-fixes" ;;  # apply-fixes is a deprecated alias for update
+  preflight|create|keyword-ideas|report|audit|render-yaml|bootstrap-secrets) mod="$cmd" ;;
   *) echo "unknown subcommand: $cmd" >&2; exit 1 ;;
 esac
 
-UV_BIN="${UV_BIN:-uv}"
-command -v "$UV_BIN" >/dev/null 2>&1 || {
-  echo "error: 'uv' not on PATH (https://github.com/astral-sh/uv). Install with: brew install uv" >&2
+command -v node >/dev/null 2>&1 || {
+  echo "error: 'node' not on PATH (https://nodejs.org). Node >= 24 required." >&2
   exit 1
 }
 
-# Keep the venv OUTSIDE the installed skill tree (e.g. .agents/skills/) so
-# Claude Code's skill scanner doesn't index every site-packages LICENSE file
-# as a phantom "skill". Repo root keeps it close to the project; one venv per
-# worktree. Add .venv-ads to .gitignore.
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$REPO_ROOT/.venv-ads}"
-mkdir -p "$(dirname "$UV_PROJECT_ENVIRONMENT")"
+# Install deps on first run (node_modules absent). Idempotent; quiet.
+if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+  ( cd "$SCRIPT_DIR" && npm ci --silent 2>/dev/null || npm install --silent )
+fi
 
-# Redirect Python bytecode caches OUT of the installed skill tree — same
-# reason as the pytest cache_dir override: skill scanner indexes everything
-# under it.
-export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-$HOME/.cache/lead-drop/ads-skill-pycache}"
-mkdir -p "$PYTHONPYCACHEPREFIX"
+# Build to dist/ on first run or after a source change (dist missing, or any src
+# file newer than the built entrypoint).
+needs_build=0
+if [ ! -f "$SCRIPT_DIR/dist/bin/${mod}.js" ]; then
+  needs_build=1
+elif [ -n "$( find "$SCRIPT_DIR/src" -type f -newer "$SCRIPT_DIR/dist/bin/${mod}.js" -print -quit 2>/dev/null )" ]; then
+  needs_build=1
+fi
+if [ "$needs_build" -eq 1 ]; then
+  ( cd "$SCRIPT_DIR" && npm run --silent build )
+fi
 
-# Sync deps on first run (or after pyproject.toml changes). Idempotent and fast.
-"$UV_BIN" sync --quiet --project "$SCRIPT_DIR"
-
-# Run from the repo root so relative paths (ideas/, ads/output/reports) resolve.
+# Run from the repo root so relative paths (ideas/, ads/output/reports) resolve,
+# matching the Python wrapper's behavior.
+REPO_ROOT="$( cd "${SCRIPT_DIR}/../../../.." && pwd )"
 cd "$REPO_ROOT"
-exec "$UV_BIN" run --quiet --project "$SCRIPT_DIR" python -m "ads_skill.bin.$mod" "$@"
+exec node "$SCRIPT_DIR/dist/bin/${mod}.js" "$@"

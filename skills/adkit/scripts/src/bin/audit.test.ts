@@ -1,0 +1,217 @@
+/**
+ * Shell-level tests for bin/audit.ts — the IO entry point.
+ *
+ * The pure scoring/detection logic lives in audit/scoring.ts and is exercised by
+ * scoring.test.ts. These tests cover the shell: read-only + me-too behavior,
+ * campaign-name resolution, the two landing-page helpers, and the requireDigits
+ * guard. A FAKE AdsClient returns canned rows keyed on GAQL substrings (matching
+ * audit_test.py's `"FROM ad_group_ad" in query` approach).
+ *
+ * Ported from ads_skill/bin/audit_test.py, plus the dynamic
+ * --differentiation-profile wiring: the me-too test passes a small profile so a
+ * finding is produced (the Python baked in a single-advertiser constant).
+ */
+
+import { describe, expect, it } from "vitest";
+
+import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
+import { parseDifferentiationProfile } from "../lib/brand.js";
+import { requireDigits } from "../audit/scoring.js";
+import { auditCampaign, landingPageMobile, landingPagePolicy, resolveCampaign } from "./audit.js";
+
+/** Build a fake AdsClient whose `search` picks canned rows by GAQL substring. */
+function fakeClient(pick: (query: string) => unknown[], onSearch?: () => void): AdsClient {
+  return {
+    async search<Row = Record<string, unknown>>(_customerId: string, query: string): Promise<Row[]> {
+      onSearch?.();
+      return pick(query) as Row[];
+    },
+    async mutate(_customerId: string, _operations: AdsMutateOperation[]): Promise<MutateResult> {
+      throw new Error("audit must be read-only — no mutate calls");
+    },
+  };
+}
+
+describe("requireDigits guard", () => {
+  it("throws on a non-digit id (injection guard runs in the shell)", () => {
+    expect(() => requireDigits("campaign", "1; DROP TABLE")).toThrow();
+  });
+
+  it("allows a null id", () => {
+    expect(() => requireDigits("campaign", null)).not.toThrow();
+  });
+});
+
+describe("auditCampaign", () => {
+  it("is read-only and flags me-too copy against a differentiation profile", async () => {
+    // one ad group, one ad whose copy is a generic AI promise; no extensions.
+    const adRow = {
+      ad_group: { name: "Commercial" },
+      ad_group_ad: {
+        ad: {
+          id: 10,
+          final_urls: ["https://x"],
+          responsive_search_ad: {
+            headlines: [{ text: "AI Writer", pinned_field: "UNSPECIFIED" }],
+            descriptions: [{ text: "Best AI chatbot", pinned_field: "UNSPECIFIED" }],
+          },
+        },
+        ad_strength: "GOOD",
+        status: "ENABLED",
+        action_items: [],
+      },
+    };
+
+    let searches = 0;
+    // ad-group-ad query returns our single ad; ext-count queries return nothing.
+    const client = fakeClient(
+      (query) => (query.includes("FROM ad_group_ad") ? [adRow] : []),
+      () => {
+        searches += 1;
+      },
+    );
+
+    // dynamic profile: generic phrase present, and two axes the copy misses.
+    const profile = parseDifferentiationProfile({
+      genericPhrases: ["ai chatbot"],
+      axes: [
+        { name: "accuracy", triggers: ["accurate", "citations"] },
+        { name: "privacy", triggers: ["private", "on-device"] },
+      ],
+    });
+
+    const camp = { campaign: { id: 1, name: "x", status: "ENABLED" } };
+    const result = await auditCampaign(client, "123", camp, [], { Commercial: ["ai chatbot"] }, profile);
+
+    expect(searches).toBeGreaterThan(0);
+    // the ad itself is flagged as undifferentiated me-too copy
+    expect(
+      result.ads.some((a) => a.issues.some((i) => i.issue === "undifferentiated_copy")),
+    ).toBe(true);
+    // the finding names the absent axes
+    const diff = result.ads[0].issues.find((i) => i.issue === "undifferentiated_copy");
+    expect(diff?.missingAxes).toEqual(["accuracy", "privacy"]);
+    // full asset TEXT is surfaced (not just counts) so /adkit update can preserve good copy
+    const ad = result.ads[0];
+    expect(ad.headlines).toEqual(["AI Writer"]);
+    expect(ad.descriptions).toEqual(["Best AI chatbot"]);
+  });
+
+  it("does not flag me-too copy under the empty profile", async () => {
+    const adRow = {
+      ad_group: { name: "Commercial" },
+      ad_group_ad: {
+        ad: {
+          id: 10,
+          final_urls: ["https://x"],
+          responsive_search_ad: {
+            headlines: [{ text: "AI Writer", pinned_field: "UNSPECIFIED" }],
+            descriptions: [{ text: "Best AI chatbot", pinned_field: "UNSPECIFIED" }],
+          },
+        },
+        ad_strength: "GOOD",
+        status: "ENABLED",
+        action_items: [],
+      },
+    };
+    const client = fakeClient((query) => (query.includes("FROM ad_group_ad") ? [adRow] : []));
+    const camp = { campaign: { id: 1, name: "x", status: "ENABLED" } };
+    const result = await auditCampaign(client, "123", camp, [], { Commercial: ["ai chatbot"] }, {
+      competitors: [],
+      axes: [],
+      genericPhrases: [],
+    });
+    expect(
+      result.ads.some((a) => a.issues.some((i) => i.issue === "undifferentiated_copy")),
+    ).toBe(false);
+  });
+});
+
+describe("resolveCampaign", () => {
+  it("matches a name substring to the single id, case-insensitively", async () => {
+    const rows = [
+      { campaign: { id: 10, name: "tonewell-social-proof-20260624-abee-search" } },
+      { campaign: { id: 20, name: "pitchvoice-social-proof-20260625-7a21-search" } },
+    ];
+    const [cid, err] = await resolveCampaign(fakeClient(() => rows), "123", "ABEE", true);
+    expect(cid).toBe("10");
+    expect(err).toBeNull();
+  });
+
+  it("reports no-match and ambiguous errors", async () => {
+    const rows = [
+      { campaign: { id: 10, name: "tonewell-abee-search" } },
+      { campaign: { id: 20, name: "pitchvoice-7a21-search" } },
+    ];
+    const client = fakeClient(() => rows);
+
+    const [cidNo, errNo] = await resolveCampaign(client, "123", "nomatch", true);
+    expect(cidNo).toBeNull();
+    expect(errNo).toContain("no campaign name matches");
+
+    const [cidAmb, errAmb] = await resolveCampaign(client, "123", "search", true);
+    expect(cidAmb).toBeNull();
+    expect(errAmb).toContain("ambiguous");
+  });
+});
+
+describe("landingPageMobile", () => {
+  it("flags the bad URL and not the clean URL", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        landing_page_view: { unexpanded_final_url: "https://example.com/bad" },
+        metrics: {
+          mobile_friendly_clicks_percentage: 0.5,
+          valid_accelerated_mobile_pages_clicks_percentage: 0.8,
+          speed_score: 2,
+          clicks: 100,
+          impressions: 500,
+          ctr: 0.2,
+        },
+      },
+      {
+        campaign: { id: 1 },
+        landing_page_view: { unexpanded_final_url: "https://example.com/good" },
+        metrics: {
+          mobile_friendly_clicks_percentage: 1.0,
+          valid_accelerated_mobile_pages_clicks_percentage: null,
+          speed_score: 9,
+          clicks: 50,
+          impressions: 200,
+          ctr: 0.25,
+        },
+      },
+    ];
+    const result = await landingPageMobile(fakeClient(() => rows), "123", 7, [1]);
+    const urlsFlagged = new Set((result[1] ?? []).map((item) => item.url));
+    expect(urlsFlagged).toEqual(new Set(["https://example.com/bad"]));
+    const issues = new Set(result[1].map((item) => item.issue));
+    expect(issues).toEqual(
+      new Set(["mobile_unfriendly_clicks", "invalid_amp_clicks", "slow_landing_page"]),
+    );
+  });
+});
+
+describe("landingPagePolicy", () => {
+  it("flags destination topics only, not unrelated policy topics", async () => {
+    const rows = [
+      {
+        ad_group_ad: {
+          ad: { final_urls: ["https://example.com/broken"] },
+          policy_summary: { policy_topic_entries: [{ topic: "DESTINATION_NOT_WORKING" }] },
+        },
+      },
+      {
+        ad_group_ad: {
+          ad: { final_urls: ["https://example.com/fine"] },
+          policy_summary: { policy_topic_entries: [{ topic: "ALCOHOL" }] },
+        },
+      },
+    ];
+    const result = await landingPagePolicy(fakeClient(() => rows), "123", [1]);
+    expect(result[1]).toHaveLength(1);
+    expect(result[1][0].url).toBe("https://example.com/broken");
+    expect(result[1][0].issue).toBe("destination_not_working");
+  });
+});

@@ -15,7 +15,7 @@ $ARGUMENTS
 
 You audit live Google Ads campaigns against the same best practices `/adkit create` enforces, and you tell the operator **exactly what would push each ad to EXCELLENT ad strength**. This skill is **read-only** — it reports, never mutates.
 
-- **Deterministic work is Python's** — counting headlines/descriptions, finding duplicates, detecting reused boilerplate across ad groups, flagging off-product contamination, counting sitelinks/callouts, reading Google's own `ad_strength` + `action_items`, computing each ad's `pathToExcellent`. That is `ads.sh audit`.
+- **Deterministic work is the CLI's** — counting headlines/descriptions, finding duplicates, detecting reused boilerplate across ad groups, flagging off-product contamination, counting sitelinks/callouts, reading Google's own `ad_strength` + `action_items`, computing each ad's `pathToExcellent`. That is `ads.sh audit`.
 - **Creative judgement is yours** — interpreting the gaps and (downstream) authoring the fix copy.
 
 **To apply fixes, use `/adkit update`** — it takes this audit's output, you author the copy, and `ads.sh update` validates + mutates.
@@ -58,7 +58,7 @@ Two related growth blockers it also flags:
 
 A read-only check tells the operator *when* an ad reads like a general LLM (apply the fix with `/adkit update`):
 
-- **`undifferentiated_copy`** (per-ad `issue`) — the ad's message reads as a generic AI-tool promise ("AI writer" / "AI chatbot") and is **indistinguishable from a general LLM**. `missingAxes` names which of the three axes a competitor like ChatGPT can't easily replicate are absent: **integration** (CRM/marketing-stack fit), **consistency** (brand-voice / voice-matched replies across channels), **outcome** (sign-ups/reply-rate/revenue framing). An ad already leading with all three is not flagged. The fix is `/adkit update` — author sharper copy toward the missing axes. The competitor set + axes are defined once in `ads_skill/lib/brand.py`.
+- **`undifferentiated_copy`** (per-ad `issue`) — the ad's message reads as a generic promise indistinguishable from a general LLM. This check is **dynamic, driven per run** by a **differentiation profile** you author from the campaign, its landing page, and the idea, and pass via `--differentiation-profile <path.json>`. The JSON shape is `{ "competitors": string[], "genericPhrases": string[], "axes": [{ "name": string, "triggers": string[] }] }` — `competitors`/`genericPhrases` are the me-too signals to detect, and each `axis` is a differentiator (with the `triggers` that count as "present"). `missingAxes` names which axes the ad fails to lead with; an ad already covering every axis is not flagged. An **empty or absent profile flags nothing**. The fix is `/adkit update` — author sharper copy toward the missing axes.
 ## Keyword CPC & cluster split
 
 On by default (with the serving layer; `--no-serving` skips it), the audit pulls **per-keyword average CPC** over the `--days` window and emits it as `keywordCpc` (`{campaignId: [{text, avg_cpc, avg_cpc_micros}]}`, priciest first). From that it computes `clusterSplits`: a campaign whose **top keyword CPC is ≥ 3× the cheapest** is mixing a cheap-broad and an expensive-intent keyword group under one budget — one shared budget/bid lets the cheap terms win every auction and starve the expensive ones (the reputation-split pattern). Each entry carries `maxCpc`/`minCpc`/`ratio`, the `expensive`/`cheap` groups, and a `reason`. The fix is structural: split the expensive group into its own campaign with its own budget and $3–6 bids (publish via `/adkit create`), not a creative tweak.
@@ -81,7 +81,7 @@ ads.sh audit --customer <10-digit> --campaign <id>
 
 - JSON report → **stdout** (per-campaign findings, per-ad `issues`, `keywords`, `actionItems`, `pathToExcellent`, plus each ad's full `headlines`/`descriptions` **text** so `/adkit update` can preserve good copy when authoring rewrites/appends; plus the serving-layer `serving`/`keywordCpc`/`clusterSplits`/`addNegatives`/`promoteKeywords`/`qualityScore`/`landingPageHealth`). Redirect it: `> /tmp/audit.json`.
 - Human summary → **stderr** (the table with `-> path to EXCELLENT` lines).
-- Flags: `--all` (include paused/removed), `--no-serving` (skip the impression-share layer), `--days 7|14|30` (IS window), `--banned "a,b,c"` (phrases that signal copy leaked from another product — substring-based; product-specific, no universal default, always pass the phrases you expect from neighbouring products in the account).
+- Flags: `--all` (include paused/removed), `--no-serving` (skip the impression-share layer), `--days 7|14|30` (IS window), `--banned "a,b,c"` (phrases that signal copy leaked from another product — substring-based; product-specific, no universal default, always pass the phrases you expect from neighbouring products in the account), `--differentiation-profile <path.json>` (the per-run me-too/differentiation profile that drives `undifferentiated_copy` — absent ⇒ nothing flagged; see *Professional-lane signal* above).
 - Resolve a campaign name in `$ARGUMENTS` to an id by matching against the JSON's `campaignName` (or pass the id directly).
 
 ## Report
