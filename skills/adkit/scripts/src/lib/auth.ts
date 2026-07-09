@@ -18,11 +18,16 @@ import { GoogleAdsApi, type MutateOperation } from "google-ads-api";
 import { parse as parseYaml } from "yaml";
 
 /**
- * One atomic mutate operation (`{ entity, operation, resource }`). The SDK's
- * `MutateOperation` is generic over the resource; we bind it to a loose record so a
- * heterogeneous batch (budgets + campaigns + criteria + assets) shares one type.
+ * One atomic mutate operation. Decoupled from the SDK's heavily-generic
+ * `MutateOperation<Entity>` union so a heterogeneous batch (budgets + campaigns +
+ * criteria + assets) shares one simple shape; {@link loadClient} casts to the SDK
+ * type at the single call boundary.
  */
-export type AdsMutateOperation = MutateOperation<Record<string, unknown>>;
+export interface AdsMutateOperation {
+  entity: string;
+  operation: "create" | "update" | "remove";
+  resource: Record<string, unknown>;
+}
 
 /** A single row returned from a GAQL `search` — a nested, snake_case record. */
 export type GaqlValue = string | number | boolean | null | undefined | GaqlValue[] | { [key: string]: GaqlValue };
@@ -118,7 +123,9 @@ export function loadClient(
       return (await customerFor(customerId).query(query)) as Row[];
     },
     async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
-      const response = await customerFor(customerId).mutateResources(operations);
+      const response = await customerFor(customerId).mutateResources(
+        operations as unknown as MutateOperation<Record<string, unknown>>[],
+      );
       const responses =
         (response as unknown as { mutate_operation_responses?: Array<Record<string, { resource_name?: string }>> })
           .mutate_operation_responses ?? [];

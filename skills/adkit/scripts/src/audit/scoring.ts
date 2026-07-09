@@ -15,7 +15,7 @@
  */
 
 import { gaqlId } from "../gaql/escape.js";
-import { DIFFERENTIATION_AXES, GENERIC_AI_PHRASES } from "../lib/brand.js";
+import type { DifferentiationProfile } from "../lib/brand.js";
 
 export const MIN_HEADLINES = 15;
 export const MIN_DESCRIPTIONS = 4;
@@ -126,21 +126,25 @@ export function pathToExcellent(
 }
 
 /**
- * Per-ad 'me-too copy' finding (FR-014/FR-015). Flags an ad whose message reads as a
- * generic AI-tool promise AND fails to cover all three differentiation axes
- * (integration / consistency / outcome), reporting which axes are absent. An ad that
- * already leads with integration + brand-voice + outcome is NOT flagged even if it
- * mentions AI. Pure: judged against the immutable differentiation reference.
+ * Per-ad 'me-too copy' finding. Flags an ad whose message reads as a generic category
+ * promise (one of the profile's `genericPhrases`) AND fails to cover every axis in the
+ * profile, reporting which axes are absent. An ad that already leads with all axes is
+ * NOT flagged even if it uses a generic phrase.
+ *
+ * Pure: judged against the supplied {@link DifferentiationProfile}, which is derived
+ * per run from the campaign, landing page, and idea (not a hardcoded reference). An
+ * empty profile never flags anything.
  */
 export function differentiationGaps(
   headlines: readonly string[],
   descriptions: readonly string[],
+  profile: DifferentiationProfile,
 ): DifferentiationGap | null {
   const blob = [...headlines, ...descriptions].join(" ").toLowerCase();
-  const generic = GENERIC_AI_PHRASES.some((phrase) => blob.includes(phrase));
-  const missing = DIFFERENTIATION_AXES.filter(
-    (axis) => !axis.triggers.some((trigger) => blob.includes(trigger)),
-  ).map((axis) => axis.name);
+  const generic = profile.genericPhrases.some((phrase) => blob.includes(phrase.toLowerCase()));
+  const missing = profile.axes
+    .filter((axis) => !axis.triggers.some((trigger) => blob.includes(trigger.toLowerCase())))
+    .map((axis) => axis.name);
   if (!generic || missing.length === 0) {
     return null;
   }
