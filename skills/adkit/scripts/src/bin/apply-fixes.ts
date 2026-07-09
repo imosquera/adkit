@@ -44,6 +44,7 @@
  */
 
 import { readFileSync, statSync } from "node:fs";
+import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 
 import { setAdGroupStatus, setCampaignStatus, buildKeywordOps, buildNegativeKeywordOps } from "../ads/entities.js";
@@ -629,7 +630,7 @@ function rsaUpdateOp(
 // Re-export a type used by tests asserting on the status plan entries.
 export type { StatusPlanEntry };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((code) => process.exit(code))
     .catch((err: unknown) => {

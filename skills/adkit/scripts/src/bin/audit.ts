@@ -22,6 +22,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 import { parseArgs } from "node:util";
 
@@ -1444,7 +1445,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 }
 
 // Run guard: execute main only when invoked directly, not when imported by tests.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((code) => process.exit(code))
     .catch((err: unknown) => {

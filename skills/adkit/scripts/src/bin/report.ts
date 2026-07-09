@@ -12,6 +12,7 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
+import { isMainModule } from "../cli/entry.js";
 import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import type { AdsClient, GaqlRow } from "../lib/auth.js";
@@ -451,7 +452,7 @@ function isoToday(date: Date): string {
 }
 
 // Execute when run as the entry module.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))
     .catch((exc) => {

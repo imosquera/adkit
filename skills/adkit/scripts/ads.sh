@@ -6,9 +6,10 @@
 #   (apply-fixes is a deprecated alias for update)
 set -euo pipefail
 
-# pwd -P resolves symlinks (physical path). Node resolves import.meta.url to the
-# realpath, so SCRIPT_DIR must be the realpath too or the bins' `import.meta.url
-# === file://$argv[1]` run-guard never matches and main() silently no-ops.
+# pwd -P resolves symlinks to the physical path, matching how Node resolves a
+# module's import.meta.url. The bins' run-guard (src/cli/entry.ts) now realpaths
+# both sides so it's symlink-robust on its own; passing the realpath here keeps the
+# two aligned anyway (defense-in-depth, and cleaner paths in diagnostics).
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd -P )"
 
 if [ "$#" -lt 1 ]; then
