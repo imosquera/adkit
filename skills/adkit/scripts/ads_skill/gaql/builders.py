@@ -172,6 +172,34 @@ def audit_ad_group_ad_query(camp_id: str) -> str:
     )
 
 
+def audit_landing_page_mobile_query(days: int, campaign_ids: list) -> str:
+    """Per-URL mobile/AMP click quality and page-speed score from landing_page_view,
+    over the window. Caller flags mobile_friendly_clicks_percentage < 1.0 (always)
+    and valid_accelerated_mobile_pages_clicks_percentage < 1.0 (only when AMP clicks
+    exist, i.e. the field is populated)."""
+    ids = ",".join(gaql_id(c) for c in campaign_ids)
+    return (
+        "SELECT campaign.id, landing_page_view.unexpanded_final_url, "
+        "metrics.mobile_friendly_clicks_percentage, "
+        "metrics.valid_accelerated_mobile_pages_clicks_percentage, metrics.speed_score, "
+        "metrics.clicks, metrics.impressions, metrics.ctr "
+        f"FROM landing_page_view WHERE campaign.id IN ({ids}) "
+        f"AND segments.date DURING LAST_{int(days)}_DAYS"
+    )
+
+
+def audit_policy_topics_query(camp_id: str) -> str:
+    """Policy findings on enabled ads in one campaign — caller filters
+    policy_topic_entries for destination/URL topics (DESTINATION_NOT_WORKING,
+    DESTINATION_MISMATCH) that the audit.md table maps to a concrete fix."""
+    return (
+        "SELECT ad_group_ad.ad.id, ad_group_ad.ad.final_urls, "
+        "ad_group_ad.policy_summary.policy_topic_entries "
+        f"FROM ad_group_ad WHERE campaign.id = {gaql_id(camp_id)} "
+        "AND ad_group_ad.status = 'ENABLED'"
+    )
+
+
 def audit_serving_query(days: int, only_enabled: bool, campaign_id: str | None) -> str:
     """Impression-share / budget / rank metrics for the serving layer."""
     where = [f"segments.date DURING LAST_{int(days)}_DAYS"]

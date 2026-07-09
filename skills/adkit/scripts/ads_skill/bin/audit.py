@@ -37,6 +37,8 @@ from ads_skill.gaql.builders import (
     audit_ext_count_query,
     audit_keyword_metrics_query,
     audit_keywords_query,
+    audit_landing_page_mobile_query,
+    audit_policy_topics_query,
     audit_quality_score_query,
     audit_search_terms_query,
     audit_serving_query,
@@ -309,6 +311,72 @@ def _quality_score(client: Any, customer_id: str, campaign_ids: list) -> dict[in
     return {cid: sorted(kws, key=lambda k: k["qualityScore"]) for cid, kws in grouped.items()}
 
 
+# ---------------------------------------------------------------------------
+# Landing page health — mobile/AMP click quality + page speed from
+# landing_page_view (windowed, like the rest of the serving layer), and
+# URL/redirect policy findings (DESTINATION_NOT_WORKING, DESTINATION_MISMATCH)
+# from ad_group_ad.policy_summary (current-state, not windowed). Both land in
+# the same {campaignId: [{url, issue, detail}]} shape.
+# ---------------------------------------------------------------------------
+
+_SLOW_SPEED_SCORE = 3  # speed_score is 1(slowest)-10(fastest); Google buckets 1-3 as "Slow"
+
+_POLICY_TOPIC_FIXES = {
+    "DESTINATION_NOT_WORKING": "Page not found (404) or unreachable — bad final URL, broken tracking "
+                               "template, or AdsBot blocked by robots.txt. Fix the URL or unblock Googlebot-Ads.",
+    "DESTINATION_MISMATCH": "Final URL mismatch — the redirect chain doesn't resolve to the final URL's "
+                            "domain. Align the tracking template and final URL to the same domain.",
+}
+
+
+def _landing_page_mobile(client: Any, customer_id: str, days: int, campaign_ids: list) -> dict[int, list[dict]]:
+    """{campaignId: [{url, issue, detail}]} for URLs failing the mobile-friendly
+    or valid-AMP click-rate checks, or scoring slow on speed_score, over the window."""
+    if not campaign_ids:
+        return {}
+    out: dict[int, list[dict]] = {}
+    for r in _search(client, customer_id, audit_landing_page_mobile_query(days, campaign_ids)):
+        url = r.landing_page_view.unexpanded_final_url
+        m = r.metrics
+        findings = []
+        mobile_pct = m.mobile_friendly_clicks_percentage
+        if mobile_pct is not None and mobile_pct < 1.0:
+            findings.append({"issue": "mobile_unfriendly_clicks",
+                             "detail": f"only {mobile_pct*100:.0f}% of mobile clicks reach a mobile-friendly "
+                                       "page — remove viewport-blocking elements, set "
+                                       '<meta name="viewport">, compress images.'})
+        amp_pct = m.valid_accelerated_mobile_pages_clicks_percentage
+        if amp_pct is not None and amp_pct < 1.0:
+            findings.append({"issue": "invalid_amp_clicks",
+                             "detail": f"only {amp_pct*100:.0f}% of AMP clicks reach valid AMP markup — "
+                                       "validate at the AMP Validator."})
+        speed = m.speed_score
+        if speed and speed <= _SLOW_SPEED_SCORE:
+            findings.append({"issue": "slow_landing_page",
+                             "detail": f"speed_score {speed}/10 — a 1-second mobile delay can cut conversions "
+                                       "up to 20%; cut render-blocking assets and server response time."})
+        for f in findings:
+            out.setdefault(r.campaign.id, []).append({
+                "url": url, "clicks": m.clicks, "impressions": m.impressions, "ctr": m.ctr, **f,
+            })
+    return out
+
+
+def _landing_page_policy(client: Any, customer_id: str, campaign_ids: list) -> dict[int, list[dict]]:
+    """{campaignId: [{url, issue, detail}]} for enabled ads carrying a
+    DESTINATION_NOT_WORKING/DESTINATION_MISMATCH policy topic entry (current
+    approval state — not windowed)."""
+    out: dict[int, list[dict]] = {}
+    for cid in campaign_ids:
+        for r in _search(client, customer_id, audit_policy_topics_query(cid)):
+            url = (list(r.ad_group_ad.ad.final_urls) or [None])[0]
+            for entry in r.ad_group_ad.policy_summary.policy_topic_entries:
+                fix = _POLICY_TOPIC_FIXES.get(entry.topic)
+                if fix:
+                    out.setdefault(cid, []).append({"url": url, "issue": entry.topic.lower(), "detail": fix})
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--customer", default=None, help="10-digit customer id (no dashes); falls back to login_customer_id in yaml")
@@ -348,11 +416,14 @@ def main(argv: list[str] | None = None) -> int:
     promote_keywords: dict[int, list[dict]] = {}
     camp_ids = [c.campaign.id for c in camps]
     quality_score: dict[int, list[dict]] = _quality_score(client, args.customer, camp_ids)
+    landing_page_health: dict[int, list[dict]] = _landing_page_policy(client, args.customer, camp_ids)
     if not args.no_serving:
         serving = _campaign_serving(client, args.customer, args.days, not args.all, args.campaign)
         cannibalization = _cannibalization(serving, kw_by_campaign)
         keyword_cpc = _keyword_cpc(client, args.customer, args.days, camp_ids)
         cluster_splits = _cluster_splits(keyword_cpc, {c.campaign.id: c.campaign.name for c in camps})
+        for cid, items in _landing_page_mobile(client, args.customer, args.days, camp_ids).items():
+            landing_page_health.setdefault(cid, []).extend(items)
         search_terms = _search_terms(client, args.customer, args.days, camp_ids)
         for cid, terms in search_terms.items():
             existing = [{"text": kw} for kws in kw_by_campaign.get(cid, {}).values() for kw in kws]
@@ -418,15 +489,38 @@ def main(argv: list[str] | None = None) -> int:
                 top = ", ".join(f"{p['text']} ({p['conversions']:.0f} conv)" for p in proms[:5])
                 print(f"    {names.get(cid, str(cid)):34} {len(proms)} terms: {top}", file=sys.stderr)
 
+    camp_names = {c.campaign.id: c.campaign.name for c in camps}
     bad_lp = {cid: [k for k in kws if k["landingPageExp"] == "BELOW_AVERAGE"]
               for cid, kws in quality_score.items()}
     bad_lp = {k: v for k, v in bad_lp.items() if v}
     if bad_lp:
-        camp_names = {c.campaign.id: c.campaign.name for c in camps}
         print(f"\n=== QUALITY SCORE — LANDING PAGE EXP. BELOW AVERAGE ===", file=sys.stderr)
         for cid, kws in bad_lp.items():
             top = ", ".join(f"{k['keyword']} (QS {k['qualityScore']})" for k in kws[:5])
             print(f"    {camp_names.get(cid, str(cid)):34} {len(kws)} keywords: {top}", file=sys.stderr)
+    bad_relevance = {cid: [k for k in kws if k["adRelevance"] == "BELOW_AVERAGE"]
+                     for cid, kws in quality_score.items()}
+    bad_relevance = {k: v for k, v in bad_relevance.items() if v}
+    if bad_relevance:
+        print(f"\n=== QUALITY SCORE — AD RELEVANCE BELOW AVERAGE ===", file=sys.stderr)
+        for cid, kws in bad_relevance.items():
+            top = ", ".join(f"{k['keyword']} (QS {k['qualityScore']})" for k in kws[:5])
+            print(f"    {camp_names.get(cid, str(cid)):34} {len(kws)} keywords: {top}", file=sys.stderr)
+    bad_ctr = {cid: [k for k in kws if k["expectedCtr"] == "BELOW_AVERAGE"]
+               for cid, kws in quality_score.items()}
+    bad_ctr = {k: v for k, v in bad_ctr.items() if v}
+    if bad_ctr:
+        print(f"\n=== QUALITY SCORE — EXPECTED CTR BELOW AVERAGE ===", file=sys.stderr)
+        for cid, kws in bad_ctr.items():
+            top = ", ".join(f"{k['keyword']} (QS {k['qualityScore']})" for k in kws[:5])
+            print(f"    {camp_names.get(cid, str(cid)):34} {len(kws)} keywords: {top}", file=sys.stderr)
+
+    if landing_page_health:
+        print(f"\n=== LANDING PAGE HEALTH ===", file=sys.stderr)
+        for cid, items in landing_page_health.items():
+            print(f"    {camp_names.get(cid, str(cid)):34} {len(items)} issue(s):", file=sys.stderr)
+            for it in items:
+                print(f"        -> [{it['issue']}] {it['url']}: {it['detail']}", file=sys.stderr)
 
     emit_json(ok(customer=args.customer, campaigns=report,
                  serving=serving, cannibalization=cannibalization,
@@ -434,7 +528,8 @@ def main(argv: list[str] | None = None) -> int:
                  clusterSplits=cluster_splits,
                  addNegatives={str(k): v for k, v in add_negatives.items()},
                  promoteKeywords={str(k): v for k, v in promote_keywords.items()},
-                 qualityScore={str(k): v for k, v in quality_score.items()}))
+                 qualityScore={str(k): v for k, v in quality_score.items()},
+                 landingPageHealth={str(k): v for k, v in landing_page_health.items()}))
     return 0
 
 

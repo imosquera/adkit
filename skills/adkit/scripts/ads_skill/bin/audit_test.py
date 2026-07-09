@@ -112,6 +112,63 @@ def test_resolve_campaign_matches_name_substring_to_id() -> None:
     assert (cid, err) == ("10", None)
 
 
+def test_landing_page_mobile_flags_bad_url_not_clean_url() -> None:
+    """One URL failing mobile-friendly/AMP/speed checks and one clean URL with
+    perfect scores — only the flagged URL produces landingPageHealth entries."""
+    from types import SimpleNamespace as NS
+
+    rows = [
+        NS(campaign=NS(id=1),
+           landing_page_view=NS(unexpanded_final_url="https://example.com/bad"),
+           metrics=NS(mobile_friendly_clicks_percentage=0.5,
+                      valid_accelerated_mobile_pages_clicks_percentage=0.8,
+                      speed_score=2, clicks=100, impressions=500, ctr=0.2)),
+        NS(campaign=NS(id=1),
+           landing_page_view=NS(unexpanded_final_url="https://example.com/good"),
+           metrics=NS(mobile_friendly_clicks_percentage=1.0,
+                      valid_accelerated_mobile_pages_clicks_percentage=None,
+                      speed_score=9, clicks=50, impressions=200, ctr=0.25)),
+    ]
+
+    class _C:
+        def get_service(self, _n: str):
+            class _Svc:
+                def search(self, *, customer_id: str, query: str):
+                    return rows
+            return _Svc()
+
+    result = audit._landing_page_mobile(_C(), "123", 7, [1])
+    urls_flagged = {item["url"] for item in result.get(1, [])}
+    assert urls_flagged == {"https://example.com/bad"}
+    issues = {item["issue"] for item in result[1]}
+    assert issues == {"mobile_unfriendly_clicks", "invalid_amp_clicks", "slow_landing_page"}
+
+
+def test_landing_page_policy_flags_destination_topics_only() -> None:
+    """An ad carrying DESTINATION_NOT_WORKING is flagged; an ad with an unrelated
+    policy topic (ALCOHOL) is not."""
+    from types import SimpleNamespace as NS
+
+    rows = [
+        NS(ad_group_ad=NS(ad=NS(final_urls=["https://example.com/broken"]),
+                          policy_summary=NS(policy_topic_entries=[NS(topic="DESTINATION_NOT_WORKING")]))),
+        NS(ad_group_ad=NS(ad=NS(final_urls=["https://example.com/fine"]),
+                          policy_summary=NS(policy_topic_entries=[NS(topic="ALCOHOL")]))),
+    ]
+
+    class _C:
+        def get_service(self, _n: str):
+            class _Svc:
+                def search(self, *, customer_id: str, query: str):
+                    return rows
+            return _Svc()
+
+    result = audit._landing_page_policy(_C(), "123", [1])
+    assert len(result[1]) == 1
+    assert result[1][0]["url"] == "https://example.com/broken"
+    assert result[1][0]["issue"] == "destination_not_working"
+
+
 def test_resolve_campaign_reports_no_match_and_ambiguous() -> None:
     from types import SimpleNamespace as NS
 
