@@ -217,11 +217,11 @@ Surface the created campaign/ad-group ids, the `status`, and (if applicable) the
 
 Code under `scripts/`:
 
-- `ads.sh` — wrapper. Resolves `node`, installs npm deps + builds `dist/bin/*.js` (tsup) on first run or after a source change, dispatches to `node dist/bin/<cmd>.js`.
-- `package.json` — declares `google-ads-api`, `zod`, `yaml`.
+- `ads.sh` — wrapper. Resolves `node`, installs npm deps on first run, runs the entry point straight from TypeScript via `tsx` (no build, no `dist/`).
+- `package.json` — declares `google-ads-api`, `zod`, `yaml`, `tsx`.
 - `src/lib/schema.ts` — Brief + Failure types (zod); single source of truth.
 - `src/lib/executor.ts` — google-ads-api wrappers for each step kind + `publishV1`.
-- `src/bin/{preflight,create,audit,apply-fixes,keyword-ideas,report,render-yaml,bootstrap-secrets}.ts` — entry points (built to `dist/bin/*.js`).
+- `src/bin/{preflight,create,audit,apply-fixes,keyword-ideas,report,render-yaml,bootstrap-secrets}.ts` — entry points (run directly by `tsx`).
 
 ## Reference
 
