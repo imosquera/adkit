@@ -33,7 +33,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "google-ads-api": "^20.0.0",
+    "google-ads-api": "^24.1.0",
     "yaml": "^2.6.0",
     "zod": "^3.24.0"
   },

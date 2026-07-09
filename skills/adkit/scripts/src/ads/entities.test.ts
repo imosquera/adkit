@@ -166,6 +166,15 @@ describe("createSearchCampaign", () => {
     expect((resource["ai_max_setting"] as { enable_ai_max: boolean }).enable_ai_max).toBe(true);
   });
 
+  it("declares EU political status (required on new campaigns)", async () => {
+    const { client, calls } = makeFake();
+    await createSearchCampaign(client, "123", briefFixture({ aiMax: true }), "customers/123/budgets/1");
+    const resource = campaignResource(calls[0]!.ops[0]!);
+    expect(resource["contains_eu_political_advertising"]).toBe(
+      enums.EuPoliticalAdvertisingStatus.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING,
+    );
+  });
+
   it("respects ai max off", async () => {
     const { client, calls } = makeFake();
     await createSearchCampaign(client, "123", briefFixture({ aiMax: false }), "customers/123/budgets/1");
