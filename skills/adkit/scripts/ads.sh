@@ -29,14 +29,16 @@ command -v "$UV_BIN" >/dev/null 2>&1 || {
   exit 1
 }
 
-# Keep the venv OUTSIDE .claude/commands/ so Claude Code's skill scanner doesn't
-# index every site-packages LICENSE file as a phantom "skill". Repo root keeps
-# it close to the project; one venv per worktree. Add .venv-ads to .gitignore.
+# Keep the venv OUTSIDE the installed skill tree (e.g. .agents/skills/) so
+# Claude Code's skill scanner doesn't index every site-packages LICENSE file
+# as a phantom "skill". Repo root keeps it close to the project; one venv per
+# worktree. Add .venv-ads to .gitignore.
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$REPO_ROOT/.venv-ads}"
 mkdir -p "$(dirname "$UV_PROJECT_ENVIRONMENT")"
 
-# Redirect Python bytecode caches OUT of .claude/commands/ — same reason as the
-# pytest cache_dir override: skill scanner indexes everything under that tree.
+# Redirect Python bytecode caches OUT of the installed skill tree — same
+# reason as the pytest cache_dir override: skill scanner indexes everything
+# under it.
 export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-$HOME/.cache/lead-drop/ads-skill-pycache}"
 mkdir -p "$PYTHONPYCACHEPREFIX"
 

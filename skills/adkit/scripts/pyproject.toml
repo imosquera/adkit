@@ -23,7 +23,8 @@ exclude = ["**/*_test.py"]
 [tool.pytest.ini_options]
 testpaths = ["ads_skill"]
 python_files = ["*_test.py"]
-# Keep pytest's cache OUT of .claude/commands/ — Claude Code's skill scanner
-# indexes everything under that tree and turns cache leaves into phantom skills.
+# Keep pytest's cache OUT of the installed skill tree (e.g. .agents/skills/) —
+# Claude Code's skill scanner indexes everything under it and turns cache
+# leaves into phantom skills.
 cache_dir = "~/.cache/lead-drop/ads-skill-pytest-cache"
 
