@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPositiveKeywordsQuery, auditSearchTermsQuery } from "./builders.js";
+import { applyPositiveKeywordsQuery, auditAdGroupAdQuery, auditSearchTermsQuery } from "./builders.js";
 
 describe("auditSearchTermsQuery", () => {
   it("guards ids digits-only", () => {
@@ -13,6 +13,20 @@ describe("auditSearchTermsQuery", () => {
     expect(q).toContain("search_term_view.search_term");
     expect(q).toContain("metrics.cost_micros");
     expect(q).toContain("segments.date DURING LAST_14_DAYS");
+  });
+});
+
+describe("auditAdGroupAdQuery", () => {
+  it("guards id digits-only", () => {
+    expect(() => auditAdGroupAdQuery("4x")).toThrow();
+  });
+
+  it("fetches only non-removed RSAs so non-RSA ads are never mis-scored", () => {
+    const q = auditAdGroupAdQuery("12345");
+    expect(q).toContain("FROM ad_group_ad");
+    expect(q).toContain("campaign.id = 12345");
+    expect(q).toContain("ad_group_ad.status != 'REMOVED'");
+    expect(q).toContain("ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD'");
   });
 });
 

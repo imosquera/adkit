@@ -17,7 +17,16 @@ import { describe, expect, it } from "vitest";
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 import { parseDifferentiationProfile } from "../lib/brand.js";
 import { requireDigits } from "../audit/scoring.js";
-import { auditCampaign, landingPageMobile, landingPagePolicy, resolveCampaign } from "./audit.js";
+import {
+  auditCampaign,
+  campaignServing,
+  keywordCpc,
+  landingPageMobile,
+  landingPagePolicy,
+  qualityScore,
+  resolveCampaign,
+  searchTerms,
+} from "./audit.js";
 
 /** Build a fake AdsClient whose `search` picks canned rows by GAQL substring. */
 function fakeClient(pick: (query: string) => unknown[], onSearch?: () => void): AdsClient {
@@ -124,6 +133,137 @@ describe("auditCampaign", () => {
     expect(
       result.ads.some((a) => a.issues.some((i) => i.issue === "undifferentiated_copy")),
     ).toBe(false);
+  });
+});
+
+// The Google Ads API omits empty nested messages and zero-valued metric fields
+// from `search` rows entirely. A healthy account routinely returns keywords/ads/
+// search-terms/criteria with a missing metrics/quality_info/policy_summary/
+// responsive_search_ad. The boundary normalizers must absorb every such gap so the
+// audit produces findings instead of throwing a bare TypeError mid-run.
+describe("boundary normalizers absorb API-omitted nested fields", () => {
+  // Non-RSA ads are excluded at the query boundary (auditAdGroupAdQuery constrains
+  // ad_group_ad.ad.type), so scoring never fabricates empty RSA assets for them. This
+  // asserts the normalizer's remaining job: a genuine RSA whose headlines/descriptions
+  // the API omitted still parses to 0H/0D and is flagged as under-filled, not crashed.
+  it("auditCampaign: an RSA with omitted asset lists scores as 0H/0D, no throw", async () => {
+    const rsaMissingAssets = {
+      ad_group: { name: "Commercial" },
+      ad_group_ad: {
+        ad: { id: 10, final_urls: ["https://x"] }, // responsive_search_ad omitted by the API
+        ad_strength: "PENDING",
+        status: "ENABLED",
+      },
+    };
+    const client = fakeClient((query) => (query.includes("FROM ad_group_ad") ? [rsaMissingAssets] : []));
+    const camp = { campaign: { id: 1, name: "x", status: "ENABLED" } };
+    const result = await auditCampaign(client, "123", camp, [], {}, {
+      competitors: [],
+      axes: [],
+      genericPhrases: [],
+    });
+    expect(result.ads).toHaveLength(1);
+    expect(result.ads[0].headlines).toEqual([]);
+    expect(result.ads[0].descriptions).toEqual([]);
+    // an empty RSA is under-filled on both axes rather than crashing the parse
+    const issues = result.ads[0].issues.map((i) => i.issue);
+    expect(issues).toContain("headlines_under");
+    expect(issues).toContain("descriptions_under");
+  });
+
+  it("campaignServing: a row with no metrics scores zero_impressions, no throw", async () => {
+    const rows = [
+      {
+        campaign: { id: 1, name: "starved", bidding_strategy_type: "MAXIMIZE_CONVERSIONS" },
+        campaign_budget: {}, // no amount_micros
+        // no metrics
+      },
+    ];
+    const result = await campaignServing(fakeClient(() => rows), "123", 7, true, null);
+    expect(result).toHaveLength(1);
+    expect(result[0].impressions).toBe(0);
+    expect(result[0].budgetMicros).toBe(0);
+    expect(result[0].flags).toContain("zero_impressions");
+  });
+
+  it("keywordCpc: a keyword with no spend (no metrics) reads avg_cpc 0, no throw", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        ad_group_criterion: { keyword: { text: "widget" } },
+        // no metrics
+      },
+    ];
+    const result = await keywordCpc(fakeClient(() => rows), "123", 7, [1]);
+    expect(result[1]).toHaveLength(1);
+    expect(result[1][0].avg_cpc).toBe(0);
+    expect(result[1][0].avg_cpc_micros).toBe(0);
+  });
+
+  it("searchTerms: a term with no metrics reads all-zero aggregates, no throw", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        search_term_view: { search_term: "free widget" },
+        // no metrics
+      },
+    ];
+    const result = await searchTerms(fakeClient(() => rows), "123", 7, [1]);
+    expect(result[1]).toHaveLength(1);
+    expect(result[1][0]).toMatchObject({
+      search_term: "free widget",
+      clicks: 0,
+      conversions: 0,
+      cost: 0,
+      impressions: 0,
+    });
+  });
+
+  it("qualityScore: a criterion with no quality_info is omitted, no throw", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        ad_group_criterion: { keyword: { text: "no-qs-yet" } }, // no quality_info
+      },
+      {
+        campaign: { id: 1 },
+        ad_group_criterion: {
+          keyword: { text: "scored" },
+          quality_info: {
+            quality_score: 6,
+            post_click_quality_score: "AVERAGE",
+            creative_quality_score: "AVERAGE",
+            search_predicted_ctr: "AVERAGE",
+          },
+        },
+      },
+    ];
+    const result = await qualityScore(fakeClient(() => rows), "123", [1]);
+    // the unscored criterion is dropped (quality_score 0); only the scored one survives
+    expect(result[1]).toHaveLength(1);
+    expect(result[1][0].keyword).toBe("scored");
+  });
+
+  it("landingPageMobile: a URL with no metrics yields no findings, no throw", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        landing_page_view: { unexpanded_final_url: "https://example.com/quiet" },
+        // no metrics
+      },
+    ];
+    const result = await landingPageMobile(fakeClient(() => rows), "123", 7, [1]);
+    expect(result[1] ?? []).toEqual([]);
+  });
+
+  it("landingPagePolicy: an ad with no policy_summary yields no findings, no throw", async () => {
+    const rows = [
+      {
+        ad_group_ad: { ad: { final_urls: ["https://example.com/ok"] } }, // no policy_summary
+      },
+    ];
+    const result = await landingPagePolicy(fakeClient(() => rows), "123", [1]);
+    expect(result[1] ?? []).toEqual([]);
   });
 });
 
