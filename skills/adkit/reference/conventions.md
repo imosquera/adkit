@@ -16,7 +16,7 @@ Every ads subcommand goes through one wrapper:
 ads.sh <subcommand> [args…]
 ```
 
-- `ads.sh` resolves `node` (Node ≥ 24, https://nodejs.org), ensures the npm deps are installed on first run (`npm ci`, falling back to `npm install`) and that a fresh build exists (`npm run build` → `dist/bin/*.js`, via tsup — rebuilt whenever any `src/` file is newer than the built entrypoint), then dispatches to `node dist/bin/<cmd>.js`.
+- `ads.sh` resolves `node` (Node ≥ 24, https://nodejs.org), ensures the npm deps are installed on first run (`npm ci`, falling back to `npm install`), then runs the entry point directly from TypeScript via `tsx` (`node_modules/.bin/tsx src/bin/<cmd>.ts`). No build step and no `dist/` — `tsx` transpiles on the fly, so a source edit takes effect on the next run.
 - **No persistent server, no MCP** — every invocation is a single Node process.
 - Subcommands: `preflight`, `create`, `audit`, `update`, `keyword-ideas`, `report`, `render-yaml`, `bootstrap-secrets` (`apply-fixes` is a deprecated alias for `update`).
 
