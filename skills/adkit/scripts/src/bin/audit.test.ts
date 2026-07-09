@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 import { parseDifferentiationProfile } from "../lib/brand.js";
-import { requireDigits } from "../audit/scoring.js";
+import { MIN_KEYWORDS, requireDigits } from "../audit/scoring.js";
 import {
   auditCampaign,
   campaignServing,
@@ -133,6 +133,30 @@ describe("auditCampaign", () => {
     expect(
       result.ads.some((a) => a.issues.some((i) => i.issue === "undifferentiated_copy")),
     ).toBe(false);
+  });
+});
+
+describe("auditCampaign keyword-count finding", () => {
+  const emptyProfile = { competitors: [], axes: [], genericPhrases: [] };
+  const camp = { campaign: { id: 1, name: "x", status: "ENABLED" } };
+  // no ads and no extensions — this test isolates the keyword-count check
+  const client = fakeClient(() => []);
+
+  it("flags a campaign with fewer than MIN_KEYWORDS, counting across ad groups", async () => {
+    const agKeywords = { Commercial: ["a", "b"], Brand: ["c"] }; // 3 total
+    const result = await auditCampaign(client, "123", camp, [], agKeywords, emptyProfile);
+    expect(result.keywords).toBe(3);
+    const finding = result.campaignFindings.find((f) => f.issue === "keywords_under");
+    expect(finding).toBeDefined();
+    expect(finding?.need).toBe(MIN_KEYWORDS - 3);
+    expect(finding?.detail).toContain(`3/${MIN_KEYWORDS}`);
+  });
+
+  it("does not flag a campaign at or above MIN_KEYWORDS", async () => {
+    const agKeywords = { Commercial: Array.from({ length: MIN_KEYWORDS }, (_, i) => `kw${i}`) };
+    const result = await auditCampaign(client, "123", camp, [], agKeywords, emptyProfile);
+    expect(result.keywords).toBe(MIN_KEYWORDS);
+    expect(result.campaignFindings.some((f) => f.issue === "keywords_under")).toBe(false);
   });
 });
 
