@@ -1,0 +1,51 @@
+{
+  "name": "adkit",
+  "version": "1.0.0",
+  "description": "Google Ads campaign management skill — create, audit, update, report, and keyword/ad-copy generation. TypeScript port of the ads_skill Python package.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "adkit-audit": "./dist/bin/audit.js",
+    "adkit-create": "./dist/bin/create.js",
+    "adkit-apply-fixes": "./dist/bin/apply-fixes.js",
+    "adkit-report": "./dist/bin/report.js",
+    "adkit-keyword-ideas": "./dist/bin/keyword-ideas.js",
+    "adkit-preflight": "./dist/bin/preflight.js",
+    "adkit-render-yaml": "./dist/bin/render-yaml.js",
+    "adkit-bootstrap-secrets": "./dist/bin/bootstrap-secrets.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "google-ads-api": "^20.0.0",
+    "yaml": "^2.6.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "allowScripts": {
+    "esbuild@0.27.7": true,
+    "esbuild@0.21.5": true,
+    "protobufjs@7.6.5": true
+  }
+}
