@@ -151,16 +151,34 @@ export function rowToApiIdea(row: IdeaRow): ApiIdea {
 }
 
 /**
- * A Candidate serialized for stdout: every field plus the decorated `bulletText`
- * the slash command copies verbatim into markdown. (Python `_candidate_to_dict`.)
+ * A Candidate serialized for stdout. This is a WIRE CONTRACT the `/adkit gtm`
+ * slash command parses, so the keys are snake_case — matching the Python
+ * `_candidate_to_dict` (`{**dataclasses.asdict(c), "bullet_text": ...}`) exactly,
+ * NOT the internal camelCase Candidate. `bullet_text` is the decorated string the
+ * slash command copies verbatim into markdown; missing optionals emit `null`
+ * (Python's `None`).
  */
-export interface CandidateDict extends Candidate {
-  readonly bulletText: string;
+export interface CandidateDict {
+  readonly phrase: string;
+  readonly source: "llm" | "api" | "both";
+  readonly volume: number | null;
+  readonly competition: string | null;
+  readonly low_micros: number | null;
+  readonly high_micros: number | null;
+  readonly bullet_text: string;
 }
 
 /** Decorate a Candidate for JSON output. Pure. (Python `_candidate_to_dict`.) */
 export function candidateToDict(c: Candidate): CandidateDict {
-  return { ...c, bulletText: formatBulletText(c) };
+  return {
+    phrase: c.phrase,
+    source: c.source,
+    volume: c.volume ?? null,
+    competition: c.competition ?? null,
+    low_micros: c.lowMicros ?? null,
+    high_micros: c.highMicros ?? null,
+    bullet_text: formatBulletText(c),
+  };
 }
 
 /**

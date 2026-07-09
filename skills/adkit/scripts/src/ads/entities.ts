@@ -163,6 +163,10 @@ export async function createSearchCampaign(
     // AI Max: lets Google AI expand beyond exact/phrase keywords via broad-match
     // tech and match landing-page/asset content to more queries.
     ai_max_setting: { enable_ai_max: brief.campaign.aiMax },
+    // Required on all new campaigns since 2025-09-03 — the API returns
+    // FieldError.REQUIRED if omitted. These campaigns never carry EU political ads.
+    contains_eu_political_advertising:
+      enums.EuPoliticalAdvertisingStatus.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING,
   };
   // `expanded` documents the search-partners intent; target_search_network is on in
   // both modes (Display stays off regardless), matching the Python behavior.

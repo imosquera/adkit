@@ -113,7 +113,7 @@ describe("rowToApiIdea", () => {
 });
 
 describe("candidateToDict", () => {
-  it("appends the decorated bulletText", () => {
+  it("appends the decorated bullet_text", () => {
     const dict = candidateToDict({
       phrase: "running shoes",
       source: "both",
@@ -122,7 +122,7 @@ describe("candidateToDict", () => {
       lowMicros: 8_200_000,
       highMicros: 14_000_000,
     });
-    expect(dict.bulletText).toBe("running shoes (5k, HIGH, $8.20–$14.00)");
+    expect(dict.bullet_text).toBe("running shoes (5k, HIGH, $8.20–$14.00)");
     expect(dict.source).toBe("both");
   });
 });
@@ -140,7 +140,7 @@ describe("buildCandidateDicts (pure pipeline)", () => {
     const dicts = buildCandidateDicts(rows, ["running shoes"]);
     expect(dicts).toHaveLength(1);
     expect(dicts[0].source).toBe("both");
-    expect(dicts[0].bulletText).toBe("running shoes (5k, HIGH, $8.20–$14.00)");
+    expect(dicts[0].bullet_text).toBe("running shoes (5k, HIGH, $8.20–$14.00)");
   });
 
   it("keeps API-only ideas above the volume floor as source 'api'", () => {
@@ -208,11 +208,11 @@ describe("main", () => {
     const code = await main(["--customer-id", "1234567890", "--seed", "running shoes"], async () => rows);
     expect(code).toBe(0);
     const written = outSpy.mock.calls.map((c) => String(c[0])).join("");
-    const parsed = JSON.parse(written) as Array<{ phrase: string; source: string; bulletText: string }>;
+    const parsed = JSON.parse(written) as Array<{ phrase: string; source: string; bullet_text: string }>;
     expect(parsed[0]).toMatchObject({
       phrase: "running shoes",
       source: "both",
-      bulletText: "running shoes (5k, HIGH, $8.20–$14.00)",
+      bullet_text: "running shoes (5k, HIGH, $8.20–$14.00)",
     });
   });
 
