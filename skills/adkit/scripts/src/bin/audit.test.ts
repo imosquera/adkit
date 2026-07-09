@@ -142,16 +142,20 @@ describe("auditCampaign", () => {
 // responsive_search_ad. The boundary normalizers must absorb every such gap so the
 // audit produces findings instead of throwing a bare TypeError mid-run.
 describe("boundary normalizers absorb API-omitted nested fields", () => {
-  it("auditCampaign: a non-RSA ad (no responsive_search_ad) scores as 0H/0D, no throw", async () => {
-    const nonRsaAd = {
+  // Non-RSA ads are excluded at the query boundary (auditAdGroupAdQuery constrains
+  // ad_group_ad.ad.type), so scoring never fabricates empty RSA assets for them. This
+  // asserts the normalizer's remaining job: a genuine RSA whose headlines/descriptions
+  // the API omitted still parses to 0H/0D and is flagged as under-filled, not crashed.
+  it("auditCampaign: an RSA with omitted asset lists scores as 0H/0D, no throw", async () => {
+    const rsaMissingAssets = {
       ad_group: { name: "Commercial" },
       ad_group_ad: {
-        ad: { id: 10, final_urls: ["https://x"] }, // no responsive_search_ad
+        ad: { id: 10, final_urls: ["https://x"] }, // responsive_search_ad omitted by the API
         ad_strength: "PENDING",
         status: "ENABLED",
       },
     };
-    const client = fakeClient((query) => (query.includes("FROM ad_group_ad") ? [nonRsaAd] : []));
+    const client = fakeClient((query) => (query.includes("FROM ad_group_ad") ? [rsaMissingAssets] : []));
     const camp = { campaign: { id: 1, name: "x", status: "ENABLED" } };
     const result = await auditCampaign(client, "123", camp, [], {}, {
       competitors: [],
