@@ -26,6 +26,9 @@ import { parse as parseYaml } from "yaml";
 export interface AdsMutateOperation {
   entity: string;
   operation: "create" | "update" | "remove";
+  // Always a resource object here (create/update fields, or `{ resource_name }` for
+  // a remove). loadClient's mutate unwraps a remove to the bare resource-name string
+  // the SDK's proto `remove` field requires — see below.
   resource: Record<string, unknown>;
 }
 
@@ -68,6 +71,20 @@ interface AdsYaml {
   target_customer_id?: string | number;
 }
 
+/**
+ * Convert abstraction ops to the shape the SDK's `mutateResources` expects: a
+ * `remove` op's resource is unwrapped from `{ resource_name }` to the bare
+ * resource-name string (the Google Ads proto `remove` field is a string).
+ * create/update ops pass through unchanged. Pure — the SDK-boundary transform.
+ */
+export function toSdkMutateOperations(operations: AdsMutateOperation[]): Array<Record<string, unknown>> {
+  return operations.map((op) =>
+    op.operation === "remove"
+      ? { entity: op.entity, operation: op.operation, resource: (op.resource as { resource_name?: string }).resource_name ?? "" }
+      : { entity: op.entity, operation: op.operation, resource: op.resource },
+  );
+}
+
 /** Path to the google-ads.yaml credentials file (env override wins). */
 export function credentialsPath(): string {
   return process.env["GOOGLE_ADS_CREDENTIALS"] || DEFAULT_CREDENTIALS_PATH;
@@ -82,7 +99,9 @@ export function customerIdFromYaml(): string | null {
   try {
     const data = readCredentials();
     // target_customer_id is the leaf operating account; login_customer_id is the MCC.
-    const cid = data.target_customer_id ?? data.login_customer_id;
+    // `||` (not `??`) so a falsy-but-present target (0/"") falls through, matching
+    // the Python `target or login`.
+    const cid = data.target_customer_id || data.login_customer_id;
     return cid ? String(cid) : null;
   } catch {
     return null;
@@ -124,7 +143,7 @@ export function loadClient(
     },
     async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
       const response = await customerFor(customerId).mutateResources(
-        operations as unknown as MutateOperation<Record<string, unknown>>[],
+        toSdkMutateOperations(operations) as unknown as MutateOperation<Record<string, unknown>>[],
       );
       const responses =
         (response as unknown as { mutate_operation_responses?: Array<Record<string, { resource_name?: string }>> })
