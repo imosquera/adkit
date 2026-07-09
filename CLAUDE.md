@@ -2,27 +2,14 @@
 
 These rules are binding for all work in this repo. They override default behavior.
 
-## 1. Always use worktrees
-
-Never do feature work directly on a checkout of `main`. For every task that changes
-code, create a git worktree and work there:
-
-```bash
-git worktree add -b <branch> /Users/iam/Code/adkit.worktrees/<name> HEAD
-```
-
-- All worktrees live under the sibling directory **`/Users/iam/Code/adkit.worktrees/`** (i.e. `adkit.worktrees/<name>`), never inside the repo tree and never as ad-hoc siblings elsewhere.
-- One worktree per task/branch. Remove it with `git worktree remove` once the branch is merged.
-- Open a PR from the worktree branch; don't push straight to `main`.
-
-## 2. Always write in a functional style
+## 1. Always write in a functional style
 
 - Pure functions: same input → same output, no side effects in the core logic. Isolate I/O (network, filesystem, stdout, SDK mutations) to the edges.
 - Immutable data: never mutate a parameter or build a result by pushing into an accumulator in a loop. Use `map` / `filter` / `reduce` / `flatMap` / spread and return new values.
 - No classes for logic. The only acceptable classes are error types (exceptions) and unavoidable third-party SDK objects.
 - Prefer expressions over statements; prefer composition over control-flow ceremony.
 
-## 3. Parse, don't validate
+## 2. Parse, don't validate
 
 Follow type-driven design ("Parse, don't validate", Alexis King). Push correctness
 into types so illegal states are unrepresentable and checks happen exactly once.
