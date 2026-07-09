@@ -14,13 +14,14 @@
  */
 
 import { readFileSync } from "node:fs";
+import { isMainModule } from "../cli/entry.js";
 import { GoogleAdsApi, type services } from "google-ads-api";
 import { parse as parseYaml } from "yaml";
 import { credentialsPath } from "../lib/auth.js";
 import { resolveCustomer } from "../cli/args.js";
 import { sdkErrorMessage } from "../cli/output.js";
 import { formatBulletText } from "../lib/markdown.js";
-import { type ApiIdea, type Candidate, unionCandidates } from "../lib/merge.js";
+import { MAX_KEYWORD_CHARS, type ApiIdea, type Candidate, unionCandidates } from "../lib/merge.js";
 import { competitionLabel } from "../lib/metrics.js";
 
 /** United States. (Python `DEFAULT_GEO`.) */
@@ -192,6 +193,25 @@ export function buildCandidateDicts(rows: readonly IdeaRow[], seeds: readonly st
 }
 
 /**
+ * The seeds as UNDECORATED candidate dicts (source "llm", no Keyword Planner
+ * metrics). Pure. Used only as a fallback when the API union is empty: unionCandidates
+ * deliberately drops bare seeds, so without this /adkit gtm would receive nothing.
+ * Blank/oversized seeds are dropped and case-insensitive duplicates collapsed.
+ */
+export function seedOnlyDicts(seeds: readonly string[]): CandidateDict[] {
+  const clean = seeds
+    .map((s) => s.trim())
+    .filter((s) => s !== "" && s.length <= MAX_KEYWORD_CHARS);
+  // First-seen wins: only record a key the first time (preserves original casing).
+  const deduped = [
+    ...clean
+      .reduce((m, s) => (m.has(s.toLowerCase()) ? m : m.set(s.toLowerCase(), s)), new Map<string, string>())
+      .values(),
+  ];
+  return deduped.map((phrase) => candidateToDict({ phrase, source: "llm" }));
+}
+
+/**
  * The one SDK-touching function: build a Customer from google-ads.yaml and call
  * `keywordPlanIdeas.generateKeywordIdeas`, returning the raw result rows.
  *
@@ -216,8 +236,18 @@ export async function generateIdeaRows(
   // The SDK method's param type is the concrete request class (with toJSON); the
   // plain `I…Request` object is accepted at runtime, so narrow to the expected type.
   type GenerateArg = Parameters<typeof customer.keywordPlanIdeas.generateKeywordIdeas>[0];
-  const response = await customer.keywordPlanIdeas.generateKeywordIdeas(request as GenerateArg);
-  return response.results ?? [];
+  const response = (await customer.keywordPlanIdeas.generateKeywordIdeas(
+    request as GenerateArg,
+  )) as unknown;
+  // google-ads-api v24 flattens the paginated results into a BARE ARRAY of rows —
+  // the typed `GenerateKeywordIdeaResponse` return is a lie (the SDK wrapper even
+  // carries an `@ts-expect-error Response is an array type`). Reading `.results` off
+  // that array yields undefined → every call looked like "zero ideas". Handle the
+  // array shape, and still fall back to `.results` for any object-shaped response.
+  if (Array.isArray(response)) {
+    return response as IdeaRow[];
+  }
+  return (response as { results?: IdeaRow[] } | null)?.results ?? [];
 }
 
 /**
@@ -253,15 +283,16 @@ export async function main(
     seeds = seeds.slice(0, MAX_SEEDS);
   }
 
+  const request = buildRequest({
+    customerId,
+    seeds,
+    pageUrl: args.pageUrl,
+    geo: args.geo,
+    language: args.language,
+  });
+
   let rows: IdeaRow[];
   try {
-    const request = buildRequest({
-      customerId,
-      seeds,
-      pageUrl: args.pageUrl,
-      geo: args.geo,
-      language: args.language,
-    });
     rows = await generate(request);
   } catch (exc) {
     process.stderr.write(`google-ads error: ${sdkErrorMessage(exc)}\n`);
@@ -273,15 +304,36 @@ export async function main(
   }
 
   const dicts = buildCandidateDicts(rows, seeds);
-  process.stdout.write(JSON.stringify(dicts, null, 2) + "\n");
-  if (rows.length === 0) {
-    process.stderr.write("API returned zero ideas; using LLM seeds only\n");
+  if (dicts.length > 0) {
+    process.stdout.write(JSON.stringify(dicts, null, 2) + "\n");
+    return 0;
   }
-  return 0;
+
+  // The Keyword Planner union is empty (zero rows, or every idea filtered below
+  // MIN_VOLUME). NEVER emit a silent `[]` + exit 0 — that leaves /adkit gtm with
+  // nothing while looking like success. Echo the request so a genuine zero is
+  // diagnosable, then fall back to the seeds undecorated so gtm can still tier them.
+  process.stderr.write(
+    `Keyword Planner returned ${rows.length} row(s) and no usable candidates; ` +
+      `request: ${JSON.stringify(request)}\n`,
+  );
+  const seedDicts = seedOnlyDicts(seeds);
+  if (seedDicts.length > 0) {
+    process.stderr.write(
+      `emitting ${seedDicts.length} seed(s) undecorated (no metrics) so /adkit gtm can tier them\n`,
+    );
+    process.stdout.write(JSON.stringify(seedDicts, null, 2) + "\n");
+    return 0;
+  }
+  // No rows and no seeds to fall back on (e.g. a --page-url run): fail loudly
+  // rather than pretend success with an empty list.
+  process.stderr.write("no seeds to fall back on — nothing to emit\n");
+  process.stdout.write(JSON.stringify([], null, 2) + "\n");
+  return 1;
 }
 
 // Run as a CLI entrypoint (mirrors Python's `if __name__ == "__main__"`).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((code) => {
       process.exitCode = code;

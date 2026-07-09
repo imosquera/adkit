@@ -10,6 +10,7 @@ import {
   MAX_SEEDS,
   parseArgs,
   rowToApiIdea,
+  seedOnlyDicts,
 } from "./keyword-ideas.js";
 
 /** Build a canned keyword-idea result row (no network). */
@@ -171,6 +172,27 @@ describe("buildCandidateDicts (pure pipeline)", () => {
   });
 });
 
+describe("seedOnlyDicts (undecorated fallback)", () => {
+  it("emits each seed as a metric-less llm candidate whose bullet is the bare phrase", () => {
+    const dicts = seedOnlyDicts(["salon booking app", "appointment reminder"]);
+    expect(dicts).toHaveLength(2);
+    expect(dicts[0]).toMatchObject({
+      phrase: "salon booking app",
+      source: "llm",
+      volume: null,
+      competition: null,
+      bullet_text: "salon booking app",
+    });
+  });
+
+  it("drops blank seeds and collapses case-insensitive duplicates", () => {
+    expect(seedOnlyDicts(["Shoes", "shoes", "  ", "boots"]).map((d) => d.phrase)).toEqual([
+      "Shoes",
+      "boots",
+    ]);
+  });
+});
+
 describe("main", () => {
   const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
   const outSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
@@ -221,9 +243,29 @@ describe("main", () => {
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("no URL found in idea"));
   });
 
-  it("narrates the zero-ideas fallback when the API returns nothing", async () => {
-    await main(["--customer-id", "1234567890", "--seed", "shoes"], async () => []);
-    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("API returned zero ideas"));
+  it("falls back to undecorated seeds (never a silent []) when the API returns nothing", async () => {
+    const code = await main(
+      ["--customer-id", "1234567890", "--seed", "salon booking app", "--seed", "appointment reminder"],
+      async () => [],
+    );
+    expect(code).toBe(0);
+    // stdout is the seeds undecorated — not an empty list — so /adkit gtm has keywords
+    const written = outSpy.mock.calls.map((c) => String(c[0])).join("");
+    const parsed = JSON.parse(written) as Array<{ phrase: string; source: string; volume: number | null }>;
+    expect(parsed.map((d) => d.phrase)).toEqual(["salon booking app", "appointment reminder"]);
+    expect(parsed.every((d) => d.source === "llm" && d.volume === null)).toBe(true);
+    // and the request is echoed to stderr so a genuine zero is diagnosable
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("request:"));
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("undecorated"));
+  });
+
+  it("returns 1 (not a silent 0) when there are zero rows AND no seeds to fall back on", async () => {
+    const code = await main(
+      ["--customer-id", "1234567890", "--page-url", "https://example.com"],
+      async () => [],
+    );
+    expect(code).toBe(1);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("no seeds to fall back on"));
   });
 
   it("truncates to MAX_SEEDS and warns", async () => {

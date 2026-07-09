@@ -16,6 +16,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { isMainModule } from "../cli/entry.js";
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { credentialsPath } from "../lib/auth.js";
@@ -134,6 +135,6 @@ export function main(): number {
 }
 
 // Run as a CLI entrypoint (mirrors Python's `if __name__ == "__main__"`).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   process.exitCode = main();
 }

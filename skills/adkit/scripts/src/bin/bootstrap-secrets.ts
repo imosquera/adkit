@@ -13,6 +13,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { isMainModule } from "../cli/entry.js";
 import { createInterface } from "node:readline";
 import { emitJson, errorEnvelope } from "../cli/output.js";
 
@@ -138,7 +139,7 @@ export async function main(): Promise<number> {
 }
 
 // Run as a CLI entrypoint (mirrors Python's `if __name__ == "__main__"`).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((code) => {
       process.exitCode = code;

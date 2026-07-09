@@ -13,6 +13,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { isMainModule } from "../cli/entry.js";
 import { credentialsPath, loadClient } from "../lib/auth.js";
 import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
 import { CUSTOMER_ID_PATTERN } from "../lib/schema.js";
@@ -155,7 +156,7 @@ function isModuleNotFound(exc: unknown): boolean {
 }
 
 // Run as a CLI entrypoint (mirrors Python's `if __name__ == "__main__"`).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((code) => {
       process.exitCode = code;
