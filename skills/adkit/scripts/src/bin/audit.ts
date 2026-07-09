@@ -275,8 +275,8 @@ function groupBy<K extends string | number, V>(pairs: Iterable<[K, V]>): Record<
 }
 
 /** Pin detection: an asset's pinned_field present and not the neutral sentinels. */
-function isPinned(field: string | undefined): boolean {
-  return field !== undefined && field !== "UNSPECIFIED" && field !== "UNKNOWN";
+function isPinned(field: string | null | undefined): boolean {
+  return field !== undefined && field !== null && field !== "UNSPECIFIED" && field !== "UNKNOWN";
 }
 
 // ---------------------------------------------------------------------------
