@@ -56,19 +56,18 @@ def _extract_keywords(md: str, tiers: tuple[str, ...]) -> list[str]:
     if not kw:
         return []
     section = block[kw.end():]
-    out: list[str] = []
-    seen: set[str] = set()
-    for heading in tiers:
+
+    def _tier_keywords(heading: str) -> list[str]:
         m = re.search(rf"^####\s+{re.escape(heading)}\b.*$", section, flags=re.IGNORECASE | re.MULTILINE)
         if not m:
-            continue
+            return []
         sub = _slice_until_next(section[m.end():], r"^####\s+")
-        for bullet in re.findall(r"^\s*[-*]\s+(.+?)\s*$", sub, flags=re.MULTILINE):
-            cleaned = _clean_keyword(bullet)
-            if cleaned and cleaned not in seen:
-                seen.add(cleaned)
-                out.append(cleaned)
-    return out
+        return [c for bullet in re.findall(r"^\s*[-*]\s+(.+?)\s*$", sub, flags=re.MULTILINE)
+                for c in [_clean_keyword(bullet)] if c]
+
+    # dict.fromkeys dedupes while keeping first-seen order — across all tiers,
+    # matching the original sequential seen-set threaded tier to tier.
+    return list(dict.fromkeys(kw for tier in tiers for kw in _tier_keywords(tier)))
 
 
 def _read_theme_groups(md: str, max_per_theme: int) -> list[tuple[str, list[str]]]:
@@ -100,11 +99,6 @@ def _extract_negatives(md: str) -> list[dict]:
     if not m:
         return []
     sub = _slice_until_next(section[m.end():], r"^####\s+")
-    out: list[dict] = []
-    seen: set[str] = set()
-    for bullet in re.findall(r"^\s*[-*]\s+(.+?)\s*$", sub, flags=re.MULTILINE):
-        phrase = _clean_keyword(re.split(r"\s+—\s+", bullet)[0])
-        if phrase and phrase not in seen:
-            seen.add(phrase)
-            out.append({"text": phrase, "matchType": "PHRASE"})
-    return out
+    phrases = [p for bullet in re.findall(r"^\s*[-*]\s+(.+?)\s*$", sub, flags=re.MULTILINE)
+              for p in [_clean_keyword(re.split(r"\s+—\s+", bullet)[0])] if p]
+    return [{"text": p, "matchType": "PHRASE"} for p in dict.fromkeys(phrases)]

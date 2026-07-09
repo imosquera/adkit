@@ -34,46 +34,36 @@ def _path_to_excellent(ag_name, keywords, hs, ds, dup_h, echo, banned_hit, pins,
     """Deterministic, ordered to-do list that closes the gap to EXCELLENT ad strength.
     Combines the four levers Google scores (quantity, uniqueness, keyword inclusion, no
     pinning) with Google's own literal action_items (the asynchronous verdict)."""
-    steps: list[str] = []
-    topics: set[str] = set()  # what our own steps already cover, to skip echoing Google hints
-    if len(hs) < MIN_HEADLINES:
-        topics.add("headline")
-        steps.append(f"Add {MIN_HEADLINES - len(hs)} more headlines (have {len(hs)}, target {MIN_HEADLINES}) — "
-                     f"distinct angles: value, feature, social proof, offer, audience, objection.")
-    if len(ds) < MIN_DESCRIPTIONS:
-        topics.add("description")
-        steps.append(f"Add {MIN_DESCRIPTIONS - len(ds)} more descriptions (have {len(ds)}, target {MIN_DESCRIPTIONS}), "
-                     f"each a different angle ending in a CTA.")
-    if dup_h:
-        topics.add("headline")
-        steps.append(f"Replace duplicate headlines with new angles: {dup_h}.")
-    if echo:
-        topics.add("description")
-        steps.append(f"Rewrite descriptions that just echo a headline: {echo}.")
+    headlines_under = len(hs) < MIN_HEADLINES
+    descriptions_under = len(ds) < MIN_DESCRIPTIONS
     # keyword inclusion: theme words present in >=3 headlines
     kw_words = _concept_words(ag_name, keywords)
-    if kw_words:
-        hits = sum(1 for h in hs if any(w in h.lower() for w in kw_words))
-        if hits < 3:
-            topics.update(("keyword", "headline"))
-            label = keywords[0] if keywords else ag_name
-            steps.append(f"Put the ad group's keyword (\"{label}\") in >=3 headlines (currently ~{hits}). "
-                         f"Google explicitly rewards keyword inclusion.")
-    if banned_hit:
-        steps.append(f"Remove off-product / contaminated copy: {banned_hit}.")
-    if pins:
-        steps.append(f"Unpin all assets (pinning blocks combination testing): {pins}.")
-    # Fold in Google's own asynchronous hints, skipping any that just restate a step
-    # we already emitted (e.g. "Try including more keywords in your headlines").
-    for it in action_items:
-        low = it.lower()
-        if any(t in low for t in topics):
-            continue
-        steps.append(f"Google says: {it}")
-    if not steps and strength != "EXCELLENT":
-        steps.append("Assets meet the quantitative bar; add more distinct headline angles and "
-                     "stronger keyword coverage to push the diversity score to EXCELLENT.")
-    return steps
+    hits = sum(1 for h in hs if any(w in h.lower() for w in kw_words)) if kw_words else 0
+    keyword_gap = bool(kw_words) and hits < 3
+
+    steps = [
+        *([f"Add {MIN_HEADLINES - len(hs)} more headlines (have {len(hs)}, target {MIN_HEADLINES}) — "
+          f"distinct angles: value, feature, social proof, offer, audience, objection."] if headlines_under else []),
+        *([f"Add {MIN_DESCRIPTIONS - len(ds)} more descriptions (have {len(ds)}, target {MIN_DESCRIPTIONS}), "
+          f"each a different angle ending in a CTA."] if descriptions_under else []),
+        *([f"Replace duplicate headlines with new angles: {dup_h}."] if dup_h else []),
+        *([f"Rewrite descriptions that just echo a headline: {echo}."] if echo else []),
+        *([f"Put the ad group's keyword (\"{keywords[0] if keywords else ag_name}\") in >=3 headlines "
+          f"(currently ~{hits}). Google explicitly rewards keyword inclusion."] if keyword_gap else []),
+        *([f"Remove off-product / contaminated copy: {banned_hit}."] if banned_hit else []),
+        *([f"Unpin all assets (pinning blocks combination testing): {pins}."] if pins else []),
+    ]
+    # what our own steps already cover, to skip echoing a Google hint on the same topic
+    topics = {
+        *(["headline"] if headlines_under or dup_h else []),
+        *(["description"] if descriptions_under or echo else []),
+        *(["keyword", "headline"] if keyword_gap else []),
+    }
+    google_hints = [f"Google says: {it}" for it in action_items if not any(t in it.lower() for t in topics)]
+    fallback = (["Assets meet the quantitative bar; add more distinct headline angles and "
+                "stronger keyword coverage to push the diversity score to EXCELLENT."]
+                if not steps and not google_hints and strength != "EXCELLENT" else [])
+    return steps + google_hints + fallback
 
 
 def _differentiation_gaps(headlines: list[str], descriptions: list[str]) -> dict | None:
@@ -117,14 +107,11 @@ def _cannibalization(serving: list[dict], kw_by_campaign: dict[int, dict[str, li
           for c in serving}
     impr = {c["campaignId"]: c["impressions"] for c in serving}
     name = {c["campaignId"]: c["campaignName"] for c in serving}
-    pairs = []
     ids = list(kw)
-    for i in range(len(ids)):
-        for j in range(i + 1, len(ids)):
-            a, b = ids[i], ids[j]
-            shared = kw[a] & kw[b]
-            if shared:
-                starved = name[a] if impr[a] < impr[b] else name[b]
-                pairs.append({"a": name[a], "b": name[b], "shared": sorted(shared),
-                              "starvedLikely": starved})
-    return pairs
+    candidates = ((a, b, kw[a] & kw[b]) for i, a in enumerate(ids) for b in ids[i + 1:])
+    return [
+        {"a": name[a], "b": name[b], "shared": sorted(shared),
+         "starvedLikely": name[a] if impr[a] < impr[b] else name[b]}
+        for a, b, shared in candidates
+        if shared
+    ]

@@ -282,15 +282,16 @@ def _target_devices(client: Any, customer_id: str, campaign_rn: str, devices: li
     excluded = [d for d in _ALL_DEVICES if d not in devices]
     if not excluded:
         return
-    ops = []
-    for d in excluded:
+
+    def _op(d: str) -> Any:
         op = client.get_type("CampaignCriterionOperation")
         op.create.campaign = campaign_rn
         op.create.device.type_ = getattr(client.enums.DeviceEnum, _DEVICE_ENUM[d])
         op.create.bid_modifier = 0.0  # -100% = device excluded
-        ops.append(op)
+        return op
+
     service = client.get_service("CampaignCriterionService")
-    service.mutate_campaign_criteria(customer_id=customer_id, operations=ops)
+    service.mutate_campaign_criteria(customer_id=customer_id, operations=[_op(d) for d in excluded])
 
 
 def build_negative_keyword_ops(client: Any, campaign_rn: str, negatives: list) -> list:
@@ -301,16 +302,17 @@ def build_negative_keyword_ops(client: Any, campaign_rn: str, negatives: list) -
     /adkit create publish path and the /adkit audit apply-fixes path so both add
     negatives the same way. Returns the ops; the caller mutates."""
     match_enum = client.enums.KeywordMatchTypeEnum
-    ops = []
-    for kw in negatives:
+
+    def _op(kw: Any) -> Any:
         op = client.get_type("CampaignCriterionOperation")
         crit = op.create
         crit.campaign = campaign_rn
         crit.negative = True
         crit.keyword.text = kw.text
         crit.keyword.match_type = getattr(match_enum, kw.matchType)
-        ops.append(op)
-    return ops
+        return op
+
+    return [_op(kw) for kw in negatives]
 
 
 def build_keyword_ops(client: Any, ad_group_rn: str, adds: list, remove_resources: list,
@@ -324,25 +326,32 @@ def build_keyword_ops(client: Any, ad_group_rn: str, adds: list, remove_resource
     'change match type' arrives here as a REMOVE + an ADD, never an update."""
     match_enum = client.enums.KeywordMatchTypeEnum
     paused = client.enums.AdGroupCriterionStatusEnum.PAUSED
-    ops = []
-    for kw in adds:
+
+    def _add_op(kw: Any) -> Any:
         op = client.get_type("AdGroupCriterionOperation")
         crit = op.create
         crit.ad_group = ad_group_rn
         crit.keyword.text = kw.text
         crit.keyword.match_type = getattr(match_enum, kw.matchType)
-        ops.append(op)
-    for rn in remove_resources:
+        return op
+
+    def _remove_op(rn: str) -> Any:
         op = client.get_type("AdGroupCriterionOperation")
         op.remove = rn
-        ops.append(op)
-    for rn in pause_resources:
+        return op
+
+    def _pause_op(rn: str) -> Any:
         op = client.get_type("AdGroupCriterionOperation")
         op.update.resource_name = rn
         op.update.status = paused
         op.update_mask.paths.append("status")
-        ops.append(op)
-    return ops
+        return op
+
+    return (
+        [_add_op(kw) for kw in adds]
+        + [_remove_op(rn) for rn in remove_resources]
+        + [_pause_op(rn) for rn in pause_resources]
+    )
 
 
 def _create_negative_keywords(client: Any, customer_id: str, campaign_rn: str, negatives: list) -> list[str]:
@@ -358,14 +367,14 @@ def _create_negative_keywords(client: Any, customer_id: str, campaign_rn: str, n
 
 
 def _target_us_canada(client: Any, customer_id: str, campaign_rn: str) -> None:
-    ops = []
-    for geo in _GEO_TARGETS:
+    def _op(geo: str) -> Any:
         op = client.get_type("CampaignCriterionOperation")
         op.create.campaign = campaign_rn
         op.create.location.geo_target_constant = geo
-        ops.append(op)
+        return op
+
     service = client.get_service("CampaignCriterionService")
-    service.mutate_campaign_criteria(customer_id=customer_id, operations=ops)
+    service.mutate_campaign_criteria(customer_id=customer_id, operations=[_op(geo) for geo in _GEO_TARGETS])
 
 
 def _find_existing_ad_group(
@@ -407,12 +416,12 @@ def _create_ad_group(client: Any, customer_id: str, ad_group: AdGroup, campaign_
 def _make_text_assets(client: Any, items: list[dict[str, Any]]) -> list[Any]:
     # No pinned_field is ever set: pinning is disabled skill-wide (schema locks
     # pin to "NONE") so Google can test every headline/description combination.
-    assets = []
-    for item in items:
+    def _asset(item: dict[str, Any]) -> Any:
         asset = client.get_type("AdTextAsset")
         asset.text = item["text"]
-        assets.append(asset)
-    return assets
+        return asset
+
+    return [_asset(item) for item in items]
 
 
 def _create_responsive_search_ad(
@@ -439,18 +448,20 @@ def _create_responsive_search_ad(
 
 
 def _create_keywords(client: Any, customer_id: str, ad_group: AdGroup, ad_group_rn: str) -> list[str]:
-    service = client.get_service("AdGroupCriterionService")
     match_enum = client.enums.KeywordMatchTypeEnum
-    ops = []
-    for kw in ad_group.keywords:
+
+    def _op(kw: Any) -> Any:
         op = client.get_type("AdGroupCriterionOperation")
         crit = op.create
         crit.ad_group = ad_group_rn
         crit.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
         crit.keyword.text = kw.text
         crit.keyword.match_type = getattr(match_enum, kw.matchType)
-        ops.append(op)
-    response = service.mutate_ad_group_criteria(customer_id=customer_id, operations=ops)
+        return op
+
+    service = client.get_service("AdGroupCriterionService")
+    response = service.mutate_ad_group_criteria(
+        customer_id=customer_id, operations=[_op(kw) for kw in ad_group.keywords])
     return [r.resource_name for r in response.results]
 
 
@@ -467,11 +478,11 @@ def _archive_campaigns_by_name(client: Any, customer_id: str, name: str) -> tupl
     resource_names = tuple(row.campaign.resource_name for row in rows)
     if not resource_names:
         return ()
-    campaign_service = client.get_service("CampaignService")
-    ops = []
-    for rn in resource_names:
+    def _remove_op(rn: str) -> Any:
         op = client.get_type("CampaignOperation")
         op.remove = rn
-        ops.append(op)
-    campaign_service.mutate_campaigns(customer_id=customer_id, operations=ops)
+        return op
+
+    campaign_service = client.get_service("CampaignService")
+    campaign_service.mutate_campaigns(customer_id=customer_id, operations=[_remove_op(rn) for rn in resource_names])
     return resource_names
