@@ -39,7 +39,9 @@ elif [ -n "$( find "$SCRIPT_DIR/src" -type f -newer "$SCRIPT_DIR/dist/bin/${mod}
   needs_build=1
 fi
 if [ "$needs_build" -eq 1 ]; then
-  ( cd "$SCRIPT_DIR" && npm run --silent build )
+  # stdout is reserved for the JSON envelope; tsup's "CLI Building entry…" banner
+  # must go to stderr or it corrupts the envelope on any rebuild.
+  ( cd "$SCRIPT_DIR" && npm run --silent build 1>&2 )
 fi
 
 # Run from the repo root so relative paths (ideas/, ads/output/reports) resolve,

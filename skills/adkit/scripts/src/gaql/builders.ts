@@ -190,6 +190,9 @@ export function auditAdGroupAdQuery(campId: string): string {
     "ad_group_ad.action_items, ad_group_ad.ad.responsive_search_ad.headlines, " +
     "ad_group_ad.ad.responsive_search_ad.descriptions, ad_group_ad.ad.final_urls " +
     `FROM ad_group_ad WHERE campaign.id = ${gaqlId(campId)} AND ad_group_ad.status != 'REMOVED' ` +
+    // Constrain to RSAs so a non-RSA ad (call-only, display, legacy ETA) is never fetched,
+    // normalized into an empty RSA, and mis-scored as headlines_under/descriptions_under.
+    "AND ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD' " +
     "ORDER BY ad_group.name"
   );
 }

@@ -160,6 +160,170 @@ interface PolicyTopicRow {
 }
 
 // ---------------------------------------------------------------------------
+// Raw row shapes + boundary normalizers (parse, don't validate).
+//
+// The `*Row` types above are the PROOFS downstream scoring relies on — every
+// nested message and metric present. But the google-ads-api `search` returns the
+// wire shape, where the API OMITS empty nested messages and zero-valued metric
+// fields entirely: a keyword with no spend has no `metrics`, a criterion with no
+// Quality Score yet has no `quality_info`, a non-RSA ad has no `responsive_search_ad`.
+// The `Raw*Row` types below are that honest, loose shape; each `normalize*` parses
+// one raw row into its strong `*Row` — zero-filling metrics, defaulting empty
+// messages — exactly once, at the fetch boundary. Downstream code then never
+// re-checks presence. Add a field to a `Raw*Row` and the compiler forces the
+// matching `normalize*` to account for it.
+// ---------------------------------------------------------------------------
+
+/** Coalesce an omitted (zero-valued) numeric metric field back to 0. */
+const num = (x: number | null | undefined): number => x ?? 0;
+
+interface RawAdGroupAdRow {
+  ad_group: { name: string };
+  ad_group_ad: {
+    ad: {
+      id: number;
+      final_urls?: string[];
+      responsive_search_ad?: { headlines?: TextAsset[]; descriptions?: TextAsset[] };
+    };
+    ad_strength: string;
+    status: string;
+    action_items?: string[];
+  };
+}
+
+function normalizeAdGroupAdRow(r: RawAdGroupAdRow): AdGroupAdRow {
+  const rsa = r.ad_group_ad.ad.responsive_search_ad;
+  return {
+    ...r,
+    ad_group_ad: {
+      ...r.ad_group_ad,
+      ad: {
+        ...r.ad_group_ad.ad,
+        responsive_search_ad: {
+          headlines: rsa?.headlines ?? [],
+          descriptions: rsa?.descriptions ?? [],
+        },
+      },
+    },
+  };
+}
+
+interface RawServingRow {
+  campaign: { id: number; name: string; bidding_strategy_type: string };
+  campaign_budget?: { amount_micros?: number };
+  metrics?: Partial<ServingRow["metrics"]>;
+}
+
+function normalizeServingRow(r: RawServingRow): ServingRow {
+  return {
+    campaign: r.campaign,
+    campaign_budget: { amount_micros: num(r.campaign_budget?.amount_micros) },
+    metrics: {
+      impressions: num(r.metrics?.impressions),
+      conversions: num(r.metrics?.conversions),
+      search_impression_share: num(r.metrics?.search_impression_share),
+      search_budget_lost_impression_share: num(r.metrics?.search_budget_lost_impression_share),
+      search_rank_lost_impression_share: num(r.metrics?.search_rank_lost_impression_share),
+    },
+  };
+}
+
+interface RawKeywordMetricsRow {
+  campaign: { id: number };
+  ad_group_criterion: { keyword: { text: string } };
+  metrics?: { average_cpc?: number };
+}
+
+function normalizeKeywordMetricsRow(r: RawKeywordMetricsRow): KeywordMetricsRow {
+  return { ...r, metrics: { average_cpc: num(r.metrics?.average_cpc) } };
+}
+
+interface RawSearchTermRow {
+  campaign: { id: number };
+  search_term_view: { search_term: string };
+  metrics?: Partial<SearchTermRow["metrics"]>;
+}
+
+function normalizeSearchTermRow(r: RawSearchTermRow): SearchTermRow {
+  return {
+    ...r,
+    metrics: {
+      clicks: num(r.metrics?.clicks),
+      conversions: num(r.metrics?.conversions),
+      cost_micros: num(r.metrics?.cost_micros),
+      impressions: num(r.metrics?.impressions),
+    },
+  };
+}
+
+interface RawQualityScoreRow {
+  campaign: { id: number };
+  ad_group_criterion: {
+    keyword: { text: string };
+    quality_info?: Partial<QualityScoreRow["ad_group_criterion"]["quality_info"]>;
+  };
+}
+
+function normalizeQualityScoreRow(r: RawQualityScoreRow): QualityScoreRow {
+  const qi = r.ad_group_criterion.quality_info;
+  return {
+    ...r,
+    ad_group_criterion: {
+      ...r.ad_group_criterion,
+      quality_info: {
+        quality_score: num(qi?.quality_score),
+        post_click_quality_score: qi?.post_click_quality_score ?? "",
+        creative_quality_score: qi?.creative_quality_score ?? "",
+        search_predicted_ctr: qi?.search_predicted_ctr ?? "",
+      },
+    },
+  };
+}
+
+interface RawLandingPageMobileRow {
+  campaign: { id: number };
+  landing_page_view: { unexpanded_final_url: string };
+  metrics?: Partial<LandingPageMobileRow["metrics"]>;
+}
+
+function normalizeLandingPageMobileRow(r: RawLandingPageMobileRow): LandingPageMobileRow {
+  const m = r.metrics;
+  return {
+    ...r,
+    metrics: {
+      // The percentage fields are meaningfully null ("no data"); mobileFindings
+      // already skips null, so preserve it rather than zero-filling.
+      mobile_friendly_clicks_percentage: m?.mobile_friendly_clicks_percentage ?? null,
+      valid_accelerated_mobile_pages_clicks_percentage:
+        m?.valid_accelerated_mobile_pages_clicks_percentage ?? null,
+      speed_score: num(m?.speed_score),
+      clicks: num(m?.clicks),
+      impressions: num(m?.impressions),
+      ctr: num(m?.ctr),
+    },
+  };
+}
+
+interface RawPolicyTopicRow {
+  ad_group_ad: {
+    ad: { final_urls?: string[] };
+    policy_summary?: { policy_topic_entries?: Array<{ topic: string }> };
+  };
+}
+
+function normalizePolicyTopicRow(r: RawPolicyTopicRow): PolicyTopicRow {
+  return {
+    ...r,
+    ad_group_ad: {
+      ...r.ad_group_ad,
+      policy_summary: {
+        policy_topic_entries: r.ad_group_ad.policy_summary?.policy_topic_entries ?? [],
+      },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Output-shape types (the scored dicts the Python builds).
 // ---------------------------------------------------------------------------
 
@@ -444,7 +608,9 @@ export async function auditCampaign(
   const cid = camp.campaign.id;
   const sitelinks = await extCount(client, customerId, String(cid), "SITELINK");
   const callouts = await extCount(client, customerId, String(cid), "CALLOUT");
-  const rows = await search<AdGroupAdRow>(client, customerId, auditAdGroupAdQuery(String(cid)));
+  const rows = (
+    await search<RawAdGroupAdRow>(client, customerId, auditAdGroupAdQuery(String(cid)))
+  ).map(normalizeAdGroupAdRow);
   const adsOut = rows.map((r) => scoreAd(r, banned, agKeywords, profile));
 
   // Headlines reused across many ad groups read as boilerplate — fold every
@@ -580,19 +746,19 @@ function scoreServing(r: ServingRow): ScoredServing {
   };
 }
 
-async function campaignServing(
+export async function campaignServing(
   client: AdsClient,
   customerId: string,
   days: number,
   onlyEnabled: boolean,
   campaignId: string | null,
 ): Promise<ScoredServing[]> {
-  const rows = await search<ServingRow>(
+  const rows = await search<RawServingRow>(
     client,
     customerId,
     auditServingQuery(days, onlyEnabled, campaignId),
   );
-  return rows.map(scoreServing);
+  return rows.map(normalizeServingRow).map(scoreServing);
 }
 
 // ---------------------------------------------------------------------------
@@ -603,7 +769,7 @@ async function campaignServing(
  * {campaignId: [{text, avg_cpc(dollars), avg_cpc_micros}]} for ENABLED keywords,
  * highest CPC first. avg_cpc is the currency value the cluster detector reads.
  */
-async function keywordCpc(
+export async function keywordCpc(
   client: AdsClient,
   customerId: string,
   days: number,
@@ -612,11 +778,13 @@ async function keywordCpc(
   if (campaignIds.length === 0) {
     return {};
   }
-  const rows = await search<KeywordMetricsRow>(
-    client,
-    customerId,
-    auditKeywordMetricsQuery(days, campaignIds),
-  );
+  const rows = (
+    await search<RawKeywordMetricsRow>(
+      client,
+      customerId,
+      auditKeywordMetricsQuery(days, campaignIds),
+    )
+  ).map(normalizeKeywordMetricsRow);
   const grouped = groupBy(
     rows.map((r): [number, KeywordCpc] => [
       r.campaign.id,
@@ -664,7 +832,7 @@ function clusterSplits(
  * {campaignId: [{search_term, clicks, conversions, cost(dollars), impressions}]}
  * over the window, for the negatives/promote derivation.
  */
-async function searchTerms(
+export async function searchTerms(
   client: AdsClient,
   customerId: string,
   days: number,
@@ -673,11 +841,9 @@ async function searchTerms(
   if (campaignIds.length === 0) {
     return {};
   }
-  const rows = await search<SearchTermRow>(
-    client,
-    customerId,
-    auditSearchTermsQuery(days, campaignIds),
-  );
+  const rows = (
+    await search<RawSearchTermRow>(client, customerId, auditSearchTermsQuery(days, campaignIds))
+  ).map(normalizeSearchTermRow);
   return groupBy(
     rows.map((r): [number, SearchTermAgg] => [
       r.campaign.id,
@@ -728,7 +894,7 @@ function negativesAndPromotions(
  * from the current-state Quality Score snapshot. Keywords with no score yet
  * (new/low-traffic) are omitted — quality_score returns 0 in that case.
  */
-async function qualityScore(
+export async function qualityScore(
   client: AdsClient,
   customerId: string,
   campaignIds: number[],
@@ -736,11 +902,9 @@ async function qualityScore(
   if (campaignIds.length === 0) {
     return {};
   }
-  const rows = await search<QualityScoreRow>(
-    client,
-    customerId,
-    auditQualityScoreQuery(campaignIds),
-  );
+  const rows = (
+    await search<RawQualityScoreRow>(client, customerId, auditQualityScoreQuery(campaignIds))
+  ).map(normalizeQualityScoreRow);
   const scored = rows
     .map((r): [number, QualityScoreEntry] | null => {
       const qi = r.ad_group_criterion.quality_info;
@@ -829,11 +993,13 @@ export async function landingPageMobile(
   if (campaignIds.length === 0) {
     return {};
   }
-  const rows = await search<LandingPageMobileRow>(
-    client,
-    customerId,
-    auditLandingPageMobileQuery(days, campaignIds),
-  );
+  const rows = (
+    await search<RawLandingPageMobileRow>(
+      client,
+      customerId,
+      auditLandingPageMobileQuery(days, campaignIds),
+    )
+  ).map(normalizeLandingPageMobileRow);
   const entries: Array<[number, LandingPageEntry]> = rows.flatMap((r) =>
     mobileFindings(r.metrics).map((finding): [number, LandingPageEntry] => [
       r.campaign.id,
@@ -861,11 +1027,9 @@ export async function landingPagePolicy(
 ): Promise<Record<number, LandingPageEntry[]>> {
   const perCampaign = await Promise.all(
     campaignIds.map(async (cid): Promise<Array<[number, LandingPageEntry]>> => {
-      const rows = await search<PolicyTopicRow>(
-        client,
-        customerId,
-        auditPolicyTopicsQuery(String(cid)),
-      );
+      const rows = (
+        await search<RawPolicyTopicRow>(client, customerId, auditPolicyTopicsQuery(String(cid)))
+      ).map(normalizePolicyTopicRow);
       return rows.flatMap((r) =>
         r.ad_group_ad.policy_summary.policy_topic_entries
           .filter((entry) => entry.topic in POLICY_TOPIC_FIXES)
