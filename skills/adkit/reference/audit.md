@@ -79,7 +79,7 @@ ads.sh audit --customer <10-digit> --banned "VAT,USD,EUR,Portugal"
 ads.sh audit --customer <10-digit> --campaign <id>
 ```
 
-- JSON report → **stdout** (per-campaign findings, per-ad `issues`, `keywords`, `actionItems`, `pathToExcellent`, plus each ad's full `headlines`/`descriptions` **text** so `/adkit update` can preserve good copy when authoring rewrites/appends; plus the serving-layer `serving`/`keywordCpc`/`clusterSplits`/`addNegatives`/`promoteKeywords`). Redirect it: `> /tmp/audit.json`.
+- JSON report → **stdout** (per-campaign findings, per-ad `issues`, `keywords`, `actionItems`, `pathToExcellent`, plus each ad's full `headlines`/`descriptions` **text** so `/adkit update` can preserve good copy when authoring rewrites/appends; plus the serving-layer `serving`/`keywordCpc`/`clusterSplits`/`addNegatives`/`promoteKeywords`/`qualityScore`/`landingPageHealth`). Redirect it: `> /tmp/audit.json`.
 - Human summary → **stderr** (the table with `-> path to EXCELLENT` lines).
 - Flags: `--all` (include paused/removed), `--no-serving` (skip the impression-share layer), `--days 7|14|30` (IS window), `--banned "a,b,c"` (phrases that signal copy leaked from another product — substring-based; product-specific, no universal default, always pass the phrases you expect from neighbouring products in the account).
 - Resolve a campaign name in `$ARGUMENTS` to an id by matching against the JSON's `campaignName` (or pass the id directly).
@@ -90,27 +90,7 @@ Surface, per campaign: the findings, the **path-to-EXCELLENT per ad**, the impre
 
 ## Landing page health
 
-Run as part of every audit (read-only, surfaces actionable issues alongside the ad-strength and IS findings).
-
-**URL / redirect integrity** — Google's landing page test catches issues that cause disapprovals or wasted spend:
-
-| Result | What it means | Fix |
-|---|---|---|
-| `Final URL mismatch` | Redirect chain doesn't start at final URL domain, or exits the domain mid-chain → causes "Destination mismatch" disapproval | Align tracking template + final URL to resolve to same domain |
-| `Page not found` (404) | Bad final URL, broken tracking template, or AdsBot blocked by `robots.txt` | Fix URL or unblock `Googlebot-Ads` in robots.txt |
-| `Landing page has URL mismatch` | Landing page domain ≠ final URL domain | Correct the final URL |
-| `Unreachable` | Timeout — retry; if persistent, flag as a crawlability blocker | Check server availability |
-| `Landing page has additional parameters` | Extra UTM/params on resolved URL vs final URL (usually benign) | Confirm tracking template is stripping correctly |
-
-Caveats the test does **not** cover: policy violations, JS-based redirects, parallel tracking errors, standard Shopping campaigns.
-
-**Mobile experience** — from the Landing pages report (`Campaigns → Insights & reports → Landing pages`):
-
-- **Mobile-friendly click rate < 100%** → landing page fails Google's Mobile-Friendly test on some clicks. Fix: remove viewport-blocking elements, ensure `<meta name="viewport">` is set, compress images.
-- **Valid AMP click rate < 100%** → AMP markup present but invalid on some clicks. Fix: validate at AMP Validator.
-- A 1-second mobile delay can cut conversions by up to 20% (Google retail benchmark) — flag any page with slow Time-to-Interactive alongside the IS findings.
-
-**Quality Score & landing page experience** — the audit fetches the current Quality Score snapshot per keyword via `keyword_view` (fields: `quality_info.quality_score` 1–10, `quality_info.post_click_quality_score` landing page exp, `quality_info.creative_quality_score` ad relevance, `quality_info.search_predicted_ctr` expected CTR). Emitted as `qualityScore` in the JSON. Keywords with `landingPageExp = BELOW_AVERAGE` are surfaced in the stderr table alongside the `rank_constrained` IS finding — the fix is page relevance and speed, not a bid raise. Keywords with no impressions yet return score 0 and are omitted.
+`ads.sh audit`'s JSON already carries `landingPageHealth` (URL/redirect policy findings + windowed mobile/AMP/speed findings) and `qualityScore` (per-keyword CTR/relevance/landing-page-experience). Per SKILL.md's "use subagents aggressively" rule, **spawn a subagent** to do this analysis in parallel with the rest of the report: hand it [`reference/audit-landing-page.md`](audit-landing-page.md) plus the run's `landingPageHealth` and `qualityScore` slices, and fold its output into the final report as the landing-page-health section. See that file for the full detection table, the Quality-Score-driven prioritization rules, and the write-up format.
 
 ## Notes
 
