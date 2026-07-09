@@ -57,10 +57,11 @@ def _format_google_ads_error(exc: Exception) -> str:
         from google.ads.googleads.errors import GoogleAdsException  # type: ignore[import-untyped]
 
         if isinstance(exc, GoogleAdsException):
-            errs = []
-            for err in exc.failure.errors:
-                path = ".".join(part.field_name or "" for part in err.location.field_path_elements)
-                errs.append(f"{err.error_code}: {err.message} (at {path})")
+            errs = [
+                f"{err.error_code}: {err.message} "
+                f"(at {'.'.join(part.field_name or '' for part in err.location.field_path_elements)})"
+                for err in exc.failure.errors
+            ]
             return "; ".join(errs) if errs else str(exc)
     except Exception:
         pass

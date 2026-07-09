@@ -17,6 +17,7 @@ fetch the rows and render the results.
 
 from __future__ import annotations
 
+from functools import reduce
 from typing import Any, Iterable, TypedDict
 
 
@@ -33,24 +34,27 @@ def _norm(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def _fold_term(agg: dict[str, dict[str, Any]], row: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Pure accumulator step: agg + one row -> a new agg with that row's metrics
+    summed into its (normalized) term, first-seen original-case text preserved."""
+    raw = str(row.get("search_term", "")).strip()
+    key = _norm(raw)
+    if not key:
+        return agg
+    prev = agg.get(key, {"text": raw, "clicks": 0, "conversions": 0.0, "cost": 0.0, "impressions": 0})
+    return {**agg, key: {
+        "text": prev["text"],
+        "clicks": prev["clicks"] + int(row.get("clicks", 0) or 0),
+        "conversions": prev["conversions"] + float(row.get("conversions", 0) or 0.0),
+        "cost": prev["cost"] + float(row.get("cost", 0) or 0.0),
+        "impressions": prev["impressions"] + int(row.get("impressions", 0) or 0),
+    }}
+
+
 def _aggregate(search_terms: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Sum metrics for each distinct search term across all ad groups it appears in.
     Keyed by the normalized term; carries the first-seen original-case text."""
-    agg: dict[str, dict[str, Any]] = {}
-    for row in search_terms:
-        raw = str(row.get("search_term", "")).strip()
-        key = _norm(raw)
-        if not key:
-            continue
-        a = agg.setdefault(
-            key,
-            {"text": raw, "clicks": 0, "conversions": 0.0, "cost": 0.0, "impressions": 0},
-        )
-        a["clicks"] += int(row.get("clicks", 0) or 0)
-        a["conversions"] += float(row.get("conversions", 0) or 0.0)
-        a["cost"] += float(row.get("cost", 0) or 0.0)
-        a["impressions"] += int(row.get("impressions", 0) or 0)
-    return agg
+    return reduce(_fold_term, search_terms, {})
 
 
 def keywords_to_promote(
