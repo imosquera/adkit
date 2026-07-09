@@ -12,9 +12,13 @@ import type { Keyword } from "../lib/schema.js";
 
 // STAG = Single Theme Ad Group. The scaffold makes one ad group per intent tier
 // (Informational/Navigational/Commercial/Transactional) and packs up to this many
-// keywords into each. 20 is Google's recommended STAG ceiling. `--top-n` overrides.
-export const DEFAULT_TOP_N = 20;
-export const MAX_KEYWORDS_PER_THEME = 20;
+// keywords into each. 25/tier across the 4 tiers lands a fresh campaign near the
+// ~100-keyword launch target (the gtm generation target, well above the audit's
+// 25-keyword floor); with AI Max + Smart Bidding on, more keywords per theme means
+// more data to consolidate, not the micro-SKAG anti-pattern. `--top-n` overrides
+// (up to MAX_KEYWORDS_PER_THEME, leaving headroom above the default).
+export const DEFAULT_TOP_N = 25;
+export const MAX_KEYWORDS_PER_THEME = 30;
 
 // STAG themes ARE the intent tiers. The model does the grouping in ads:gtm
 // (each keyword is classified into exactly one tier — that classification IS the

@@ -4,7 +4,15 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildSkeleton, customerIdFor, ExitError, parseTopN, readBrief } from "./create.js";
+import {
+  buildSkeleton,
+  customerIdFor,
+  ExitError,
+  keywordCountWarning,
+  parseTopN,
+  readBrief,
+  TARGET_KEYWORDS,
+} from "./create.js";
 import { extractNegatives, readThemeGroups, DEFAULT_TOP_N, MAX_KEYWORDS_PER_THEME } from "../ideas/parse.js";
 import type { Brief } from "../lib/schema.js";
 
@@ -76,6 +84,27 @@ describe("parseTopN", () => {
   it("rejects out-of-range values", () => {
     expect(() => parseTopN(["--top-n", String(MAX_KEYWORDS_PER_THEME + 1)])).toThrow(ExitError);
     expect(() => parseTopN(["--top-n", "0"])).toThrow(ExitError);
+  });
+});
+
+describe("keywordCountWarning", () => {
+  it("is silent inside the ±10% band around the target (90-110)", () => {
+    expect(keywordCountWarning(TARGET_KEYWORDS)).toBeNull();
+    expect(keywordCountWarning(90)).toBeNull();
+    expect(keywordCountWarning(110)).toBeNull();
+  });
+
+  it("warns to add more when below the band", () => {
+    const w = keywordCountWarning(40);
+    expect(w).toContain("40 keywords total");
+    expect(w).toContain(`~${TARGET_KEYWORDS}`);
+    expect(w).toContain("add more");
+  });
+
+  it("warns to trim when above the band", () => {
+    const w = keywordCountWarning(140);
+    expect(w).toContain("140 keywords total");
+    expect(w).toContain("trim");
   });
 });
 

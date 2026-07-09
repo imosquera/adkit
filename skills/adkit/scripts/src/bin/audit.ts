@@ -31,6 +31,7 @@ import {
   MIN_CALLOUTS,
   MIN_DESCRIPTIONS,
   MIN_HEADLINES,
+  MIN_KEYWORDS,
   MIN_SITELINKS,
   SHARED_HEADLINE_GROUPS,
   cannibalization,
@@ -355,6 +356,7 @@ interface CampaignReport {
   campaignId: number;
   campaignName: string;
   status: string;
+  keywords: number;
   sitelinks: number;
   callouts: number;
   campaignFindings: CampaignFinding[];
@@ -627,7 +629,23 @@ export async function auditCampaign(
     Object.entries(headlineGroups).filter(([, g]) => g.length >= SHARED_HEADLINE_GROUPS),
   );
 
+  // Total ENABLED keywords across the campaign's ad groups — the reach lever. Google's
+  // guidance: successful campaigns carry >= MIN_KEYWORDS to match more real searches.
+  const keywordCount = Object.values(agKeywords).flat().length;
+
   const findings: CampaignFinding[] = [
+    ...(keywordCount < MIN_KEYWORDS
+      ? [
+          {
+            level: "campaign",
+            issue: "keywords_under",
+            detail:
+              `${keywordCount}/${MIN_KEYWORDS} keywords — add more to reach people actively ` +
+              "searching for your products and services",
+            need: MIN_KEYWORDS - keywordCount,
+          },
+        ]
+      : []),
     ...(sitelinks < MIN_SITELINKS
       ? [
           {
@@ -663,6 +681,7 @@ export async function auditCampaign(
     campaignId: cid,
     campaignName: camp.campaign.name,
     status: camp.campaign.status,
+    keywords: keywordCount,
     sitelinks,
     callouts,
     campaignFindings: findings,
@@ -1082,7 +1101,7 @@ function renderCreativeSummary(report: CampaignReport[]): string[] {
     const badAds = c.ads.filter((a) => a.issues.length > 0);
     const header = [
       `\n${c.campaignName} (${c.campaignId}) [${c.status}] ` +
-        `sitelinks=${c.sitelinks} callouts=${c.callouts}`,
+        `keywords=${c.keywords} sitelinks=${c.sitelinks} callouts=${c.callouts}`,
     ];
     const findingLines = c.campaignFindings.map((f) => `  ! ${f.issue}: ${f.detail}`);
     const adLines = c.ads.flatMap((a) => [

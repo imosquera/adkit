@@ -21,6 +21,12 @@ export const MIN_HEADLINES = 15;
 export const MIN_DESCRIPTIONS = 4;
 export const MIN_SITELINKS = 6;
 export const MIN_CALLOUTS = 4;
+/**
+ * Keywords match ads to the searches people make on Google. Google's own guidance:
+ * successful campaigns have at least this many keywords — add more to reach people
+ * actively searching for the product/service. Below this, flag the campaign.
+ */
+export const MIN_KEYWORDS = 25;
 /** headline shared across >= this many ad groups in one campaign = keyword-agnostic boilerplate */
 export const SHARED_HEADLINE_GROUPS = 3;
 
