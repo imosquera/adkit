@@ -1,17 +1,28 @@
-/** Unit tests for the immutable differentiation reference (no SDK needed). */
+/** Unit tests for the dynamic differentiation profile parser (no SDK needed). */
 import { describe, expect, it } from "vitest";
 
-import { DIFFERENTIATION_AXES, GENERIC_AI_PHRASES } from "./brand.js";
+import { EMPTY_PROFILE, parseDifferentiationProfile } from "./brand.js";
 
-describe("differentiation reference", () => {
-  it("has the three expected axes", () => {
-    expect(DIFFERENTIATION_AXES.map((a) => a.name)).toEqual(["integration", "consistency", "outcome"]);
-    // every axis carries at least one trigger lexeme
-    expect(DIFFERENTIATION_AXES.every((a) => a.triggers.length > 0)).toBe(true);
+describe("parseDifferentiationProfile", () => {
+  it("parses a full profile", () => {
+    const profile = parseDifferentiationProfile({
+      competitors: ["ChatGPT"],
+      genericPhrases: ["ai chatbot"],
+      axes: [{ name: "integration", triggers: ["crm", "hubspot"] }],
+    });
+    expect(profile.competitors).toEqual(["ChatGPT"]);
+    expect(profile.axes[0].name).toBe("integration");
   });
 
-  it("contains the expected generic AI phrases", () => {
-    expect(GENERIC_AI_PHRASES).toContain("ai writer");
-    expect(GENERIC_AI_PHRASES).toContain("ai chatbot");
+  it("defaults missing parts to empty", () => {
+    expect(parseDifferentiationProfile({})).toEqual(EMPTY_PROFILE);
+  });
+
+  it("rejects an axis with no triggers", () => {
+    expect(() => parseDifferentiationProfile({ axes: [{ name: "x", triggers: [] }] })).toThrow();
+  });
+
+  it("rejects unknown keys", () => {
+    expect(() => parseDifferentiationProfile({ nope: true })).toThrow();
   });
 });

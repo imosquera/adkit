@@ -1,98 +1,59 @@
 /**
- * Single source of truth for the differentiation reference (me-too copy signal).
+ * The differentiation profile that powers the audit's "me-too copy" check.
  *
- * These are immutable, declarative values (`as const` readonly tuples / objects) —
- * never computed via side effects (constitution Principle III/VI; FP-003). They are
- * imported by audit/scoring.ts (me-too copy detection), so the "who we differentiate
- * from" knowledge has ONE authoritative home (constitution Principle X — DRY; FR-016).
+ * This is NOT a hardcoded, single-advertiser constant (the original Python baked in
+ * one AI-writing product's competitors + axes, which does not generalise). Instead a
+ * profile is DYNAMIC — authored per run from the campaign's own ad copy/keywords, the
+ * landing page, and the source idea, exactly like the per-account `--banned` phrases
+ * have no universal default. "What actually differentiates this product" is judgement,
+ * so the model builds the profile from those three sources; the deterministic scorer
+ * only PARSES and APPLIES it (parse, don't validate).
+ *
+ * A profile has three parts:
+ *  - `genericPhrases` — lexemes that mark copy as an undifferentiated category promise
+ *    (e.g. "ai chatbot" for an AI tool, "cheap flights" for travel).
+ *  - `axes` — the dimensions a competitor can't easily replicate; each carries the
+ *    lowercase `triggers` whose presence in the copy counts that axis as covered.
+ *  - `competitors` — who the differentiation is judged relative to (informational; used
+ *    when the model narrates the finding).
  */
+
+import { z } from "zod";
 
 /**
- * One axis a competitor like ChatGPT cannot easily replicate. `triggers` are the
- * lowercase lexemes whose presence in an ad's copy counts the axis as covered.
- *
- * Naming note: the Python `NamedTuple` `DifferentiationAxis` (fields `name`,
- * `triggers`) is modeled here as a readonly object type.
+ * One axis a competitor can't easily replicate. `triggers` are the lowercase lexemes
+ * whose presence in an ad's copy counts the axis as covered.
  */
-export type DifferentiationAxis = {
-  readonly name: string;
-  readonly triggers: readonly string[];
-};
+export const DifferentiationAxisSchema = z
+  .object({
+    name: z.string().min(1),
+    triggers: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
+export type DifferentiationAxis = z.infer<typeof DifferentiationAxisSchema>;
 
 /**
- * The three axes from FR-015. Copy that leads with these reads as a vertical product,
- * not a general-purpose AI chat tool.
+ * A complete differentiation profile for one campaign/product, derived from its
+ * campaign, landing page, and idea. All parts default to empty — an empty profile
+ * simply means the me-too check finds nothing (no generic phrases → never flagged).
  */
-export const DIFFERENTIATION_AXES = [
-  {
-    name: "integration",
-    triggers: [
-      "crm",
-      "integrat",
-      "stack",
-      "workflow",
-      "connect",
-      "sync",
-      "plug",
-      "api",
-      "hubspot",
-      "salesforce",
-      "zendesk",
-      "marketing stack",
-    ],
-  },
-  {
-    name: "consistency",
-    triggers: [
-      "brand voice",
-      "brand-voice",
-      "voice-matched",
-      "voice matched",
-      "on-brand",
-      "on brand",
-      "consistent",
-      "consistency",
-      "tone",
-      "every channel",
-      "across channels",
-    ],
-  },
-  {
-    name: "outcome",
-    triggers: [
-      "sign-up",
-      "sign up",
-      "signup",
-      "conversion",
-      "convert",
-      "reply rate",
-      "response rate",
-      "revenue",
-      "roi",
-      "pipeline",
-      "leads",
-      "book",
-      "close",
-    ],
-  },
-] as const satisfies readonly DifferentiationAxis[];
+export const DifferentiationProfileSchema = z
+  .object({
+    competitors: z.array(z.string().min(1)).default([]),
+    axes: z.array(DifferentiationAxisSchema).default([]),
+    genericPhrases: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+export type DifferentiationProfile = z.infer<typeof DifferentiationProfileSchema>;
 
-/** Phrases that mark copy as an undifferentiated, general-AI-tool promise (FR-014). */
-export const GENERIC_AI_PHRASES = [
-  "ai writer",
-  "ai writing",
-  "ai chatbot",
-  "ai chat",
-  "ai assistant",
-  "ai bot",
-  "chatbot",
-  "ai-powered writing",
-  "ai content",
-  "ask ai",
-  "powered by ai",
-  "generative ai",
-  "smart assistant",
-] as const;
+/** The neutral profile: no generic phrases and no axes, so nothing is ever flagged. */
+export const EMPTY_PROFILE: DifferentiationProfile = { competitors: [], axes: [], genericPhrases: [] };
 
-/** The competitor set the differentiation judgement is made relative to (FR-014/FR-016). */
-export const DIFFERENTIATION_COMPETITORS = ["ChatGPT", "Claude", "Gemini", "Copilot"] as const;
+/**
+ * Parse an untrusted profile (model-authored JSON) into a `DifferentiationProfile`,
+ * throwing on malformed input. Downstream code receives the parsed type and never
+ * re-checks it.
+ */
+export function parseDifferentiationProfile(data: unknown): DifferentiationProfile {
+  return DifferentiationProfileSchema.parse(data);
+}

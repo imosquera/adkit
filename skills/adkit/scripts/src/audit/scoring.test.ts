@@ -9,11 +9,29 @@ import {
   requireDigits,
 } from "./scoring.js";
 
-// ---------- me-too copy (US5) ----------
+// ---------- me-too copy (dynamic differentiation profile) ----------
+
+import type { DifferentiationProfile } from "../lib/brand.js";
+
+// A profile derived (as the model would, per run) for an AI-tool campaign: generic
+// category phrases + the three axes a competitor like ChatGPT can't easily replicate.
+const AI_TOOL_PROFILE: DifferentiationProfile = {
+  competitors: ["ChatGPT", "Claude"],
+  genericPhrases: ["ai writer", "ai chatbot"],
+  axes: [
+    { name: "integration", triggers: ["crm", "hubspot", "integrat"] },
+    { name: "consistency", triggers: ["voice-matched", "on-brand", "every channel"] },
+    { name: "outcome", triggers: ["reply rate", "conversion", "revenue"] },
+  ],
+};
 
 describe("differentiationGaps", () => {
   it("flags generic copy with missing axes", () => {
-    const f = differentiationGaps(["AI Writer for everyone", "Best AI chatbot"], ["Generate content fast"]);
+    const f = differentiationGaps(
+      ["AI Writer for everyone", "Best AI chatbot"],
+      ["Generate content fast"],
+      AI_TOOL_PROFILE,
+    );
     expect(f).not.toBeNull();
     expect(new Set(f!.missingAxes)).toEqual(new Set(["integration", "consistency", "outcome"]));
   });
@@ -21,11 +39,18 @@ describe("differentiationGaps", () => {
   it("is not flagged when all axes present", () => {
     const hs = ["Voice-matched replies in your CRM", "On-brand replies, every channel"];
     const ds = ["Integrates with HubSpot to lift your reply rate and conversions"];
-    expect(differentiationGaps(hs, ds)).toBeNull();
+    expect(differentiationGaps(hs, ds, AI_TOOL_PROFILE)).toBeNull();
   });
 
   it("is not flagged when not generic", () => {
-    expect(differentiationGaps(["DTC customer service software"], ["Built for CPG brands"])).toBeNull();
+    expect(
+      differentiationGaps(["DTC customer service software"], ["Built for CPG brands"], AI_TOOL_PROFILE),
+    ).toBeNull();
+  });
+
+  it("never flags under an empty profile", () => {
+    const empty: DifferentiationProfile = { competitors: [], axes: [], genericPhrases: [] };
+    expect(differentiationGaps(["Best AI chatbot"], ["ai writer"], empty)).toBeNull();
   });
 });
 
