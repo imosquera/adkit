@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Thin wrapper: ensures the built JS + node deps exist, then runs one of the
-# dist/bin/* entrypoints (the TypeScript port of the ads_skill package).
+# Thin launcher: ensures node deps exist, then runs one of the src/bin/* entry
+# points directly from TypeScript via tsx (no build step, no dist/).
 # Usage: ads.sh <subcommand> [args...]
 #   subcommands: preflight | create | keyword-ideas | report | audit | update | render-yaml | bootstrap-secrets
 #   (apply-fixes is a deprecated alias for update)
@@ -25,27 +25,18 @@ command -v node >/dev/null 2>&1 || {
   exit 1
 }
 
-# Install deps on first run (node_modules absent). Idempotent; quiet.
-if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+# Install deps on first run (or after tsx was added to an older install).
+# Idempotent; quiet. Keying on the tsx binary rather than the node_modules/ dir
+# catches the case where deps were installed before tsx existed — otherwise the
+# exec below would fail with a raw "Cannot find module".
+if [ ! -x "$SCRIPT_DIR/node_modules/.bin/tsx" ]; then
   ( cd "$SCRIPT_DIR" && npm ci --silent 2>/dev/null || npm install --silent )
 fi
 
-# Build to dist/ on first run or after a source change (dist missing, or any src
-# file newer than the built entrypoint).
-needs_build=0
-if [ ! -f "$SCRIPT_DIR/dist/bin/${mod}.js" ]; then
-  needs_build=1
-elif [ -n "$( find "$SCRIPT_DIR/src" -type f -newer "$SCRIPT_DIR/dist/bin/${mod}.js" -print -quit 2>/dev/null )" ]; then
-  needs_build=1
-fi
-if [ "$needs_build" -eq 1 ]; then
-  # stdout is reserved for the JSON envelope; tsup's "CLI Building entry…" banner
-  # must go to stderr or it corrupts the envelope on any rebuild.
-  ( cd "$SCRIPT_DIR" && npm run --silent build 1>&2 )
-fi
-
 # Run from the repo root so relative paths (ideas/, ads/output/reports) resolve,
-# matching the Python wrapper's behavior.
+# matching the Python wrapper's behavior. tsx transpiles the .ts entry on the fly;
+# stdout stays clean for the JSON envelope (tsx prints nothing on a successful run).
+# Exec the bin directly (its shebang selects node) — layout-agnostic vs `node <bin>`.
 REPO_ROOT="$( cd "${SCRIPT_DIR}/../../../.." && pwd )"
 cd "$REPO_ROOT"
-exec node "$SCRIPT_DIR/dist/bin/${mod}.js" "$@"
+exec "$SCRIPT_DIR/node_modules/.bin/tsx" "$SCRIPT_DIR/src/bin/${mod}.ts" "$@"
