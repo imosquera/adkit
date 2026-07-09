@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import sys
+from functools import reduce
 from pathlib import Path
 
 from ads_skill.cli.output import emit_json, error_envelope, ok
@@ -81,12 +82,11 @@ def _live_negatives(client, customer_id, campaign_ids) -> dict:
     if not campaign_ids:
         return {}
     svc = client.get_service("GoogleAdsService")
-    q = apply_negatives_query(campaign_ids)
-    out: dict = {}
-    for r in svc.search(customer_id=customer_id, query=q):
-        out.setdefault(r.campaign.id, set()).add(
-            _neg_key(r.campaign_criterion.keyword.text, r.campaign_criterion.keyword.match_type.name))
-    return out
+    rows = svc.search(customer_id=customer_id, query=apply_negatives_query(campaign_ids))
+    return reduce(
+        lambda acc, r: {**acc, r.campaign.id: acc.get(r.campaign.id, set()) | {
+            _neg_key(r.campaign_criterion.keyword.text, r.campaign_criterion.keyword.match_type.name)}},
+        rows, {})
 
 
 def _live_campaign_statuses(client, customer_id, campaign_ids) -> dict:
