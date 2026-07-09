@@ -25,15 +25,18 @@ command -v node >/dev/null 2>&1 || {
   exit 1
 }
 
-# Install deps on first run (node_modules absent). Idempotent; quiet. This is also
-# what puts tsx on disk, so it must complete before the exec below.
-if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+# Install deps on first run (or after tsx was added to an older install).
+# Idempotent; quiet. Keying on the tsx binary rather than the node_modules/ dir
+# catches the case where deps were installed before tsx existed — otherwise the
+# exec below would fail with a raw "Cannot find module".
+if [ ! -x "$SCRIPT_DIR/node_modules/.bin/tsx" ]; then
   ( cd "$SCRIPT_DIR" && npm ci --silent 2>/dev/null || npm install --silent )
 fi
 
 # Run from the repo root so relative paths (ideas/, ads/output/reports) resolve,
 # matching the Python wrapper's behavior. tsx transpiles the .ts entry on the fly;
 # stdout stays clean for the JSON envelope (tsx prints nothing on a successful run).
+# Exec the bin directly (its shebang selects node) — layout-agnostic vs `node <bin>`.
 REPO_ROOT="$( cd "${SCRIPT_DIR}/../../../.." && pwd )"
 cd "$REPO_ROOT"
-exec node "$SCRIPT_DIR/node_modules/.bin/tsx" "$SCRIPT_DIR/src/bin/${mod}.ts" "$@"
+exec "$SCRIPT_DIR/node_modules/.bin/tsx" "$SCRIPT_DIR/src/bin/${mod}.ts" "$@"
