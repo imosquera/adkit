@@ -91,6 +91,20 @@ describe("readThemeGroups", () => {
     ]);
   });
 
+  it("ignores the > Offer: line (and other non-bullet lines), keeping only keyword bullets", () => {
+    const md = `
+## Go To Market
+
+### Keyword Themes
+
+#### **Salon Software** — category core
+> Offer: start free trial
+- salon booking software
+`;
+    // Theme name has its markdown stripped; the > Offer: line is not a keyword.
+    expect(readThemeGroups(md, 20)).toEqual([["Salon Software", ["salon booking software"]]]);
+  });
+
   it("caps keywords per theme", () => {
     const md = `
 ## Go To Market
