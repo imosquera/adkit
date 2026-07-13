@@ -1,8 +1,10 @@
 /**
  * Pure markdown-extraction helpers for the /adkit create scaffold: read the
- * tier-grouped keywords and negative keywords that /adkit gtm authored under
- * "## Go To Market > ### Keywords". No SDK, no urllib, no stdout, no sys.exit —
- * every function is referentially transparent and covered by parse.test.ts.
+ * theme-grouped keywords and negative keywords that /adkit gtm authored under
+ * "## Go To Market". Ad groups come from the "### Keyword Themes" subsection (one
+ * ad group per non-spend-trap theme); negatives come from "### Keywords > ####
+ * Negative Keywords". No SDK, no urllib, no stdout, no sys.exit — every function
+ * is referentially transparent and covered by parse.test.ts.
  *
  * The IO shell (bin/create) reads the markdown off disk and feeds the text into
  * these functions; nothing here touches the filesystem or the network.
@@ -10,21 +12,21 @@
 
 import type { Keyword } from "../lib/schema.js";
 
-// STAG = Single Theme Ad Group. The scaffold makes one ad group per intent tier
-// (Informational/Navigational/Commercial/Transactional) and packs up to this many
-// keywords into each. 25/tier across the 4 tiers lands a fresh campaign near the
-// ~100-keyword launch target (the gtm generation target, well above the audit's
-// 25-keyword floor); with AI Max + Smart Bidding on, more keywords per theme means
-// more data to consolidate, not the micro-SKAG anti-pattern. `--top-n` overrides
-// (up to MAX_KEYWORDS_PER_THEME, leaving headroom above the default).
+// STAG = Single Theme Ad Group. The scaffold makes one ad group per Keyword Theme
+// authored by /adkit gtm (step 15c) and packs up to this many keywords into each.
+// With 3-6 themes this lands a fresh campaign near the ~100-keyword launch target
+// (the gtm generation target, well above the audit's 25-keyword floor); with AI Max
+// + Smart Bidding on, more keywords per theme means more data to consolidate, not
+// the micro-SKAG anti-pattern. `--top-n` overrides (up to MAX_KEYWORDS_PER_THEME,
+// leaving headroom above the default).
 export const DEFAULT_TOP_N = 25;
 export const MAX_KEYWORDS_PER_THEME = 30;
 
-// STAG themes ARE the intent tiers. The model does the grouping in ads:gtm
-// (each keyword is classified into exactly one tier — that classification IS the
-// theme assignment). This skill only READS those pre-grouped themes; it makes no
-// grouping decision of its own.
-const TIER_THEMES = ["Informational", "Navigational", "Commercial", "Transactional"] as const;
+// A theme flagged by gtm as the generic "keep-but-don't-lead" spend trap. The
+// marker may sit anywhere in the `####` heading (before OR after any ` — role
+// note`) and is case-insensitive. Such themes are EXCLUDED from ad-group creation
+// (they feed the negative-keyword list instead — see reference/gtm.md step 15c).
+const SPEND_TRAP_MARKER = /\[\s*spend-?trap\s*\]/i;
 
 /** Escape a string for literal use inside a RegExp (mirrors Python's `re.escape`). */
 function escapeRegExp(s: string): string {
@@ -40,6 +42,25 @@ function sliceUntilNext(text: string, pattern: string): string {
   const re = new RegExp(pattern, "m");
   const m = re.exec(text);
   return m ? text.slice(0, m.index) : text;
+}
+
+/**
+ * The text under a `### <heading>` subsection within the `## Go To Market` block
+ * (sliced until the next `###` sibling), or null when either heading is absent.
+ * Shared by {@link readThemeGroups} and {@link extractNegatives}.
+ */
+function gtmSubsection(md: string, heading: string): string | null {
+  const gtm = /^##\s+Go\s+To\s+Market\b.*$/im.exec(md);
+  if (!gtm) {
+    return null;
+  }
+  const block = sliceUntilNext(md.slice(gtm.index + gtm[0].length), "^##\\s+");
+  const re = new RegExp(`^###\\s+${escapeRegExp(heading)}\\b.*$`, "im");
+  const m = re.exec(block);
+  if (!m) {
+    return null;
+  }
+  return sliceUntilNext(block.slice(m.index + m[0].length), "^###\\s+");
 }
 
 /**
@@ -65,49 +86,49 @@ function bulletBodies(text: string): string[] {
 }
 
 /**
- * Pull bullets under the given tier headings (in order), deduped, lowercased,
- * offer-suffix stripped. Order: tier order, then bullet order within each tier.
+ * The display name of a `#### ` Keyword Theme heading: the `[spend-trap]` marker
+ * and any ` — role note` are removed, leaving the theme's name.
  */
-function extractKeywords(md: string, tiers: readonly string[]): string[] {
-  const gtm = /^##\s+Go\s+To\s+Market\b.*$/im.exec(md);
-  if (!gtm) {
-    return [];
-  }
-  const block = sliceUntilNext(md.slice(gtm.index + gtm[0].length), "^##\\s+");
-  const kw = /^###\s+Keywords\b.*$/im.exec(block);
-  if (!kw) {
-    return [];
-  }
-  const section = block.slice(kw.index + kw[0].length);
-
-  const tierKeywords = (heading: string): string[] => {
-    const re = new RegExp(`^####\\s+${escapeRegExp(heading)}\\b.*$`, "im");
-    const m = re.exec(section);
-    if (!m) {
-      return [];
-    }
-    const sub = sliceUntilNext(section.slice(m.index + m[0].length), "^####\\s+");
-    return bulletBodies(sub)
-      .map((bullet) => cleanKeyword(bullet))
-      .filter((c) => c !== "");
-  };
-
-  // Map-by-key dedup keeps first-seen order — across all tiers, matching the
-  // original sequential seen-set threaded tier to tier.
-  const all = tiers.flatMap((tier) => tierKeywords(tier));
-  return [...new Set(all)];
+function themeName(heading: string): string {
+  return heading
+    .replace(SPEND_TRAP_MARKER, "")
+    .split(/\s+[—–-]{1,2}\s+/)[0]!
+    .replace(/[*_`]/g, "")
+    .trim();
 }
 
 /**
- * Read the Single Theme Ad Groups defined upstream by ads:gtm — one per
- * non-empty intent tier, in tier order, keywords in authored order. Truncates a
- * theme to `maxPerTheme` (Google's per-ad-group ceiling). No grouping logic:
- * ads:gtm guarantees each keyword lives in exactly one tier.
+ * Read the Single Theme Ad Groups authored by ads:gtm under
+ * "## Go To Market > ### Keyword Themes" — one `[name, keywords]` pair per
+ * `#### ` theme, in file order, `[spend-trap]`-marked themes EXCLUDED (they feed
+ * negatives, not ad groups). Keywords are cleaned (decoration/offer suffix
+ * stripped, lowercased), deduped ACROSS themes (first-seen wins, so no keyword
+ * can land in two ad groups — the no-cannibalization contract), and each theme is
+ * truncated to `maxPerTheme` (Google's per-ad-group ceiling). Empty when the
+ * `### Keyword Themes` subsection is absent → bin/create dies asking for a gtm
+ * re-run (there is deliberately NO fallback to the old intent tiers).
  */
 export function readThemeGroups(md: string, maxPerTheme: number): Array<[string, string[]]> {
-  return TIER_THEMES.map((tier): [string, string[]] => [tier, extractKeywords(md, [tier]).slice(0, maxPerTheme)]).filter(
-    ([, kws]) => kws.length > 0,
-  );
+  const section = gtmSubsection(md, "Keyword Themes");
+  if (section === null) {
+    return [];
+  }
+  const headings = [...section.matchAll(/^####\s+(.+?)\s*$/gm)];
+  const seen = new Set<string>();
+  return headings.flatMap((m, i): Array<[string, string[]]> => {
+    const heading = m[1]!;
+    if (SPEND_TRAP_MARKER.test(heading)) {
+      return []; // spend-trap theme → excluded from ad groups
+    }
+    const start = (m.index ?? 0) + m[0].length;
+    const end = i + 1 < headings.length ? (headings[i + 1]!.index ?? section.length) : section.length;
+    const kws = bulletBodies(section.slice(start, end))
+      .map(cleanKeyword)
+      .filter((c) => c !== "" && !seen.has(c));
+    kws.forEach((k) => seen.add(k));
+    const capped = kws.slice(0, maxPerTheme);
+    return capped.length > 0 ? [[themeName(heading), capped]] : [];
+  });
 }
 
 /**
@@ -116,16 +137,10 @@ export function readThemeGroups(md: string, maxPerTheme: number): Array<[string,
  * match by default. Empty when the section is absent.
  */
 export function extractNegatives(md: string): Keyword[] {
-  const gtm = /^##\s+Go\s+To\s+Market\b.*$/im.exec(md);
-  if (!gtm) {
+  const section = gtmSubsection(md, "Keywords");
+  if (section === null) {
     return [];
   }
-  const block = sliceUntilNext(md.slice(gtm.index + gtm[0].length), "^##\\s+");
-  const kw = /^###\s+Keywords\b.*$/im.exec(block);
-  if (!kw) {
-    return [];
-  }
-  const section = block.slice(kw.index + kw[0].length);
   const m = /^####\s+Negative\s+Keywords\b.*$/im.exec(section);
   if (!m) {
     return [];

@@ -2,64 +2,92 @@ import { describe, expect, it } from "vitest";
 import { extractNegatives, readThemeGroups } from "./parse.js";
 
 describe("readThemeGroups", () => {
-  it("makes one ad group per tier in order", () => {
+  it("makes one ad group per Keyword Theme in file order, name stripped of role note", () => {
     const md = `
 ## Go To Market
 
-### Keywords
+### Keyword Themes
 
-#### Informational
+#### Widget Software — category core
 
-- what is a widget
+- widget software
+- widget platform
 
-#### Commercial
+#### Free / freemium intent
 
-- buy widgets online
-- compare widget prices
-
-#### Transactional
-
-- widget checkout
+- free widget tool
 `;
     expect(readThemeGroups(md, 20)).toEqual([
-      ["Informational", ["what is a widget"]],
-      ["Commercial", ["buy widgets online", "compare widget prices"]],
-      ["Transactional", ["widget checkout"]],
+      ["Widget Software", ["widget software", "widget platform"]],
+      ["Free / freemium intent", ["free widget tool"]],
     ]);
   });
 
-  it("strips offer suffix and markdown", () => {
+  it("strips offer suffix and markdown from theme keywords", () => {
     const md = `
 ## Go To Market
 
-### Keywords
+### Keyword Themes
 
-#### Commercial
+#### Agency
 
 - hire widget agency — offer: 15-minute walkthrough
-- *widget pricing* now
+- *widget pricing* now (12k, HIGH, $2–$8)
 `;
-    expect(readThemeGroups(md, 20)).toEqual([["Commercial", ["hire widget agency", "widget pricing now"]]]);
+    expect(readThemeGroups(md, 20)).toEqual([["Agency", ["hire widget agency", "widget pricing now"]]]);
   });
 
-  it("reads tiers verbatim (no grouping decision)", () => {
+  it("excludes [spend-trap] themes regardless of marker position or case", () => {
+    const before = `
+## Go To Market
+
+### Keyword Themes
+
+#### Core
+
+- widget software
+
+#### [spend-trap] Generic Scheduling — keep-but-don't-lead
+
+- scheduling tool
+`;
+    expect(readThemeGroups(before, 20)).toEqual([["Core", ["widget software"]]]);
+
+    const after = `
+## Go To Market
+
+### Keyword Themes
+
+#### Generic Scheduling [Spend-Trap] — keep-but-don't-lead
+
+- scheduling tool
+
+#### Core
+
+- widget software
+`;
+    expect(readThemeGroups(after, 20)).toEqual([["Core", ["widget software"]]]);
+  });
+
+  it("dedups a keyword across themes (first-seen wins — no cannibalization)", () => {
     const md = `
 ## Go To Market
 
-### Keywords
+### Keyword Themes
 
-#### Commercial
+#### Theme A
 
-- widget pricing
-- compare widgets
+- shared widget
+- only a
 
-#### Transactional
+#### Theme B
 
-- buy widgets
+- shared widget
+- only b
 `;
     expect(readThemeGroups(md, 20)).toEqual([
-      ["Commercial", ["widget pricing", "compare widgets"]],
-      ["Transactional", ["buy widgets"]],
+      ["Theme A", ["shared widget", "only a"]],
+      ["Theme B", ["only b"]],
     ]);
   });
 
@@ -67,19 +95,29 @@ describe("readThemeGroups", () => {
     const md = `
 ## Go To Market
 
-### Keywords
+### Keyword Themes
 
-#### Commercial
+#### Theme
 
 - one
 - two
 - three
 - four
 `;
-    expect(readThemeGroups(md, 2)).toEqual([["Commercial", ["one", "two"]]]);
+    expect(readThemeGroups(md, 2)).toEqual([["Theme", ["one", "two"]]]);
   });
 
-  it("returns empty when no gtm section", () => {
+  it("returns empty when there is no ### Keyword Themes section (create then requires a gtm re-run)", () => {
+    const onlyTiers = `
+## Go To Market
+
+### Keywords
+
+#### Commercial
+
+- buy widgets
+`;
+    expect(readThemeGroups(onlyTiers, 20)).toEqual([]);
     expect(readThemeGroups("## Something Else\n\n- foo\n", 20)).toEqual([]);
   });
 });

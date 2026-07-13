@@ -90,7 +90,7 @@ export function keywordCountWarning(total: number): string | null {
   }
   const fix =
     total < KEYWORD_TARGET_MIN
-      ? "add more to the processed idea's ### Keywords tiers"
+      ? "add more keywords to the processed idea's ### Keyword Themes"
       : "trim with --top-n or in the idea";
   return (
     `${total} keywords total — aim for ~${TARGET_KEYWORDS} ` +
@@ -111,8 +111,8 @@ export function buildSkeleton(
   const range = (start: number, end: number): number[] =>
     Array.from({ length: end - start }, (_, i) => start + i);
 
-  const adGroups = themes.map(([tier, kws]) => ({
-    name: tier, // STAG: ad group IS the intent theme
+  const adGroups = themes.map(([themeNameStr, kws]) => ({
+    name: themeNameStr, // STAG: ad group IS the keyword theme (gtm ### Keyword Themes)
     defaultBidMicros: 1_500_000,
     responsiveSearchAd: {
       headlines: range(1, 16).map((i) => ({ text: `TODO headline ${i} (≤30 chars)` })),
@@ -197,19 +197,19 @@ function scaffoldBriefFromProcessed(mdPath: string, briefPath: string, maxPerThe
   const negatives = extractNegatives(md);
   if (themes.length === 0) {
     die(
-      `${mdPath} has no "## Go To Market > ### Keywords" section with tier ` +
-        `bullets. Run /adkit gtm ${mdPath} first.`,
+      `${mdPath} has no "## Go To Market > ### Keyword Themes" section (one #### ` +
+        `theme per ad group). Re-run /adkit gtm ${mdPath} to (re)generate it.`,
     );
   }
   const skeleton = buildSkeleton(name, themes, negatives);
   mkdirSync(dirname(briefPath), { recursive: true });
   writeFileSync(briefPath, yamlStringify(skeleton));
-  const themesPretty = themes.map(([tier, kws]) => `${tier} (${kws.length} kw)`).join("\n  - ");
+  const themesPretty = themes.map(([theme, kws]) => `${theme} (${kws.length} kw)`).join("\n  - ");
   const totalKeywords = themes.reduce((n, [, kws]) => n + kws.length, 0);
   const kwWarning = keywordCountWarning(totalKeywords);
   process.stderr.write(
     `scaffolded ${briefPath} from ${mdPath}\n` +
-      `${themes.length} STAG ad groups (one per intent theme):\n  - ${themesPretty}\n` +
+      `${themes.length} STAG ad groups (one per keyword theme; spend-trap excluded):\n  - ${themesPretty}\n` +
       (kwWarning
         ? `⚠ ${kwWarning}\n`
         : `${totalKeywords} keywords total (on target ~${TARGET_KEYWORDS})\n`) +
