@@ -4,6 +4,7 @@ import {
   buildCandidateDicts,
   buildRequest,
   candidateToDict,
+  conceptGroupName,
   DEFAULT_GEO,
   DEFAULT_LANGUAGE,
   main,
@@ -22,8 +23,16 @@ function ideaRow(
     low_top_of_page_bid_micros: number;
     high_top_of_page_bid_micros: number;
   }> = {},
+  conceptGroups: readonly (string | null)[] = [],
 ): services.IGenerateKeywordIdeaResult {
-  return { text, keyword_idea_metrics: metrics };
+  const concepts = conceptGroups.map((name) => ({
+    concept_group: name === null ? undefined : { name },
+  }));
+  return {
+    text,
+    keyword_idea_metrics: metrics,
+    ...(concepts.length > 0 ? { keyword_annotations: { concepts } } : {}),
+  };
 }
 
 describe("parseArgs", () => {
@@ -66,6 +75,16 @@ describe("buildRequest", () => {
     expect(req.customer_id).toBe("1234567890");
   });
 
+  it("requests the KEYWORD_CONCEPT annotation on every seed shape", () => {
+    // enums.KeywordPlanKeywordAnnotation.KEYWORD_CONCEPT === 2
+    const kw = buildRequest({ ...common, seeds: ["a"], pageUrl: null });
+    const url = buildRequest({ ...common, seeds: [], pageUrl: "https://x.com" });
+    const both = buildRequest({ ...common, seeds: ["a"], pageUrl: "https://x.com" });
+    for (const req of [kw, url, both]) {
+      expect(req.keyword_annotation).toEqual([2]);
+    }
+  });
+
   it("uses a url_seed when a page URL is given but no seeds", () => {
     const req = buildRequest({ ...common, seeds: [], pageUrl: "https://x.com" });
     expect(req.url_seed).toEqual({ url: "https://x.com" });
@@ -97,6 +116,7 @@ describe("rowToApiIdea", () => {
       competition: "HIGH",
       lowMicros: 8_200_000,
       highMicros: 14_000_000,
+      conceptGroup: null,
     });
   });
 
@@ -110,6 +130,29 @@ describe("rowToApiIdea", () => {
     const idea = rowToApiIdea(ideaRow("shoes"));
     expect(idea.volume).toBe(0);
     expect(idea.competition).toBe("UNSPECIFIED");
+  });
+
+  it("carries the annotated concept group when present", () => {
+    const idea = rowToApiIdea(ideaRow("barber app", { avg_monthly_searches: 3000 }, ["Barber"]));
+    expect(idea.conceptGroup).toBe("Barber");
+  });
+});
+
+describe("conceptGroupName", () => {
+  it("returns null when the row has no annotation", () => {
+    expect(conceptGroupName(ideaRow("shoes"))).toBeNull();
+  });
+
+  it("picks the first concept group with a non-empty name", () => {
+    expect(conceptGroupName(ideaRow("x", {}, [null, "", "Salon Software"]))).toBe("Salon Software");
+  });
+
+  it("returns null when a concept_group object is present but has no name", () => {
+    const row: services.IGenerateKeywordIdeaResult = {
+      text: "x",
+      keyword_annotations: { concepts: [{ concept_group: {} }] },
+    };
+    expect(conceptGroupName(row)).toBeNull();
   });
 });
 
@@ -125,6 +168,25 @@ describe("candidateToDict", () => {
     });
     expect(dict.bullet_text).toBe("running shoes (5k, HIGH, $8.20–$14.00)");
     expect(dict.source).toBe("both");
+  });
+
+  it("emits concept_group as a field but keeps it out of bullet_text", () => {
+    const dict = candidateToDict({
+      phrase: "salon booking software",
+      source: "api",
+      volume: 12_000,
+      competition: "HIGH",
+      lowMicros: 3_000_000,
+      highMicros: 6_000_000,
+      conceptGroup: "Salon Software",
+    });
+    expect(dict.concept_group).toBe("Salon Software");
+    expect(dict.bullet_text).not.toContain("Salon Software");
+  });
+
+  it("defaults concept_group to null for an unannotated candidate", () => {
+    const dict = candidateToDict({ phrase: "x", source: "llm" });
+    expect(dict.concept_group).toBeNull();
   });
 });
 

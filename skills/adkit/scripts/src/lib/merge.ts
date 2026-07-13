@@ -15,6 +15,8 @@ export interface ApiIdea {
   readonly competition: string;
   readonly lowMicros: number | null;
   readonly highMicros: number | null;
+  /** Google's semantic concept group for this idea; null when unannotated. */
+  readonly conceptGroup: string | null;
 }
 
 /**
@@ -29,6 +31,8 @@ export interface Candidate {
   readonly competition?: string | null;
   readonly lowMicros?: number | null;
   readonly highMicros?: number | null;
+  /** Google's semantic concept group; absent for bare LLM seeds. */
+  readonly conceptGroup?: string | null;
 }
 
 /** Normalize a phrase for comparison: case-fold and collapse whitespace. */
@@ -45,6 +49,7 @@ function fromIdea(phrase: string, idea: ApiIdea, source: "api" | "both"): Candid
     competition: idea.competition,
     lowMicros: idea.lowMicros,
     highMicros: idea.highMicros,
+    conceptGroup: idea.conceptGroup,
   };
 }
 

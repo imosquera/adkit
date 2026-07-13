@@ -15,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
-import { GoogleAdsApi, type services } from "google-ads-api";
+import { GoogleAdsApi, enums, type services } from "google-ads-api";
 import { parse as parseYaml } from "yaml";
 import { credentialsPath } from "../lib/auth.js";
 import { resolveCustomer } from "../cli/args.js";
@@ -122,6 +122,11 @@ export function buildRequest(params: {
     language,
     geo_target_constants: [geo],
     include_adult_keywords: false,
+    // Ask the Keyword Planner to annotate each idea with its own semantic concept
+    // group (e.g. "Salon Software", "Barber"). This is a free rider on the same
+    // RPC; /adkit gtm reads `concept_group` as a deterministic prior for its
+    // screen-only Keyword Themes grouping instead of clustering from scratch.
+    keyword_annotation: [enums.KeywordPlanKeywordAnnotation.KEYWORD_CONCEPT],
   };
   if (pageUrl && seeds.length > 0) {
     return { ...base, keyword_and_url_seed: { url: pageUrl, keywords: [...seeds] } };
@@ -133,10 +138,30 @@ export function buildRequest(params: {
 }
 
 /**
+ * The name of the first non-empty Keyword Planner concept group annotated on a
+ * result row, or `null` when the row carries no concept annotation. Pure.
+ *
+ * Populated only when the request set `keyword_annotation: [KEYWORD_CONCEPT]`
+ * (see {@link buildRequest}). Google returns its own semantic grouping — the same
+ * signal `/adkit gtm` uses as a prior for its screen-only Keyword Themes step.
+ * A row may carry several concepts; the first concept group with a name wins.
+ * Google does NOT rank concepts, so "first" is arbitrary-but-stable, not the
+ * dominant theme — fine here, since step 15c treats it only as a prior to merge,
+ * rename, and split, not as the final grouping.
+ */
+export function conceptGroupName(row: IdeaRow): string | null {
+  const named = (row.keyword_annotations?.concepts ?? [])
+    .map((c) => c.concept_group?.name)
+    .filter((n): n is string => typeof n === "string" && n !== "");
+  return named[0] ?? null;
+}
+
+/**
  * Map one keyword-idea result row to an {@link ApiIdea}. Pure.
  *
  * Mirrors the Python `_row_to_api_idea`: volume is `avg_monthly_searches` (0 when
  * absent); the bid micros collapse to `null` when zero/absent (`int(x) or None`).
+ * `conceptGroup` carries Google's semantic grouping when the row is annotated.
  */
 export function rowToApiIdea(row: IdeaRow): ApiIdea {
   const metrics = row.keyword_idea_metrics ?? {};
@@ -148,6 +173,7 @@ export function rowToApiIdea(row: IdeaRow): ApiIdea {
     competition: competitionLabel(metrics.competition),
     lowMicros: low || null,
     highMicros: high || null,
+    conceptGroup: conceptGroupName(row),
   };
 }
 
@@ -166,10 +192,18 @@ export interface CandidateDict {
   readonly competition: string | null;
   readonly low_micros: number | null;
   readonly high_micros: number | null;
+  readonly concept_group: string | null;
   readonly bullet_text: string;
 }
 
-/** Decorate a Candidate for JSON output. Pure. (Python `_candidate_to_dict`.) */
+/**
+ * Decorate a Candidate for JSON output. Pure. (Python `_candidate_to_dict`.)
+ *
+ * `concept_group` is Google's semantic grouping (null when unannotated). It is a
+ * NEW field the `/adkit gtm` command reads for its screen-only Keyword Themes
+ * grouping — it is deliberately kept OUT of `bullet_text` so the markdown written
+ * to the file is unchanged.
+ */
 export function candidateToDict(c: Candidate): CandidateDict {
   return {
     phrase: c.phrase,
@@ -178,6 +212,7 @@ export function candidateToDict(c: Candidate): CandidateDict {
     competition: c.competition ?? null,
     low_micros: c.lowMicros ?? null,
     high_micros: c.highMicros ?? null,
+    concept_group: c.conceptGroup ?? null,
     bullet_text: formatBulletText(c),
   };
 }
