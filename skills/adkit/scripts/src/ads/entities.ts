@@ -200,6 +200,29 @@ export async function setCampaignStatus(
 }
 
 /**
+ * Toggle a live campaign's Search Partners setting (network_settings.target_search_network).
+ * Sends only that nested field — the SDK derives the update mask from the fields present, so
+ * target_google_search/target_content_network are untouched. Returns the campaign resource name.
+ */
+export async function setSearchPartners(
+  client: AdsClient,
+  customerId: string,
+  campaignId: string,
+  enabled: boolean,
+): Promise<string> {
+  const op: AdsMutateOperation = {
+    entity: "campaign",
+    operation: "update",
+    resource: {
+      resource_name: `customers/${customerId}/campaigns/${campaignId}`,
+      network_settings: { target_search_network: enabled },
+    },
+  };
+  const result = await client.mutate(customerId, [op]);
+  return result.results[0]!.resource_name;
+}
+
+/**
  * Flip a live ad group's serving status to ENABLED or PAUSED. Mirrors
  * {@link setCampaignStatus} one level down. Returns the ad group resource name.
  */
