@@ -14,7 +14,7 @@ $ARGUMENTS
 ## Preconditions
 
 1. The processed idea file exists at `$ARGUMENTS` (under `ideas/processed/`).
-2. That file has a `## Go To Market > ### Keywords` section. If missing, run `/adkit gtm ideas/raw/<basename>.md` first (the `/adkit gtm` skill reads raw and writes the keywords + ad-copy sections into the matching processed file).
+2. That file has a `## Go To Market > ### Keyword Themes` section (the ad-group source of truth), plus `### Keywords` + `### Ad Copy`. If missing, run `/adkit gtm ideas/raw/<basename>.md` first (the `/adkit gtm` skill reads raw and writes the keywords, keyword-themes, and ad-copy sections into the matching processed file). A processed file authored before `### Keyword Themes` existed must be re-run through `/adkit gtm` to backfill it.
 3. `GOOGLE_ADS_CUSTOMER_ID` is exported (or the brief sets `customerId`).
 
 Mechanics — ads.sh invocation/build, customer-id resolution, the JSON envelope, and credentials (`ads.sh render-yaml` / `preflight`) — are in **`reference/conventions.md`**; read it once.
@@ -29,11 +29,12 @@ These rules are baked in. Apply them when filling the scaffolded brief.
 
 ### STAG: Single Theme Ad Group
 
-- **One intent theme per ad group.** Keywords are grouped by buying-cycle tier — Informational, Navigational, Commercial, Transactional — *not* one-keyword-per-group. Google's close-variant matching and Smart Bidding made micro-SKAGs obsolete: theme groups consolidate conversion data so the ML optimizes faster, and ad copy can mirror the theme's intent for a better Quality Score.
-- The scaffolder makes **one ad group per non-empty tier** (up to 4 themes), packing up to 25 keywords from that tier's `### Keywords` bullets — so a fresh campaign launches near **~100 keywords total** (the gtm target; well above the audit's 25-keyword floor). `--top-n N` caps keywords-*per-theme* (1 ≤ N ≤ 30). Keywords are deduped across tiers so each lands in exactly one theme — no cross-group cannibalization. The scaffold prints the total and warns if it's outside 90–110.
+- **One keyword theme per ad group.** Keywords are grouped by **semantic theme** — the 3–6 `### Keyword Themes` `/adkit gtm` authors (step 15c), e.g. *salon software*, *barber/stylist*, *free intent* — *not* one-keyword-per-group and *not* by the I/N/C/T intent tier. (The intent tiers still live in `### Keywords`, but only as a buyer-intent + offer-matching annotation; they no longer define ad groups.) Google's close-variant matching and Smart Bidding made micro-SKAGs obsolete: theme groups consolidate conversion data so the ML optimizes faster, and ad copy can mirror the theme for a better Quality Score.
+- The scaffolder makes **one ad group per non-spend-trap theme**, packing up to 25 keywords from that theme's `### Keyword Themes` bullets — so a fresh campaign launches near **~100 keywords total** (the gtm target; well above the audit's 25-keyword floor). `--top-n N` caps keywords-*per-theme* (1 ≤ N ≤ 30, matching the brief schema's per-ad-group ceiling). **At most 10 ad groups** — gtm authors themes highest-potential-volume first, and the scaffold keeps only the **top 10**; the brief schema also rejects more than 10. Keywords are deduped **across themes** so each lands in exactly one ad group — no cross-group cannibalization. The scaffold prints the total and warns if it's outside 90–110.
+- **The spend-trap theme is excluded.** The theme gtm flags `[spend-trap]` (generic, keep-but-don't-lead) gets **no ad group** — its terms feed the campaign negative-keyword list instead (that is *why* it's safe to negate them: they're no longer live ad-group keywords). Nothing to author for it.
 - Keywords go in as **`PHRASE`**. Close-variant matching + AI Max cover plurals/typos/synonyms, so the SKAG-era PHRASE+EXACT pair is redundant. Add `EXACT`/`BROAD` on a keyword by hand only if a theme genuinely needs it.
-- **One campaign → up to 4 theme ad groups → one RSA per theme → all that theme's keywords share one landing page and one ad message.** That shared copy/landing page *is* the STAG contract. All ad groups share the campaign budget.
-- Write each theme's RSA to its intent: **Informational** = educate / lead-magnet, **Navigational** = route to the destination, **Commercial** = compare / free trial, **Transactional** = act now. Same product, different temperature.
+- **One campaign → 3–6 theme ad groups → one RSA per theme → all that theme's keywords share one landing page and one ad message.** That shared copy/landing page *is* the STAG contract. All ad groups share the campaign budget.
+- Write each theme's RSA to the **offer temperature gtm resolved for it** (the theme's `> Offer:` in `### Keyword Themes`, set to the theme's highest-actionable represented intent tier — Transactional > Commercial > Navigational > Informational): educate/lead-magnet at the cold end → act-now at the scalding end. Same product, one temperature per theme.
 
 ### STAG + Smart Bidding + AI Max (the modern combo)
 
@@ -43,7 +44,7 @@ This structure is what these features were built for:
 - **AI Max** (`campaign.aiMax`, default on) expands reach *beyond* your literal keywords via broad-match tech + landing-page matching. With STAGs you **want** that: the theme defines intent, AI Max finds the long-tail you can't enumerate, and negatives keep it on-theme. (To block search-term matching on one ad group, the API exposes `AdGroup.ai_max_ad_group_setting.disable_search_term_matching` — not surfaced in the brief; add only if needed.)
 - **Negative keywords** (`campaign.negativeKeywords`) are now the main relevance lever — not match-type surgery. They steer AI Max / close-variant expansion off the junk. The scaffolder **auto-seeds** them from the processed file's `#### Negative Keywords` section; review and extend before publishing.
 
-Budget still matters: keep it matched to theme count. Four themes on $25/day ≈ $6/day each — workable. Trim to Commercial+Transactional only (delete the cold-tier ad groups) if you want each theme to see more.
+Budget still matters: keep it matched to theme count. Six themes on $25/day ≈ $4/day each; four ≈ $6/day — both workable, but the more themes you run the thinner each is spread. Delete the lowest-priority theme ad groups (or raise the budget) if you want the money concentrated on the highest-intent themes gtm's ad-group-split recommendation named.
 
 ### Bid strategy — launch on `maximize-clicks`, graduate to `maximize-conversions`
 
@@ -141,20 +142,20 @@ Every campaign ships **at least 4 callouts** — short benefit phrases (no link)
 | `campaign.priceAsset` | Optional campaign-level price asset: 3–8 offerings with a ≤25-character header/description, positive `priceMicros`, and an https `finalUrl`. |
 | `campaign.structuredSnippet` | Optional campaign-level structured snippet: a supported header and 3–10 distinct values (≤25 characters each). |
 | `campaign.callouts` | **At least 4 callouts** (or none on legacy briefs). Each a plain phrase ≤25 chars, no URL — distinct benefit/offer, non-repetitive. Max 20. Scaffold emits 4 TODO placeholders. |
-| `adGroups[].name` | The intent theme — `Informational` / `Navigational` / `Commercial` / `Transactional` (one ad group per non-empty tier) |
+| `adGroups[].name` | The keyword theme name from `### Keyword Themes` (e.g. `Salon Software`, `Barber / Stylist`) — one ad group per non-spend-trap theme, **max 10** (top 10 by potential volume). Free-form string (schema imposes no enum). |
 | `adGroups[].defaultBidMicros` | **Operator-confirmed.** Scaffold default: `1_500_000` ($1.50 CPC); **max `15_000_000` ($15.00)** — per ad group |
 | `adGroups[].responsiveSearchAd.headlines` | Exactly 15 unique headlines **per ad group**, tuned to that theme's intent and containing top keywords across ≥3 headlines. |
 | `adGroups[].responsiveSearchAd.descriptions` | Exactly 4 unique descriptions per ad group. |
 | `adGroups[].responsiveSearchAd.finalUrl` | The published landing-page URL, always under **`https://www.example.com/ideas/<published-slug>`** (clean URL, no `.html`). The published slug is the timestamped name from `Idea HTML`, not the processed-file slug. Often the same URL across ad groups. **Pre-publish URL check rejects any finalUrl that 404s** (use `--skip-url-check` to bypass). |
 | `adGroups[].responsiveSearchAd.path1` / `.path2` | **Optional "pretty URL" display paths.** Google shows the `finalUrl` *host* plus these two keyword-rich segments as the ad's visible (display) URL — e.g. `finalUrl` `.../ideas/tonewell-...?utm=...` with `path1: review-replies`, `path2: free-trial` displays as **`www.example.com/review-replies/free-trial`**, while the click still lands on the long, tracking-heavy `finalUrl`. Each **≤15 chars, no spaces or `/`**, **always lower case** (mixed case is coerced down at validation); **`path2` requires `path1`** (Google fills them in order). Per ad group, so each theme can show its own keyword. Omit both to show the bare host. A leftover scaffold `TODO` value is rejected at validation. |
-| `adGroups[].keywords` | Two entries per ad group: `{text: <root>, matchType: "PHRASE"}` and `{text: <root>, matchType: "EXACT"}` |
+| `adGroups[].keywords` | That theme's keywords, each `{text: <phrase>, matchType: "PHRASE"}` (deduped across themes; up to `--top-n`, default 25). Add `EXACT`/`BROAD` by hand only if a theme needs it. |
 
 > Audience-segment attachment is a planned follow-up — see [issue #20](https://github.com/imosquera/lead-drop/issues/20) for scope (brief field, executor, locked-field invariant) and the design of a sibling `/adkit audiences` skill (list catalog, create custom-intent, upload customer-match).
 
 ### Quality checklist before publish
 
 Per ad group (theme):
-- [ ] One intent theme; 3–20 related keywords as PHRASE (EXACT/BROAD by hand only if needed).
+- [ ] One keyword theme (from `### Keyword Themes`); 3–30 related keywords as PHRASE (schema cap 30 per ad group; EXACT/BROAD by hand only if needed).
 - [ ] **All 15 headlines filled** (exactly 15 unique), each ≤30 chars and able to stand alone.
 - [ ] Headlines are **distinct angles**, not reworded twins; no two say substantially the same thing.
 - [ ] The ad group's **main keyword appears across ≥3 headlines**, naturally phrased.
@@ -163,7 +164,7 @@ Per ad group (theme):
 - [ ] **No pins anywhere** — pinning is disabled (schema rejects any non-`NONE` pin).
 
 Per brief:
-- [ ] 1–4 theme ad groups (one per intent tier); each `adGroups[].name` unique.
+- [ ] 3–6 theme ad groups (one per keyword theme; spend-trap theme excluded); each `adGroups[].name` unique.
 - [ ] `campaign.negativeKeywords` seeded (scaffold auto-fills from `#### Negative Keywords`); reviewed.
 - [ ] Exactly 6 `campaign.sitelinks`, each `text` ≤25 chars and `finalUrl` live; descriptions both-or-neither.
 - [ ] Optional `campaign.priceAsset` and `campaign.structuredSnippet` are complete and accurately describe the offer.
@@ -182,7 +183,7 @@ ads.sh create $ARGUMENTS
 ads.sh create $ARGUMENTS --top-n 10
 ```
 
-If no filled brief exists yet, the script scaffolds one to a **throwaway temp path** (`$TMPDIR/ads-briefs/<slug>.yaml`, not committed) with **one ad group per intent theme** (Informational/Navigational/Commercial/Transactional present in the processed file), packs each with up to 20 keywords, auto-seeds `campaign.negativeKeywords` from the `#### Negative Keywords` section, and exits 2. It prints the temp path; fill in the headlines, descriptions, and `finalUrl` per theme per the STAG + RSA rules above, then re-run with the same idea slug (it finds the filled temp brief) or pass the temp `.yaml` path directly.
+If no filled brief exists yet, the script scaffolds one to a **throwaway temp path** (`$TMPDIR/ads-briefs/<slug>.yaml`, not committed) with **one ad group per keyword theme** from the processed file's `### Keyword Themes` section (spend-trap themes excluded), packs each with up to 25 keywords, auto-seeds `campaign.negativeKeywords` from the `#### Negative Keywords` section, and exits 2. **If the file has no `### Keyword Themes` section** (e.g. a processed file authored before this section existed), the script dies asking you to re-run `/adkit gtm <path>` to (re)generate it — there is deliberately no fallback to intent-tier grouping. It prints the temp path; fill in the headlines, descriptions, and `finalUrl` per theme per the STAG + RSA rules above, then re-run with the same idea slug (it finds the filled temp brief) or pass the temp `.yaml` path directly.
 
 ### 1. Preflight
 

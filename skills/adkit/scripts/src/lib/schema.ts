@@ -16,7 +16,15 @@ import { z } from "zod";
 
 export const AD_NAME_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
 export const CUSTOMER_ID_PATTERN = /^[0-9]{10}$/;
-export const MAX_AD_GROUPS = 20;
+// One ad group per Keyword Theme. Cap the campaign at 10 ad groups — beyond that
+// the shared budget is spread too thin to train Smart Bidding per group; /adkit
+// create keeps only the top 10 themes by potential volume (gtm authors them in
+// that order).
+export const MAX_AD_GROUPS = 10;
+// Max keywords per ad group (a STAG theme). Single source of truth: the scaffold's
+// per-theme packing cap (parse.ts MAX_KEYWORDS_PER_THEME) derives from this, so a
+// scaffolded brief can never exceed what validation accepts.
+export const AD_GROUP_MAX_KEYWORDS = 30;
 
 /** A validated `https://` URL string. Mirrors Pydantic's HttpUrl + https-only guard. */
 const httpsUrl = z.string().refine(
@@ -321,7 +329,7 @@ export const AdGroupSchema = z
     // max $15.00 CPC — guards against a fat-fingered micros value draining budget.
     defaultBidMicros: z.number().int().gt(0).max(15_000_000),
     responsiveSearchAd: ResponsiveSearchAdSchema,
-    keywords: z.array(KeywordSchema).min(1).max(20),
+    keywords: z.array(KeywordSchema).min(1).max(AD_GROUP_MAX_KEYWORDS),
   })
   .strict();
 export type AdGroup = z.infer<typeof AdGroupSchema>;

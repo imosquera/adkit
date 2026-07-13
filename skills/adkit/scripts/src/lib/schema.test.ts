@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_AD_GROUPS, parseBrief } from "./schema.js";
+import { AD_GROUP_MAX_KEYWORDS, MAX_AD_GROUPS, parseBrief } from "./schema.js";
 
 const adGroup = (name = "Waitlist Core", root = "vontevo") => ({
   name,
@@ -45,6 +45,13 @@ describe("Brief validation", () => {
 
   it("rejects zero ad groups", () => {
     expect(() => parseBrief({ ...validBrief(), adGroups: [] })).toThrow();
+  });
+
+  it("parses at the per-ad-group keyword cap and rejects one over", () => {
+    const kw = (n: number) => Array.from({ length: n }, (_, i) => ({ text: `kw-${i}`, matchType: "PHRASE" }));
+    const withKw = (n: number) => ({ ...validBrief(), adGroups: [{ ...adGroup(), keywords: kw(n) }] });
+    expect(() => parseBrief(withKw(AD_GROUP_MAX_KEYWORDS))).not.toThrow();
+    expect(() => parseBrief(withKw(AD_GROUP_MAX_KEYWORDS + 1))).toThrow();
   });
 
   it("rejects duplicate ad group names", () => {
