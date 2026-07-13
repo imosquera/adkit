@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import type { AdsClient, GaqlRow } from "../lib/auth.js";
 import { loadClient } from "../lib/auth.js";
+import { matchTypeName } from "../ads/enums.js";
 import { normalizeId } from "../cli/args.js";
 import { sdkErrorMessage } from "../cli/output.js";
 import {
@@ -91,7 +92,9 @@ interface AdRow {
 interface KeywordRow {
   campaign: { id: number | string };
   ad_group: { id: number | string };
-  ad_group_criterion: { keyword: { text: string; match_type: string } };
+  // match_type arrives as the RAW NUMERIC enum on GAQL rows (decoded to its
+  // string name via matchTypeName below); see ../ads/enums.ts.
+  ad_group_criterion: { keyword: { text: string; match_type: string | number } };
   metrics: RowMetrics;
 }
 
@@ -224,7 +227,7 @@ export function shapeRows(rows: {
       campaign_id: String(r.campaign.id),
       ad_group_id: String(r.ad_group.id),
       text: r.ad_group_criterion.keyword.text,
-      match_type: r.ad_group_criterion.keyword.match_type,
+      match_type: matchTypeName(r.ad_group_criterion.keyword.match_type),
       ...metricsOf(r.metrics),
     })),
     search_terms: rows.searchTerms.map((r) => ({

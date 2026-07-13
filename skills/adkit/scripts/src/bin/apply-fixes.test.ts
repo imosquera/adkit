@@ -25,7 +25,8 @@ vi.mock("../lib/auth.js", async (importOriginal) => {
   return { ...actual, loadClient: () => currentClient };
 });
 
-const { main } = await import("./apply-fixes.js");
+const { main, livePositiveKeywords, liveNegatives } = await import("./apply-fixes.js");
+const { validate } = await import("../fixes/plan.js");
 
 // ---------------------------------------------------------------------------
 // Fakes + fixtures
@@ -335,5 +336,81 @@ describe("searchPartners path", () => {
 
     expect(out).toContain("search partners None -> false");
     expect(mutations).toEqual([]); // dry-run
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live keyword identity keys — GAQL returns match_type as a RAW NUMERIC enum
+// (e.g. 3 === PHRASE), and the live map is built here but looked up in plan.ts.
+// These guard both halves of a regression that made every remove/pause/dedup
+// silently fail: (a) decoding the numeric match_type to its name, and (b) using
+// the SAME identity-key serialization (plan.ts's keyStr) on both sides.
+// ---------------------------------------------------------------------------
+
+/** Fake client returning fixed rows for any search; records no mutations. */
+function rowsClient(rows: unknown[]): AdsClient {
+  return {
+    async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
+      return rows as Row[];
+    },
+    async mutate(_customerId: string, _operations: AdsMutateOperation[]): Promise<MutateResult> {
+      return { results: [] };
+    },
+  };
+}
+
+describe("live keyword identity keys (numeric match_type)", () => {
+  it("livePositiveKeywords: a live PHRASE keyword (match_type 3) is seen as present by validate", async () => {
+    const client = rowsClient([
+      {
+        ad_group: { id: 111 },
+        ad_group_criterion: {
+          resource_name: "customers/1/adGroupCriteria/111~1",
+          keyword: { text: "Running Shoes", match_type: 3 }, // raw numeric enum, as the SDK returns it
+        },
+      },
+    ]);
+    const livePos = await livePositiveKeywords(client, "1", [111]);
+    // The map key must match what plan.ts builds for the SAME keyword on the plan side.
+    const errs = validate(
+      { keywords: [{ adGroupId: "111", remove: [{ text: "running shoes", matchType: "PHRASE" }] }] },
+      new Map(),
+      new Map(),
+      livePos,
+    );
+    expect(errs).toEqual([]); // pre-fix: "cannot remove running shoes[PHRASE] — not present on the ad group"
+  });
+
+  it("livePositiveKeywords: a mismatched match type is still correctly rejected", async () => {
+    const client = rowsClient([
+      {
+        ad_group: { id: 111 },
+        ad_group_criterion: {
+          resource_name: "customers/1/adGroupCriteria/111~1",
+          keyword: { text: "running shoes", match_type: 3 }, // live is PHRASE
+        },
+      },
+    ]);
+    const livePos = await livePositiveKeywords(client, "1", [111]);
+    const errs = validate(
+      { keywords: [{ adGroupId: "111", remove: [{ text: "running shoes", matchType: "EXACT" }] }] }, // plan asks EXACT
+      new Map(),
+      new Map(),
+      livePos,
+    );
+    expect(errs).toEqual([
+      "keywords adGroup 111: cannot remove running shoes[EXACT] — not present on the ad group",
+    ]);
+  });
+
+  it("liveNegatives: numeric match_type dedups against a plan add of the same negative", async () => {
+    const client = rowsClient([
+      { campaign: { id: 222 }, campaign_criterion: { keyword: { text: "Free", match_type: 2 } } }, // 2 === EXACT
+    ]);
+    const liveNeg = await liveNegatives(client, "1", [222]);
+    const set = liveNeg.get(222)!;
+    // Key is byte-identical to plan.ts's keyStr(negKey("free","EXACT")) → text is lowercased, name decoded.
+    expect(set.has("free\x1fEXACT")).toBe(true);
+    expect(set.has("free\x1f2")).toBe(false); // never the raw numeric form
   });
 });

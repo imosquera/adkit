@@ -59,6 +59,8 @@ import {
   adGroupStatusPlan,
   campaignStatusPlan,
   coerceKeyword,
+  keyStr,
+  negKey,
   newNegatives,
   newPositiveKeywords,
   posKey,
@@ -77,18 +79,21 @@ import {
   applySearchPartnersQuery,
 } from "../gaql/builders.js";
 import { enums } from "google-ads-api";
+import { matchTypeName } from "../ads/enums.js";
 import type { AdsClient, AdsMutateOperation } from "../lib/auth.js";
 import { loadClient } from "../lib/auth.js";
 
 // ---------------------------------------------------------------------------
 // SDK row shapes — only the fields this shell reads. google-ads-api returns
-// nested snake_case records; enum fields arrive as their STRING name already
-// (so `row.campaign.status` === "ENABLED"), micros as numbers.
+// nested snake_case records and micros as numbers. Enum fields are NOT uniform:
+// some (e.g. `campaign.status`) arrive as their STRING name, but keyword
+// `match_type` arrives as the RAW NUMERIC enum (e.g. 3). It is typed
+// `string | number` here and decoded via `matchTypeName` at the read site.
 // ---------------------------------------------------------------------------
 
 interface NegativeRow {
   campaign: { id: number };
-  campaign_criterion: { keyword: { text: string; match_type: string } };
+  campaign_criterion: { keyword: { text: string; match_type: string | number } };
 }
 
 interface CampaignStatusRow {
@@ -119,7 +124,7 @@ interface PositiveKeywordRow {
   ad_group: { id: number };
   ad_group_criterion: {
     resource_name: string;
-    keyword: { text: string; match_type: string };
+    keyword: { text: string; match_type: string | number };
   };
 }
 
@@ -127,10 +132,10 @@ interface HeadlineRow {
   ad_group_ad: { ad: { id: number; responsive_search_ad: { headlines: Array<{ text: string }> } } };
 }
 
-/** Serialize a positive/negative keyword identity tuple into a map key. */
-function identityKey(key: [string, string]): string {
-  return `${key[0]} ${key[1]}`;
-}
+// Live-state maps are keyed with plan.ts's `keyStr` (imported above) so the
+// keys this shell builds are byte-identical to the ones plan.ts's `validate`
+// and dedup helpers look them up by. Match types are decoded to their string
+// name first (`matchTypeName`), since the plan side always speaks the name.
 
 // ---------------------------------------------------------------------------
 // Live-state fetchers — each builds a lookup map from the query rows via a
@@ -149,7 +154,7 @@ export async function liveNegatives(
   const rows = await client.search<NegativeRow>(customerId, applyNegativesQuery(campaignIds));
   return rows.reduce((acc, r) => {
     const set = acc.get(r.campaign.id) ?? new Set<string>();
-    set.add(identityKey([r.campaign_criterion.keyword.text.toLowerCase(), r.campaign_criterion.keyword.match_type]));
+    set.add(keyStr(negKey(r.campaign_criterion.keyword.text, matchTypeName(r.campaign_criterion.keyword.match_type))));
     acc.set(r.campaign.id, set);
     return acc;
   }, new Map<number, Set<string>>());
@@ -246,7 +251,7 @@ export async function livePositiveKeywords(
   return rows.reduce((acc, r) => {
     const inner = acc.get(r.ad_group.id) ?? new Map<string, string>();
     inner.set(
-      identityKey(posKey(r.ad_group_criterion.keyword.text, r.ad_group_criterion.keyword.match_type)),
+      keyStr(posKey(r.ad_group_criterion.keyword.text, matchTypeName(r.ad_group_criterion.keyword.match_type))),
       r.ad_group_criterion.resource_name,
     );
     acc.set(r.ad_group.id, inner);
@@ -597,7 +602,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     const liveKeys = livePos.get(asId(agid)) ?? new Map<string, string>();
     const rn = (item: unknown): string => {
       const [kw] = coerceKeyword(item);
-      return liveKeys.get(identityKey(posKey(kw!.text, kw!.matchType)))!;
+      return liveKeys.get(keyStr(posKey(kw!.text, kw!.matchType)))!;
     };
     const removeRns = (Array.isArray(kb.remove) ? kb.remove : []).map(rn);
     const pauseRns = (Array.isArray(kb.pause) ? kb.pause : []).map(rn);
