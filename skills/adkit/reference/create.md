@@ -30,7 +30,7 @@ These rules are baked in. Apply them when filling the scaffolded brief.
 ### STAG: Single Theme Ad Group
 
 - **One keyword theme per ad group.** Keywords are grouped by **semantic theme** — the 3–6 `### Keyword Themes` `/adkit gtm` authors (step 15c), e.g. *salon software*, *barber/stylist*, *free intent* — *not* one-keyword-per-group and *not* by the I/N/C/T intent tier. (The intent tiers still live in `### Keywords`, but only as a buyer-intent + offer-matching annotation; they no longer define ad groups.) Google's close-variant matching and Smart Bidding made micro-SKAGs obsolete: theme groups consolidate conversion data so the ML optimizes faster, and ad copy can mirror the theme for a better Quality Score.
-- The scaffolder makes **one ad group per non-spend-trap theme** (3–6 themes), packing up to 25 keywords from that theme's `### Keyword Themes` bullets — so a fresh campaign launches near **~100 keywords total** (the gtm target; well above the audit's 25-keyword floor). `--top-n N` caps keywords-*per-theme* (1 ≤ N ≤ 30). Keywords are deduped **across themes** so each lands in exactly one ad group — no cross-group cannibalization. The scaffold prints the total and warns if it's outside 90–110.
+- The scaffolder makes **one ad group per non-spend-trap theme**, packing up to 25 keywords from that theme's `### Keyword Themes` bullets — so a fresh campaign launches near **~100 keywords total** (the gtm target; well above the audit's 25-keyword floor). `--top-n N` caps keywords-*per-theme* (1 ≤ N ≤ 30, matching the brief schema's per-ad-group ceiling). **At most 10 ad groups** — gtm authors themes highest-potential-volume first, and the scaffold keeps only the **top 10**; the brief schema also rejects more than 10. Keywords are deduped **across themes** so each lands in exactly one ad group — no cross-group cannibalization. The scaffold prints the total and warns if it's outside 90–110.
 - **The spend-trap theme is excluded.** The theme gtm flags `[spend-trap]` (generic, keep-but-don't-lead) gets **no ad group** — its terms feed the campaign negative-keyword list instead (that is *why* it's safe to negate them: they're no longer live ad-group keywords). Nothing to author for it.
 - Keywords go in as **`PHRASE`**. Close-variant matching + AI Max cover plurals/typos/synonyms, so the SKAG-era PHRASE+EXACT pair is redundant. Add `EXACT`/`BROAD` on a keyword by hand only if a theme genuinely needs it.
 - **One campaign → 3–6 theme ad groups → one RSA per theme → all that theme's keywords share one landing page and one ad message.** That shared copy/landing page *is* the STAG contract. All ad groups share the campaign budget.
@@ -142,7 +142,7 @@ Every campaign ships **at least 4 callouts** — short benefit phrases (no link)
 | `campaign.priceAsset` | Optional campaign-level price asset: 3–8 offerings with a ≤25-character header/description, positive `priceMicros`, and an https `finalUrl`. |
 | `campaign.structuredSnippet` | Optional campaign-level structured snippet: a supported header and 3–10 distinct values (≤25 characters each). |
 | `campaign.callouts` | **At least 4 callouts** (or none on legacy briefs). Each a plain phrase ≤25 chars, no URL — distinct benefit/offer, non-repetitive. Max 20. Scaffold emits 4 TODO placeholders. |
-| `adGroups[].name` | The keyword theme name from `### Keyword Themes` (e.g. `Salon Software`, `Barber / Stylist`) — one ad group per non-spend-trap theme (3–6). Free-form string (schema imposes no enum). |
+| `adGroups[].name` | The keyword theme name from `### Keyword Themes` (e.g. `Salon Software`, `Barber / Stylist`) — one ad group per non-spend-trap theme, **max 10** (top 10 by potential volume). Free-form string (schema imposes no enum). |
 | `adGroups[].defaultBidMicros` | **Operator-confirmed.** Scaffold default: `1_500_000` ($1.50 CPC); **max `15_000_000` ($15.00)** — per ad group |
 | `adGroups[].responsiveSearchAd.headlines` | Exactly 15 unique headlines **per ad group**, tuned to that theme's intent and containing top keywords across ≥3 headlines. |
 | `adGroups[].responsiveSearchAd.descriptions` | Exactly 4 unique descriptions per ad group. |
@@ -155,7 +155,7 @@ Every campaign ships **at least 4 callouts** — short benefit phrases (no link)
 ### Quality checklist before publish
 
 Per ad group (theme):
-- [ ] One keyword theme (from `### Keyword Themes`); 3–20 related keywords as PHRASE (EXACT/BROAD by hand only if needed).
+- [ ] One keyword theme (from `### Keyword Themes`); 3–30 related keywords as PHRASE (schema cap 30 per ad group; EXACT/BROAD by hand only if needed).
 - [ ] **All 15 headlines filled** (exactly 15 unique), each ≤30 chars and able to stand alone.
 - [ ] Headlines are **distinct angles**, not reworded twins; no two say substantially the same thing.
 - [ ] The ad group's **main keyword appears across ≥3 headlines**, naturally phrased.

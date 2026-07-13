@@ -10,17 +10,18 @@
  * these functions; nothing here touches the filesystem or the network.
  */
 
-import type { Keyword } from "../lib/schema.js";
+import { AD_GROUP_MAX_KEYWORDS, MAX_AD_GROUPS, type Keyword } from "../lib/schema.js";
 
 // STAG = Single Theme Ad Group. The scaffold makes one ad group per Keyword Theme
 // authored by /adkit gtm (step 15c) and packs up to this many keywords into each.
 // With 3-6 themes this lands a fresh campaign near the ~100-keyword launch target
 // (the gtm generation target, well above the audit's 25-keyword floor); with AI Max
 // + Smart Bidding on, more keywords per theme means more data to consolidate, not
-// the micro-SKAG anti-pattern. `--top-n` overrides (up to MAX_KEYWORDS_PER_THEME,
-// leaving headroom above the default).
+// the micro-SKAG anti-pattern. `--top-n` overrides (up to MAX_KEYWORDS_PER_THEME).
 export const DEFAULT_TOP_N = 25;
-export const MAX_KEYWORDS_PER_THEME = 30;
+// Derived from the brief schema's per-ad-group keyword ceiling so a scaffolded
+// brief always validates (they can't drift apart).
+export const MAX_KEYWORDS_PER_THEME = AD_GROUP_MAX_KEYWORDS;
 
 // A theme flagged by gtm as the generic "keep-but-don't-lead" spend trap. The
 // marker may sit anywhere in the `####` heading (before OR after any ` — role
@@ -104,9 +105,11 @@ function themeName(heading: string): string {
  * negatives, not ad groups). Keywords are cleaned (decoration/offer suffix
  * stripped, lowercased), deduped ACROSS themes (first-seen wins, so no keyword
  * can land in two ad groups — the no-cannibalization contract), and each theme is
- * truncated to `maxPerTheme` (Google's per-ad-group ceiling). Empty when the
- * `### Keyword Themes` subsection is absent → bin/create dies asking for a gtm
- * re-run (there is deliberately NO fallback to the old intent tiers).
+ * truncated to `maxPerTheme` (Google's per-ad-group ceiling). At most
+ * {@link MAX_AD_GROUPS} themes are returned — gtm authors them highest-potential-
+ * volume first, so capping keeps the top-volume themes and drops the weak tail.
+ * Empty when the `### Keyword Themes` subsection is absent → bin/create dies asking
+ * for a gtm re-run (there is deliberately NO fallback to the old intent tiers).
  */
 export function readThemeGroups(md: string, maxPerTheme: number): Array<[string, string[]]> {
   const section = gtmSubsection(md, "Keyword Themes");
@@ -115,7 +118,7 @@ export function readThemeGroups(md: string, maxPerTheme: number): Array<[string,
   }
   const headings = [...section.matchAll(/^####\s+(.+?)\s*$/gm)];
   const seen = new Set<string>();
-  return headings.flatMap((m, i): Array<[string, string[]]> => {
+  const themes = headings.flatMap((m, i): Array<[string, string[]]> => {
     const heading = m[1]!;
     if (SPEND_TRAP_MARKER.test(heading)) {
       return []; // spend-trap theme → excluded from ad groups
@@ -129,6 +132,7 @@ export function readThemeGroups(md: string, maxPerTheme: number): Array<[string,
     const capped = kws.slice(0, maxPerTheme);
     return capped.length > 0 ? [[themeName(heading), capped]] : [];
   });
+  return themes.slice(0, MAX_AD_GROUPS); // top 10 ad groups by authored (volume) order
 }
 
 /**

@@ -121,6 +121,15 @@ describe("readThemeGroups", () => {
     expect(readThemeGroups(md, 2)).toEqual([["Theme", ["one", "two"]]]);
   });
 
+  it("caps at the top 10 themes (ad-group ceiling), keeping the first — highest-volume — ones", () => {
+    const md =
+      "## Go To Market\n\n### Keyword Themes\n\n" +
+      Array.from({ length: 14 }, (_, i) => `#### Theme ${i}\n\n- kw ${i}\n`).join("\n");
+    const themes = readThemeGroups(md, 20);
+    expect(themes).toHaveLength(10);
+    expect(themes.map(([name]) => name)).toEqual(Array.from({ length: 10 }, (_, i) => `Theme ${i}`));
+  });
+
   it("returns empty when there is no ### Keyword Themes section (create then requires a gtm re-run)", () => {
     const onlyTiers = `
 ## Go To Market

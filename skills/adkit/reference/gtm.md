@@ -62,7 +62,7 @@ You also classify each keyword by intent tier (which doubles as a buying-cycle t
 `### Keyword Themes` is written to the file (not screen-only) and is what `/adkit create` parses to build ad groups — **one ad group per non-spend-trap theme**. Author it per Execution Step 15c. Shape:
 
 1. One subsection named exactly `### Keyword Themes`, placed AFTER `### Keywords` and BEFORE `### Ad Copy`.
-2. It opens with a one-line `> ` note, then **3–6** themes, each an h4:
+2. It opens with a one-line `> ` note, then **3–6** themes (aim for 3–6; **never more than 10** — `/adkit create` keeps only the first 10), ordered **highest-potential-volume theme first** (sum each theme's member-keyword volumes from `### Keywords`; the lead ad-group-split theme is usually #1). Ordering matters: the scaffold keeps the *top 10 by this order*, so a weak theme must sink to the bottom. Each theme is an h4: 
    ```
    ### Keyword Themes
 
@@ -191,6 +191,7 @@ Keep recommended offers concrete (a real artifact or action), not abstract ("nur
 15b. Append a `#### Negative Keywords` subsection LAST (after `#### Dropped (off-topic)`). Each bullet: `- <phrase> — reason: <2–6 word reason>`, using the step-9b list. Plain phrases only — **no** `(volume, …)` decoration (these are not Keyword Planner candidates). Always emit at least 8.
 15c. **Keyword Themes — WRITE the `### Keyword Themes` section (the ad-group source of truth).** Cluster the **kept** keywords into **3–6 semantic themes** and write them to the file in the shape defined by the *Keyword Themes Contract* above. `/adkit create` parses this section and makes one ad group per non-spend-trap theme, so this is where the STAG grouping now lives (not the intent tiers — see step 10).
    - **Cluster from the deterministic prior.** Each candidate carries a `concept_group` (step 8) — Google's own semantic grouping. Group the kept keywords by `concept_group` first, then merge, rename, and split those raw groups into 3–6 operator-facing themes (a `null` concept_group → use your own judgment for that keyword). This anchors themes to real Keyword Planner data instead of clustering from scratch, so the grouping is stable run-to-run and not invented. Themes are **orthogonal to** the four intent tiers (which cut by buying-cycle temperature) and to the on-theme/off-theme tag from step 9 — a single theme can span several intent tiers and mix on-theme and off-theme keywords.
+   - **Order themes by potential volume, cap at 10.** Write the themes highest-total-volume first (sum each theme's member-keyword volumes from `### Keywords`). Aim for 3–6; if you ever author more, keep it to **≤10** — `/adkit create` builds at most 10 ad groups and keeps the *first 10* in file order, so the highest-volume themes must come first. Keep each theme to **≤30 keywords** (the per-ad-group schema cap; the scaffold's default packs 25) — if a theme would exceed that, split it or let its lowest-volume tail fall out.
    - **Every theme keyword must come from the kept `### Keywords` set** (themes re-group the kept keywords; they do not introduce new phrases), and each kept keyword lands in **exactly one** theme (no cross-theme duplication — that cannibalizes across ad groups).
    - **Resolve each theme's `> Offer:`.** For each non-spend-trap theme, look at its member keywords' intent tiers (from step 10) and take the **highest-actionable** one — Transactional > Commercial > Navigational > Informational. Write that tier's Default offer as the theme's single `> Offer:` line. Rationale: AI Max expands past the literal keyword list, so biasing the offer toward the theme's hottest represented intent doesn't strand the colder long-tail; and one ad group needs one coherent offer, not four. The Ad Copy Phase reads this line directly.
    - **Flag exactly the generic "keep-but-don't-lead" cluster as `[spend-trap]`.** Mark that theme's h4 heading with `[spend-trap]`, give it **no** `> Offer:` line, and seed its member phrases into `#### Negative Keywords` (step 9b). It gets no ad group.
@@ -229,7 +230,7 @@ Keep recommended offers concrete (a real artifact or action), not abstract ("nur
    - each tier subsection has a single `> Default offer:` line directly under its heading,
    - each tier subsection has at least 5 keyword bullets,
    - any bullet with an offer suffix uses the exact ` — offer: ` separator.
-   - **`### Keyword Themes`** exists (after `### Keywords`) with **3–6** `####` themes; **≥1** is NOT `[spend-trap]`; each non-spend-trap theme has exactly one `> Offer:` line and ≥1 keyword bullet.
+   - **`### Keyword Themes`** exists (after `### Keywords`) with **3–10** `####` themes (aim 3–6; hard cap 10), ordered highest-potential-volume first; **≥1** is NOT `[spend-trap]`; each non-spend-trap theme has exactly one `> Offer:` line, ≥1 keyword bullet, and **≤30** keywords.
    - **Theme↔tier consistency**: every theme keyword also appears in some `### Keywords` tier (themes re-group the kept set; no new phrases), and **no keyword appears in two themes** (cross-theme duplication cannibalizes ad groups — fix by moving it to one theme).
    - **Spend-trap → negatives**: every keyword under a `[spend-trap]` theme also appears in `#### Negative Keywords`.
 18. Keyword phase done. Record each theme's name and its resolved `> Offer:` line — the Ad Copy phase generates one RSA per theme from them. **Do NOT return yet**; proceed to the Ad Copy phase below and emit a single combined status line at the end.
@@ -243,7 +244,7 @@ After `### Keyword Themes` is written, generate **one Responsive Search Ad set p
 ### Ad Copy — Output Contract
 
 1. Append or replace one subsection named exactly `### Ad Copy` under the same `## Go To Market` section, AFTER `### Keyword Themes`.
-2. Under `### Ad Copy`, create **one subsection per non-spend-trap theme, in `### Keyword Themes` order**, each named `#### <Theme Name>` — the same theme name as its h4 in `### Keyword Themes` (so the RSA maps 1:1 to the ad group `/adkit create` builds). The number of subsections equals the number of ad groups (3–6, minus any spend-trap theme).
+2. Under `### Ad Copy`, create **one subsection per non-spend-trap theme, in `### Keyword Themes` order**, each named `#### <Theme Name>` — the same theme name as its h4 in `### Keyword Themes` (so the RSA maps 1:1 to the ad group `/adkit create` builds). The number of subsections equals the number of ad groups (the non-spend-trap themes, at most 10).
 3. Each subsection begins with a single one-line `> Offer:` blockquote that MUST equal that theme's `> Offer:` from `### Keyword Themes` (which was resolved to the theme's highest-actionable represented tier — T>C>N>I). This one offer sets the whole ad set's temperature.
 4. Each subsection contains **one RSA ad set** in this exact shape:
 
