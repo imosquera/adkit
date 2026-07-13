@@ -295,15 +295,18 @@ export function applyCampaignStatusesQuery(
 }
 
 /**
- * Each campaign's current Search Partners setting, so a searchPartners fixes block
- * can skip a no-op flip (a campaign already at the requested setting).
+ * Each campaign's current Search Partners setting plus target_google_search, so a
+ * searchPartners fixes block can skip a no-op flip (a campaign already at the
+ * requested setting) and reject an ENABLE that Google Ads would reject server-side
+ * (target_search_network=true requires target_google_search=true).
  */
 export function applySearchPartnersQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): string {
   const ids = campaignIds.map((i) => gaqlId(i)).join(",");
   return (
-    "SELECT campaign.id, campaign.network_settings.target_search_network " +
+    "SELECT campaign.id, campaign.network_settings.target_search_network, " +
+    "campaign.network_settings.target_google_search " +
     `FROM campaign WHERE campaign.id IN (${ids})`
   );
 }

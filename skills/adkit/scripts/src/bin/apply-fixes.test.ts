@@ -91,15 +91,29 @@ function writePlan(blocks: Array<Record<string, unknown>>): string {
 }
 
 /**
- * Fake client whose search returns the given live campaign network_settings.target_search_network
- * (the only read a searchPartners-only plan triggers). `mutations` records every mutate batch.
+ * Fake client whose search returns the given live campaign network_settings
+ * (target_search_network from `live`, target_google_search from `googleSearch` —
+ * defaulting to `true` so existing enable/disable tests aren't blocked by the
+ * ENABLE precondition unless a test opts in). Pass `omitNetworkSettings` ids to
+ * simulate the API returning a row with no network_settings sub-message at all
+ * (the "unknown state" case liveSearchPartners must not crash on).
+ * `mutations` records every mutate batch.
  */
-function searchPartnersClient(live: Record<number, boolean>): {
+function searchPartnersClient(
+  live: Record<number, boolean>,
+  googleSearch: Record<number, boolean> = {},
+  omitNetworkSettings: number[] = [],
+): {
   client: AdsClient;
   mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }>;
 } {
   const rows = Object.entries(live).map(([id, enabled]) => ({
-    campaign: { id: Number(id), network_settings: { target_search_network: enabled } },
+    campaign: {
+      id: Number(id),
+      network_settings: omitNetworkSettings.includes(Number(id))
+        ? undefined
+        : { target_search_network: enabled, target_google_search: googleSearch[Number(id)] ?? true },
+    },
   }));
   const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
   const client: AdsClient = {
@@ -282,5 +296,44 @@ describe("searchPartners path", () => {
         },
       },
     ]);
+  });
+
+  it("rejects enabling when the campaign's target_google_search is off", async () => {
+    const { client, mutations } = searchPartnersClient({ 100: false }, { 100: false });
+    currentClient = client;
+    const plan = writeSearchPartnersPlan([{ campaignId: "100", enabled: true }]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(1); // validation failure, not a live API error
+    const out = cap.text();
+
+    expect(out).toContain("VALIDATION FAILED");
+    expect(out).toContain("Google Search targeting is off");
+    expect(mutations).toEqual([]); // never reaches the mutate call
+  });
+
+  it("does not reject disabling when target_google_search is off", async () => {
+    const { client, mutations } = searchPartnersClient({ 100: true }, { 100: false });
+    currentClient = client;
+    const plan = writeSearchPartnersPlan([{ campaignId: "100", enabled: false }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    cap.text();
+
+    expect(mutations.length).toBe(1); // OFF has no target_google_search precondition
+  });
+
+  it("a campaign row missing network_settings entirely is treated as unknown, not a crash", async () => {
+    const { client, mutations } = searchPartnersClient({ 100: false }, {}, [100]);
+    currentClient = client;
+    const plan = writeSearchPartnersPlan([{ campaignId: "100", enabled: false }]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0); // no crash; unknown live state is treated as a change
+    const out = cap.text();
+
+    expect(out).toContain("search partners None -> false");
+    expect(mutations).toEqual([]); // dry-run
   });
 });

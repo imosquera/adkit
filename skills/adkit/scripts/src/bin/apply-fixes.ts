@@ -99,8 +99,15 @@ interface AdGroupStatusRow {
   ad_group: { id: number; status: string };
 }
 
+// network_settings is optional here (not `{ target_search_network: boolean }`
+// outright) because the API omits an empty embedded message from the response;
+// liveSearchPartners below treats a missing row/field as "unknown" rather than
+// dereferencing it and crashing (mirrors how audit.ts treats quality_info).
 interface SearchPartnersRow {
-  campaign: { id: number; network_settings: { target_search_network: boolean } };
+  campaign: {
+    id: number;
+    network_settings?: { target_search_network?: boolean; target_google_search?: boolean };
+  };
 }
 
 interface BudgetRow {
@@ -174,20 +181,32 @@ export async function liveAdGroupStatuses(
   return rows.reduce((acc, r) => acc.set(r.ad_group.id, r.ad_group.status), new Map<number, string>());
 }
 
-/** campaignId -> current network_settings.target_search_network, so a no-op flip can be skipped. */
+/**
+ * campaignId -> {enabled, googleSearchEnabled} read from network_settings, so a
+ * no-op flip can be skipped and an ENABLE against a campaign with
+ * target_google_search=false can be rejected up front (Google Ads rejects that
+ * combination server-side). A campaign whose network_settings (or either boolean
+ * inside it) is absent from the response is omitted from the map entirely rather
+ * than defaulted — it falls into the existing "no live data" (unknown) handling in
+ * searchPartnersPlan/searchPartnersPreconditionErrors instead of throwing.
+ */
 export async function liveSearchPartners(
   client: AdsClient,
   customerId: string,
   campaignIds: ReadonlyArray<string | number>,
-): Promise<Map<number, boolean>> {
+): Promise<Map<number, { enabled: boolean; googleSearchEnabled: boolean }>> {
   if (campaignIds.length === 0) {
     return new Map();
   }
   const rows = await client.search<SearchPartnersRow>(customerId, applySearchPartnersQuery(campaignIds));
-  return rows.reduce(
-    (acc, r) => acc.set(r.campaign.id, r.campaign.network_settings.target_search_network),
-    new Map<number, boolean>(),
-  );
+  return rows.reduce((acc, r) => {
+    const ns = r.campaign.network_settings;
+    if (ns?.target_search_network === undefined || ns?.target_google_search === undefined) {
+      return acc;
+    }
+    acc.set(r.campaign.id, { enabled: ns.target_search_network, googleSearchEnabled: ns.target_google_search });
+    return acc;
+  }, new Map<number, { enabled: boolean; googleSearchEnabled: boolean }>());
 }
 
 /** campaignId -> {resource, amountMicros} for the campaign's current budget. */
@@ -358,8 +377,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     customer,
     section(plan, "searchPartners").map((s) => s.campaignId as string | number),
   );
+  // Split into the two plain boolean maps the pure plan.ts functions expect:
+  // current target_search_network (searchPartnersPlan's no-op-skip check) and
+  // current target_google_search (searchPartnersPreconditionErrors' ENABLE guard).
+  const liveSpEnabled = new Map([...liveSp].map(([id, v]) => [id, v.enabled]));
+  const liveSpGoogleSearch = new Map([...liveSp].map(([id, v]) => [id, v.googleSearchEnabled]));
 
-  const errs = validate(plan, live, budgets, livePos);
+  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch);
   if (errs.length > 0) {
     console.log("VALIDATION FAILED:");
     for (const e of errs) {
@@ -372,7 +396,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const enableChanges = statusChanges.filter((c) => c.status === "ENABLED");
   const [agStatusChanges, agStatusSkips] = adGroupStatusPlan(section(plan, "adGroupStatus"), liveAgStatus);
   const agEnableChanges = agStatusChanges.filter((g) => g.status === "ENABLED");
-  const [spChanges, spSkips] = searchPartnersPlan(section(plan, "searchPartners"), liveSp);
+  const [spChanges, spSkips] = searchPartnersPlan(section(plan, "searchPartners"), liveSpEnabled);
   const spEnableChanges = spChanges.filter((c) => c.enabled === true);
 
   /**

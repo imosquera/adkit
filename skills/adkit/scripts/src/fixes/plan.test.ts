@@ -449,4 +449,21 @@ describe("searchPartners", () => {
     expect(errs.some((e) => e.includes("abc"))).toBe(true);
     expect(errs.some((e) => e.includes("123") && e.includes("enabled"))).toBe(true);
   });
+
+  it("rejects enabled:true when live target_google_search is false", () => {
+    const plan = { searchPartners: [{ campaignId: "100", enabled: true }] };
+    const errs = validate(plan, {}, {}, undefined, { 100: false });
+    expect(errs.some((e) => e.includes("100") && e.includes("Google Search targeting is off"))).toBe(true);
+  });
+
+  it("does not reject enabled:false regardless of live target_google_search", () => {
+    const plan = { searchPartners: [{ campaignId: "100", enabled: false }] };
+    expect(validate(plan, {}, {}, undefined, { 100: false })).toEqual([]);
+  });
+
+  it("does not reject enabled:true when live target_google_search is unknown or true", () => {
+    const plan = { searchPartners: [{ campaignId: "100", enabled: true }] };
+    expect(validate(plan, {}, {}, undefined, {})).toEqual([]);
+    expect(validate(plan, {}, {}, undefined, { 100: true })).toEqual([]);
+  });
 });
