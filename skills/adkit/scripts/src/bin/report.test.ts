@@ -90,7 +90,8 @@ describe("shapeRows", () => {
         {
           campaign: { id: 11 },
           ad_group: { id: 21 },
-          ad_group_criterion: { keyword: { text: "shoes", match_type: "PHRASE" } },
+          // match_type as the SDK actually returns it: raw numeric enum (3 === PHRASE).
+          ad_group_criterion: { keyword: { text: "shoes", match_type: 3 } },
           metrics: metrics(),
         },
       ],
