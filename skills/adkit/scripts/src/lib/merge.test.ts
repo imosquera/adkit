@@ -7,8 +7,9 @@ function idea(
   comp = "LOW",
   low: number | null = 1_000_000,
   high: number | null = 2_000_000,
+  conceptGroup: string | null = null,
 ): ApiIdea {
-  return { phrase, volume, competition: comp, lowMicros: low, highMicros: high };
+  return { phrase, volume, competition: comp, lowMicros: low, highMicros: high, conceptGroup };
 }
 
 describe("comparisonKey", () => {
@@ -52,6 +53,19 @@ describe("unionCandidates", () => {
     expect(c.source).toBe("both");
     expect(c.volume).toBe(36_000);
     expect(c.competition).toBe("HIGH");
+  });
+
+  it("carries the api concept group through to matched and api-only candidates", () => {
+    const both = unionCandidates(
+      ["buy now"],
+      [idea("buy now", 20_000, "LOW", 1_000_000, 2_000_000, "Purchase Intent")],
+    );
+    expect(both[0].conceptGroup).toBe("Purchase Intent");
+    const apiOnly = unionCandidates(
+      [],
+      [idea("espresso machine", 20_000, "LOW", 1_000_000, 2_000_000, "Coffee Makers")],
+    );
+    expect(apiOnly[0].conceptGroup).toBe("Coffee Makers");
   });
 
   it("keeps api-only phrases and drops bare llm", () => {
