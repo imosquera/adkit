@@ -1,5 +1,5 @@
 ---
-description: "Build the full Go-To-Market block for a processed idea: Keyword Planner-decorated keyword tiers (volume/competition/CPC) PLUS a tier-matched Responsive Search Ad set (15 headlines / 4 descriptions) per tier. Reads raw, writes processed under Go To Market > Keywords + Ad Copy. (Merged ads:keywords + idea:adcopy.)"
+description: "Build the full Go-To-Market block for a processed idea: Keyword Planner-decorated keyword tiers (volume/competition/CPC), a semantic Keyword Themes grouping (the ad-group source of truth for /adkit create), PLUS a theme-matched Responsive Search Ad set (15 headlines / 4 descriptions) per theme. Reads raw, writes processed under Go To Market > Keywords + Keyword Themes + Ad Copy. (Merged ads:keywords + idea:adcopy.)"
 argument-hint: "ideas/raw/<file>.md [--geo geoTargetConstants/N] [--language languageConstants/N] [optional idea notes]"
 user-invocable: true
 disable-model-invocation: false
@@ -15,9 +15,11 @@ Use user input when provided. Do not ask clarifying questions.
 
 ## Role
 
-You are a focused Go-To-Market command for processed idea files. You run in **two phases against one file**: first keyword research (the `### Keywords` block), then Responsive Search Ad copy matched to those tiers (the `### Ad Copy` block). Both land under a single `## Go To Market` section.
+You are a focused Go-To-Market command for processed idea files. You run in **two phases against one file**: first keyword research (the `### Keywords` block plus the `### Keyword Themes` grouping), then Responsive Search Ad copy matched to those **themes** (the `### Ad Copy` block). All land under a single `## Go To Market` section.
 
-Your job is to append practical search keywords to one existing markdown file for downstream landing-page and marketing use, then generate ready-to-paste RSA copy whose offer and message match each keyword tier's buying-cycle temperature.
+Your job is to append practical search keywords to one existing markdown file for downstream landing-page and marketing use, cluster them into the 3–6 **Keyword Themes** that become the campaign's ad groups, then generate ready-to-paste RSA copy whose offer and message match each theme's resolved buying-cycle temperature.
+
+**The `### Keyword Themes` section is the ad-group source of truth** — `/adkit create` parses it and makes one ad group per non-spend-trap theme. The four I/N/C/T intent tiers in `### Keywords` are **not** the ad-group grouping any more; they are a per-keyword buyer-intent + offer-matching annotation that each theme's resolved offer is derived from.
 
 **Before proceeding, read:**
 - [`reference/google/2-keyword-mining.md`](google/2-keyword-mining.md) — intent classification, screening criteria, grouping rules
@@ -37,9 +39,10 @@ You also classify each keyword by intent tier (which doubles as a buying-cycle t
 ## Output Contract
 
 1. Modify only the provided markdown file.
-2. Append or replace one section named exactly:
-   - `## Go To Market`
-   - `### Keywords`
+2. Append or replace, under a single `## Go To Market` section, these three subsections in order:
+   - `### Keywords` — the four I/N/C/T intent tiers + Dropped + Negative Keywords (this section).
+   - `### Keyword Themes` — the 3–6 semantic themes that become ad groups (see the Keyword Themes Contract below).
+   - `### Ad Copy` — one RSA set per theme (see the Ad Copy Phase).
 3. Under `### Keywords`, create these subsections in this order:
    - `#### Informational` (cold — early curiosity)
    - `#### Navigational` (warm — looking for a specific destination)
@@ -53,6 +56,30 @@ You also classify each keyword by intent tier (which doubles as a buying-cycle t
 7. Keep keywords buyer-search realistic, specific, and useful for content, landing pages, and paid search.
 8. Preserve the rest of the file exactly except for the `## Go To Market` keyword section update.
 9. Return a concise status line with the modified file path and keyword counts.
+
+## Keyword Themes Contract (the ad-group source of truth)
+
+`### Keyword Themes` is written to the file (not screen-only) and is what `/adkit create` parses to build ad groups — **one ad group per non-spend-trap theme**. Author it per Execution Step 15c. Shape:
+
+1. One subsection named exactly `### Keyword Themes`, placed AFTER `### Keywords` and BEFORE `### Ad Copy`.
+2. It opens with a one-line `> ` note, then **3–6** themes (aim for 3–6; **never more than 10** — `/adkit create` keeps only the first 10), ordered **highest-potential-volume theme first** (sum each theme's member-keyword volumes from `### Keywords`; the lead ad-group-split theme is usually #1). Ordering matters: the scaffold keeps the *top 10 by this order*, so a weak theme must sink to the bottom. Each theme is an h4: 
+   ```
+   ### Keyword Themes
+
+   > One ad group per theme below (except [spend-trap], which feeds negatives only).
+
+   #### <Theme Name> — <one-line role note>
+   > Offer: <resolved offer for this theme>
+   - keyword phrase one
+   - keyword phrase two
+
+   #### <Generic Theme Name> [spend-trap] — generic, keep-but-don't-lead
+   - generic keyword one
+   ```
+3. **Theme name**: the h4 text up to the ` — role note`. It becomes `adGroups[].name`, so keep it short and human (`Salon Software`, `Barber / Stylist`).
+4. **Spend-trap marker**: a theme that should never lead an ad carries the literal token `[spend-trap]` anywhere in its h4 heading (before or after the role note). `/adkit create` **excludes** it from ad groups; its terms are seeded into `#### Negative Keywords` instead (safe precisely because they're no longer live ad-group keywords). A spend-trap theme needs **no** `> Offer:` line (it gets no ad).
+5. **`> Offer:` line** (non-spend-trap themes only): exactly one, directly under the h4. It is the theme's **resolved offer** = the Default offer of the theme's **highest-actionable represented intent tier** (Transactional > Commercial > Navigational > Informational) among its member keywords. This single line is what the Ad Copy Phase reads for that theme's RSA — no re-derivation from `### Keywords`.
+6. **Keyword bullets**: bare phrases (no `(volume, …)` decoration needed — decoration lives in `### Keywords`), one per line. Every theme keyword MUST also appear in some `### Keywords` tier (the themes are a re-grouping of the kept set, not a new keyword source). A keyword appears in **exactly one** theme (no cross-theme duplication — that would cannibalize across ad groups).
 
 ## Keyword Research Guidance
 
@@ -115,12 +142,14 @@ Keep recommended offers concrete (a real artifact or action), not abstract ("nur
 1. If the file already has `## Go To Market`:
    - If it already contains `### Keywords`, replace only the full `### Keywords` subsection.
    - If it does not contain `### Keywords`, append `### Keywords` to the end of `## Go To Market`.
+   - Same rule for `### Keyword Themes` (replace the whole subsection if present) and `### Ad Copy`. Order within `## Go To Market`: `### Keywords`, then `### Keyword Themes`, then `### Ad Copy`.
 2. If the file does not have `## Go To Market`, append it to the end of the file.
 3. Preserve any other existing `## Go To Market` subsections.
-4. Keep a single blank line between headings, the `> Default offer:` line, and the bullet list.
+4. Keep a single blank line between headings, the `> Default offer:` / `> Offer:` line, and the bullet list.
 5. Bullet format:
-   - Tier-default intent: `- keyword phrase`
-   - Divergent / multi-intent: `- keyword phrase — offer: <recommended offer>`
+   - `### Keywords` tier-default intent: `- keyword phrase`
+   - `### Keywords` divergent / multi-intent: `- keyword phrase — offer: <recommended offer>`
+   - `### Keyword Themes` keyword bullet: `- keyword phrase` (bare — no decoration or offer suffix).
 
 ## Execution Steps
 
@@ -151,26 +180,46 @@ Keep recommended offers concrete (a real artifact or action), not abstract ("nur
    - **The dropped phrases (step 9)** — the off-vertical / wrong-buyer terms are natural negatives (e.g. for an agency pitch tool: `marketing agency near me`, `seo`, the `mtg`/Magic-the-Gathering "deck" homonym).
    - **Generic intent-mismatch modifiers** the idea does not serve — common B2B blockers like `jobs`, `salary`, `course`, `tutorial`, `meaning`, `definition`, `reddit`, `free download`, `near me`, `hire`, `internship`, plus any modifier that signals the wrong buyer/intent for this specific product.
    - **Cannibalization guards** — single words that, if left to broad/close-variant matching, would pull clearly-wrong queries given the vertical (homonyms, adjacent industries).
-   Each negative is a short phrase (PHRASE match is assumed downstream). **Do NOT negate any word that appears in a kept keyword** (e.g. never negate `template` if a template term is a live keyword) — that would suppress your own traffic. Prefer multi-word phrases over single broad tokens when a single token risks over-blocking.
-   - **Cross-link to live-campaign waste.** When a live campaign already exists for this idea, the generic-category / generic-scheduling cluster (the "keep-but-don't-lead" theme from step 15c) is the area `/adkit audit` most often flags as zero-conversion waste. Treat that theme as a **watch signal, not a negate list**: the theme is built from *kept* keywords, so negating it would suppress your own traffic (and campaign-level negatives apply across every ad group — see the guard above). Instead, pull the audit's zero-converting **search terms / modifiers** under that theme and seed as negatives only the ones **not present in the kept keyword set** — negate the specific wasted *query variant* the audit surfaced (e.g. `free appointment scheduling`, `... jobs`, `... reddit`), never the kept keyword it matched on (e.g. keep `appointment scheduling software` live). In a real run those wasted query variants mapped ~1:1 to the spend the audit surfaced.
-10. Assign each surviving candidate to **exactly one** of the four intent tiers (Informational / Navigational / Commercial / Transactional) per the Intent Definitions, classifying by true buying-cycle temperature. **This tier assignment IS the STAG (Single Theme Ad Group) grouping** — downstream `ads:create` turns each tier into one ad group verbatim and makes no grouping decision of its own. So the grouping intelligence lives *here*: a keyword must appear in only one tier (never repeated across tiers), and the keywords you place in a tier must read as one coherent theme that can share a single ad message.
-11. Within each tier, order bullets **on-theme first, then by `volume` descending** with alphabetical tie-break (on-theme = carries ≥1 core theme token per step 9; off-theme terms sink below every on-theme one and are the first truncated by step 12's cap). This keeps the idea's positioning at the top of each tier, which is exactly what downstream `ads:create` reads when it groups each tier into a Single Theme Ad Group (STAG). (Amends the volume-only ordering of spec FR-016 — see the plan note.)
+   Each negative is a short phrase (PHRASE match is assumed downstream). **Do NOT negate any word that appears in a keyword you keep in an ad-group theme** — i.e. any keyword in a non-spend-trap `### Keyword Themes` theme (e.g. never negate `template` if a template term leads a live ad group) — that would suppress your own traffic. This guard does **not** protect spend-trap-theme terms: those are excluded from ad groups (step 15c), so they are no longer live keywords and are safe — indeed expected — to negate (see the next bullet). Prefer multi-word phrases over single broad tokens when a single token risks over-blocking.
+   - **Seed the spend-trap theme's terms as negatives.** The generic `[spend-trap]` theme from step 15c gets no ad group, so its member phrases become negatives here. This is also the cluster `/adkit audit` most often flags as zero-conversion waste on a live campaign — in a real run those generic terms mapped ~1:1 to the wasted spend the audit surfaced. Because the theme is excluded from ad groups, negating its terms no longer contradicts the guard above.
+10. Assign each surviving candidate to **exactly one** of the four intent tiers (Informational / Navigational / Commercial / Transactional) per the Intent Definitions, classifying by true buying-cycle temperature. This tier assignment is the **buyer-intent + offer-matching annotation** — it sets each keyword's Default offer and drives each theme's resolved `> Offer:` (step 15c). It is **no longer** the ad-group grouping: the STAG ad groups come from `### Keyword Themes` (step 15c), which `ads:create` parses. Keep a keyword in only one tier (never repeated across tiers) so its intent/offer is unambiguous; a tier no longer has to read as one coherent ad message (the *theme* does).
+11. Within each tier, order bullets **on-theme first, then by `volume` descending** with alphabetical tie-break (on-theme = carries ≥1 core theme token per step 9; off-theme terms sink below every on-theme one and are the first truncated by step 12's cap). This keeps the idea's positioning at the top of each tier for readability and makes the highest-intent on-theme keywords easy to pull into themes at step 15c. (Amends the volume-only ordering of spec FR-016 — see the plan note.)
 12. Cap each tier at 8–16 bullets; truncate the tail if more were classified there. If a tier has fewer than 5, redistribute / relax (existing keyword guidance).
 13. For each tier, write the `> Default offer:` line that matches the tier's typical temperature for this idea's category and buyer.
 14. Render each bullet as `- <bullet_text>` (using the verbatim CLI-provided string). For any candidate whose true temperature diverges from its tier default, append ` — offer: <recommended offer>` to that bullet (the offer suffix comes AFTER the decoration on the same line — spec FR-004).
 15. If any phrases were dropped in step 9, append a `#### Dropped (off-topic)` subsection AFTER `#### Transactional`. Each bullet: `- <bullet_text> — reason: <2–6 word reason>`. Omit the subsection entirely if nothing was dropped.
 15b. Append a `#### Negative Keywords` subsection LAST (after `#### Dropped (off-topic)`). Each bullet: `- <phrase> — reason: <2–6 word reason>`, using the step-9b list. Plain phrases only — **no** `(volume, …)` decoration (these are not Keyword Planner candidates). Always emit at least 8.
-15c. **Keyword Themes + ad-group-split recommendation (screen only — NOT written to the file).** After the tiers, dropped, and negatives are determined, cluster the **kept** keywords into **3–6 high-level semantic themes** and print them in the run output. **Start from the deterministic prior:** each candidate carries a `concept_group` (step 8) — Google's own semantic grouping. Group the kept keywords by their `concept_group` first, then merge, rename, and split those raw groups into 3–6 operator-facing themes (a `null` concept_group means fall back to your own judgment for that keyword). This anchors the themes to real Keyword Planner data instead of clustering from scratch, so the grouping is stable run-to-run and not invented. These themes are a *third* lens, **orthogonal to both** the four intent tiers (which cut by buying-cycle temperature) **and** the binary on-theme/off-theme tag from step 9 (which is a per-keyword relevance flag) — a single theme can span several intent tiers and mix on-theme and off-theme keywords. Their purpose is to show the operator *what the campaign is actually about, thematically*, which the I/N/C/T tiers scatter and obscure. (This capital-T **`Keyword Themes`** block is distinct from the lowercase "keyword themes" that steps 18 and A1 hand to the Ad Copy phase — those are the per-tier on-theme concept the RSA copy carries; this 15c block is a cross-tier operator view and is **not** consumed by the Ad Copy phase.)
-   - **Format.** Emit a `Keyword Themes` block. Each theme is one line: a **bold name**, a parenthetical one-line role note, then its member keywords. Use role notes drawn from the idea's own semantics — typical roles are: *category core* (the on-vertical, on-positioning heart of the idea), *occupation/segment-specific*, *generic / keep-but-don't-lead* (plausible paid targets that must never lead an ad — the spend-trap watch list), *free / freemium intent*, and *competitor conquest (navigational)*. Do not force these exact five; name the 3–6 that the kept set actually forms.
-   - **Ad-group-split recommendation.** After the themes, name the **1–2 themes with the highest on-theme buyer intent** as the natural ad-group / campaign split (the clusters that are highest-intent, most on-brand, and best-differentiated deserve their own ad group or campaign). Then **flag any spend-trap theme** — an off-positioning generic cluster that should never lead an ad and should be watched for negatives (step 9b).
-   - **Illustrative example** (a salon-booking idea — placeholder, do not leak this domain into real runs):
-     - **Salon / spa / beauty software** (category core) — salon booking software, salon management software, beauty salon software, …
-     - **Hair / barber / stylist / esthetician** (segment-specific) — hair stylist app, barber app, best scheduling app for estheticians, …
-     - **Generic appointment / scheduling** (generic, keep-but-don't-lead / spend-trap watch) — appointment scheduling software, online scheduling tool, best scheduling app, …
-     - **Free / freemium intent** — free appointment booking app, free booking system, …
-     - **Competitor conquest** (navigational) — `<competitor>` booking, `<competitor>` barbers, …
-     - *Split:* lead with **Salon/spa software** + **Hair/barber/esthetician** (highest on-theme intent, best differentiated) as their own ad groups; **Generic appointment/scheduling** is the spend trap — never lead an ad with it, and watch it for negatives (step 9b).
-   - This step **prints to screen only**. It writes nothing to the file and adds no new file-shape assertion, so Section Update Rules and the verify step (17) are unaffected.
+15c. **Keyword Themes — WRITE the `### Keyword Themes` section (the ad-group source of truth).** Cluster the **kept** keywords into **3–6 semantic themes** and write them to the file in the shape defined by the *Keyword Themes Contract* above. `/adkit create` parses this section and makes one ad group per non-spend-trap theme, so this is where the STAG grouping now lives (not the intent tiers — see step 10).
+   - **Cluster from the deterministic prior.** Each candidate carries a `concept_group` (step 8) — Google's own semantic grouping. Group the kept keywords by `concept_group` first, then merge, rename, and split those raw groups into 3–6 operator-facing themes (a `null` concept_group → use your own judgment for that keyword). This anchors themes to real Keyword Planner data instead of clustering from scratch, so the grouping is stable run-to-run and not invented. Themes are **orthogonal to** the four intent tiers (which cut by buying-cycle temperature) and to the on-theme/off-theme tag from step 9 — a single theme can span several intent tiers and mix on-theme and off-theme keywords.
+   - **Order themes by potential volume, cap at 10.** Write the themes highest-total-volume first (sum each theme's member-keyword volumes from `### Keywords`). Aim for 3–6; if you ever author more, keep it to **≤10** — `/adkit create` builds at most 10 ad groups and keeps the *first 10* in file order, so the highest-volume themes must come first. Keep each theme to **≤30 keywords** (the per-ad-group schema cap; the scaffold's default packs 25) — if a theme would exceed that, split it or let its lowest-volume tail fall out.
+   - **Every theme keyword must come from the kept `### Keywords` set** (themes re-group the kept keywords; they do not introduce new phrases), and each kept keyword lands in **exactly one** theme (no cross-theme duplication — that cannibalizes across ad groups).
+   - **Resolve each theme's `> Offer:`.** For each non-spend-trap theme, look at its member keywords' intent tiers (from step 10) and take the **highest-actionable** one — Transactional > Commercial > Navigational > Informational. Write that tier's Default offer as the theme's single `> Offer:` line. Rationale: AI Max expands past the literal keyword list, so biasing the offer toward the theme's hottest represented intent doesn't strand the colder long-tail; and one ad group needs one coherent offer, not four. The Ad Copy Phase reads this line directly.
+   - **Flag exactly the generic "keep-but-don't-lead" cluster as `[spend-trap]`.** Mark that theme's h4 heading with `[spend-trap]`, give it **no** `> Offer:` line, and seed its member phrases into `#### Negative Keywords` (step 9b). It gets no ad group.
+   - **Ad-group-split note (screen).** Alongside writing the section, tell the operator in the run output which **1–2 themes carry the highest on-theme intent** (the natural lead ad groups / campaign split) and which theme is the spend trap. This is commentary; the file section is the contract.
+   - **Illustrative example** (a salon-booking idea — placeholder, do not leak this domain into real runs) as it lands in the file:
+     ```
+     ### Keyword Themes
+
+     > One ad group per theme below (except [spend-trap], which feeds negatives only).
+
+     #### Salon / Spa Software — category core (lead)
+     > Offer: start free trial
+     - salon booking software
+     - salon management software
+
+     #### Hair / Barber / Stylist — segment-specific (lead)
+     > Offer: start free trial
+     - hair stylist app
+     - best scheduling app for estheticians
+
+     #### Free / Freemium Intent — low-commitment
+     > Offer: free plan signup
+     - free appointment booking app
+
+     #### Generic Scheduling [spend-trap] — generic, keep-but-don't-lead
+     - appointment scheduling software
+     - online scheduling tool
+     ```
 16. Update the **processed** file (computed in step 3) according to Section Update Rules. The raw file is never modified.
 17. Re-read the processed file and verify:
    - exactly one `## Go To Market` section exists,
@@ -181,23 +230,22 @@ Keep recommended offers concrete (a real artifact or action), not abstract ("nur
    - each tier subsection has a single `> Default offer:` line directly under its heading,
    - each tier subsection has at least 5 keyword bullets,
    - any bullet with an offer suffix uses the exact ` — offer: ` separator.
-18. Keyword phase done. Record the four tier `> Default offer:` lines and each tier's keyword themes — the Ad Copy phase consumes them. **Do NOT return yet**; proceed to the Ad Copy phase below and emit a single combined status line at the end.
+   - **`### Keyword Themes`** exists (after `### Keywords`) with **3–10** `####` themes (aim 3–6; hard cap 10), ordered highest-potential-volume first; **≥1** is NOT `[spend-trap]`; each non-spend-trap theme has exactly one `> Offer:` line, ≥1 keyword bullet, and **≤30** keywords.
+   - **Theme↔tier consistency**: every theme keyword also appears in some `### Keywords` tier (themes re-group the kept set; no new phrases), and **no keyword appears in two themes** (cross-theme duplication cannibalizes ad groups — fix by moving it to one theme).
+   - **Spend-trap → negatives**: every keyword under a `[spend-trap]` theme also appears in `#### Negative Keywords`.
+18. Keyword phase done. Record each theme's name and its resolved `> Offer:` line — the Ad Copy phase generates one RSA per theme from them. **Do NOT return yet**; proceed to the Ad Copy phase below and emit a single combined status line at the end.
 
 ---
 
 ## Ad Copy Phase (runs after the Keyword phase, same file)
 
-After `### Keywords` is written, generate one Responsive Search Ad set per tier and append it as `### Ad Copy`. You write the way a working PPC team writes: copy aligned to funnel stage, offer matched to the visitor's temperature, claims backed by specific numbers, location and dynamic-keyword tokens used where they pay off, explicit CTAs. The `### Keywords` block you just wrote is the source of truth — the ad copy MUST align to its tiers and `> Default offer:` lines.
+After `### Keyword Themes` is written, generate **one Responsive Search Ad set per non-spend-trap theme** and append them as `### Ad Copy`. You write the way a working PPC team writes: copy aligned to the theme's resolved temperature, offer matched to that temperature, claims backed by specific numbers, location and dynamic-keyword tokens used where they pay off, explicit CTAs. The `### Keyword Themes` block you just wrote is the source of truth — one RSA per theme, in the same order, each carrying that theme's `> Offer:` and its own keywords. (A `[spend-trap]` theme gets **no** ad group and therefore **no** RSA — skip it.)
 
 ### Ad Copy — Output Contract
 
-1. Append or replace one subsection named exactly `### Ad Copy` under the same `## Go To Market` section, AFTER `### Keywords`.
-2. Under `### Ad Copy`, create exactly four subsections in this order, mirroring the keyword tiers:
-   - `#### Cold (Informational)`
-   - `#### Warm (Navigational)`
-   - `#### Hot (Commercial)`
-   - `#### Scalding (Transactional)`
-3. Each subsection begins with a single one-line `> Offer:` blockquote that MUST match the corresponding tier's `> Default offer:` from `### Keywords`.
+1. Append or replace one subsection named exactly `### Ad Copy` under the same `## Go To Market` section, AFTER `### Keyword Themes`.
+2. Under `### Ad Copy`, create **one subsection per non-spend-trap theme, in `### Keyword Themes` order**, each named `#### <Theme Name>` — the same theme name as its h4 in `### Keyword Themes` (so the RSA maps 1:1 to the ad group `/adkit create` builds). The number of subsections equals the number of ad groups (the non-spend-trap themes, at most 10).
+3. Each subsection begins with a single one-line `> Offer:` blockquote that MUST equal that theme's `> Offer:` from `### Keyword Themes` (which was resolved to the theme's highest-actionable represented tier — T>C>N>I). This one offer sets the whole ad set's temperature.
 4. Each subsection contains **one RSA ad set** in this exact shape:
 
    ```
@@ -215,43 +263,45 @@ After `### Keywords` is written, generate one Responsive Search Ad set per tier 
    ```
 
 5. Headline rules:
-   - Exactly **15** unique headlines per tier (matches `/adkit create`'s Excellent-strength requirement so the copy is publish-ready).
+   - Exactly **15** unique headlines per theme (matches `/adkit create`'s Excellent-strength requirement so the copy is publish-ready).
    - Each headline ≤ 30 characters (spaces and punctuation count).
    - Cover distinct *angles* across the 15 — value prop, feature, social proof, urgency, offer/free, pricing, audience callout, objection, brand — not reworded twins.
-   - Put the tier's main keyword concept in **≥3** headlines (Google rewards keyword inclusion); use the shared concept, not every literal phrase.
+   - Put the **theme's main keyword concept** in **≥3** headlines (Google rewards keyword inclusion); use the theme's shared concept, not every literal phrase.
    - At least 2 headlines contain a specific verifiable number (odd numbers preferred when plausible; never invent stats — pull from the source idea's pricing/timelines/capacity/proof).
    - At least 1 headline contains an explicit CTA verb (Get, Start, Book, Claim, Try, Save, Compare, Download, Call).
    - At least 1 headline includes a location token `{LOCATION(City)}` or `[City]` when the buyer is local/location-influenced.
-   - At Hot and Scalding tiers, at least 1 headline uses dynamic keyword insertion `{KeyWord:<fallback>}` (fallback reads naturally, ≤ 25 chars).
+   - When the theme's resolved offer is **hot or scalding** (its `> Offer:` came from a Commercial or Transactional tier), at least 1 headline uses dynamic keyword insertion `{KeyWord:<fallback>}` (fallback reads naturally, ≤ 25 chars).
    - No two headlines share the same opening 3 words. **Never pin** — assets must combine freely.
 6. Description rules:
-   - Exactly **4** unique descriptions per tier. Each ≤ 90 characters.
+   - Exactly **4** unique descriptions per theme. Each ≤ 90 characters.
    - Different angles: offer, problem-solution, trust signal, CTA.
    - At least 1 contains a specific number or proof point; at least 1 ends with a clear CTA sentence.
-7. Display path: two segments, each ≤ 15 chars, lowercase, hyphenated; reflect the tier offer (e.g. `/free-guide/<topic>` Cold, `/get-quote/<topic>` Scalding).
-8. Notes line: Cold = soft lead magnet, no urgency/RLSA · Warm = destination match + any retargeting · Hot = FOMO mechanic + any RLSA segment · Scalding = explicit CTA + any RLSA/area-code call extension.
+7. Display path: two segments, each ≤ 15 chars, lowercase, hyphenated; reflect the theme's resolved offer (e.g. `/free-guide/<topic>` for a cold-resolved theme, `/get-quote/<topic>` for a scalding one).
+8. Notes line, keyed to the theme's resolved temperature: cold (Informational offer) = soft lead magnet, no urgency/RLSA · warm (Navigational) = destination match + any retargeting · hot (Commercial) = FOMO mechanic + any RLSA segment · scalding (Transactional) = explicit CTA + any RLSA/area-code call extension.
 
 ### Ad Copy — Eight Principles (binding)
 
-1. **Match copy to the funnel stage.** Write each tier as if the searcher is exactly at that stage and no further.
-2. **Match the offer to the temperature.** Cold = low-threat (cheatsheet/calculator/guide); Warm = medium (template/demo/comparison); Hot = higher (instant quote/free trial/scheduled demo); Scalding = high (call now/buy now/signup). The `> Offer:` must be reachable from the ad's destination page.
+Each theme has ONE resolved temperature — the tier its `> Offer:` came from (Informational=cold, Navigational=warm, Commercial=hot, Transactional=scalding). Write that theme's whole ad set to that one temperature; the gradient below tells you how hard to push at each.
+
+1. **Match copy to the theme's resolved temperature.** Write the ad set as if the searcher is exactly at that stage and no further — don't mix a cold theme's soft copy with a scalding CTA.
+2. **Match the offer to the temperature.** cold = low-threat (cheatsheet/calculator/guide); warm = medium (template/demo/comparison); hot = higher (instant quote/free trial/scheduled demo); scalding = high (call now/buy now/signup). The `> Offer:` must be reachable from the ad's destination page.
 3. **Use specific, verifiable numbers.** Exact/odd numbers beat rounded (`$47/mo`, `17 minutes`, `163%`). Pull from the source idea; never fabricate.
 4. **Hyper-local.** For local/location-influenced buyers, put the location in the headline AND display path; for phone verticals, match the call-extension area code.
-5. **FOMO / urgency.** Manufacture credible urgency at Hot/Scalding only ("Ends Sunday", "47 left"); never scarcity the landing page can't back. Cold/Warm use curiosity and value.
-6. **Explicit, action-oriented CTA.** Direct verbs at Hot/Scalding; softer verbs ("See", "Learn") allowed only at Cold.
-7. **Dynamic keyword insertion.** At Hot/Scalding, ≥1 headline uses `{KeyWord:<fallback>}` so the ad mirrors the query; combine with location tokens where applicable.
+5. **FOMO / urgency.** Manufacture credible urgency only on hot/scalding-resolved themes ("Ends Sunday", "47 left"); never scarcity the landing page can't back. Cold/warm themes use curiosity and value.
+6. **Explicit, action-oriented CTA.** Direct verbs on hot/scalding themes; softer verbs ("See", "Learn") allowed only on a cold theme.
+7. **Dynamic keyword insertion.** On hot/scalding themes, ≥1 headline uses `{KeyWord:<fallback>}` so the ad mirrors the query; combine with location tokens where applicable.
 8. **RLSA / retargeting awareness.** In Notes, call out RLSA-targeted sets and the segment (cart-abandon, pricing-viewer, demo-no-show); for those, include one returning-visitor-incentive headline.
 
 ### Ad Copy — Execution Steps
 
-A1. Read back the `### Keywords` block you wrote. For each tier lift its `> Default offer:` line (basis for `> Offer:`) and its top on-theme keyword themes (the concept to carry across ≥3 headlines).
+A1. Read back the `### Keyword Themes` block you wrote. For each non-spend-trap theme lift its `> Offer:` line (used verbatim as the RSA's `> Offer:`), its resolved temperature (the tier that offer came from — sets how hard to push), and its member keywords (the concept to carry across ≥3 headlines). Skip `[spend-trap]` themes entirely.
 A2. Extract the idea's category, buyer, key promises, pricing, timelines, and proof points from the processed file for numbers and claims.
-A3. Generate one RSA ad set per tier per the Output Contract and Eight Principles. Map tiers: Informational→Cold, Navigational→Warm, Commercial→Hot, Transactional→Scalding.
+A3. Generate one RSA ad set per non-spend-trap theme per the Output Contract and Eight Principles, in `### Keyword Themes` order. Each ad set's temperature is the theme's resolved tier (Informational=cold, Navigational=warm, Commercial=hot, Transactional=scalding) — there is no fixed Cold/Warm/Hot/Scalding quartet any more; a campaign may have, say, two hot themes and one warm.
 A4. Self-check every headline (≤30 chars), every description (≤90 chars), every display-path segment (≤15 chars). Rewrite any over-limit line before writing.
-A5. Self-check per-tier minimums: 15 unique headlines, 4 unique descriptions, ≥2 numbers, ≥1 CTA verb, keyword-in-≥3-headlines, dynamic insertion at Hot/Scalding, no shared opening-3-words, no pins.
-A6. Append `### Ad Copy` after `### Keywords` (replace it if it already exists); preserve `### Keywords` and everything else exactly.
-A7. Re-read the file and verify: exactly one `## Go To Market`; exactly one `### Keywords` and one `### Ad Copy`; all four Ad Copy tier subsections in order; each with one `> Offer:` line, exactly 15 headlines, exactly 4 descriptions, one display path, one notes line.
-A8. Return the single combined status line: `Updated <processed-path>: <informational_count>/<navigational_count>/<commercial_count>/<transactional_count> keywords (I/N/C/T) [<decorated_count> Keyword Planner, <dropped_count> dropped, <negative_count> negatives] + Ad Copy: 4 tiers, <total_headlines> headlines, <total_descriptions> descriptions (<dki_count> dynamic insertion, <loc_count> location tokens).`
+A5. Self-check per-theme minimums: 15 unique headlines, 4 unique descriptions, ≥2 numbers, ≥1 CTA verb, keyword-in-≥3-headlines, dynamic insertion when the theme is hot/scalding, no shared opening-3-words, no pins.
+A6. Append `### Ad Copy` after `### Keyword Themes` (replace it if it already exists); preserve `### Keywords`, `### Keyword Themes`, and everything else exactly.
+A7. Re-read the file and verify: exactly one `## Go To Market`; exactly one each of `### Keywords`, `### Keyword Themes`, `### Ad Copy`; **one `#### <Theme>` Ad Copy subsection per non-spend-trap theme, names and order matching `### Keyword Themes`**; each with one `> Offer:` line equal to that theme's, exactly 15 headlines, exactly 4 descriptions, one display path, one notes line.
+A8. Return the single combined status line: `Updated <processed-path>: <informational_count>/<navigational_count>/<commercial_count>/<transactional_count> keywords (I/N/C/T) [<decorated_count> Keyword Planner, <dropped_count> dropped, <negative_count> negatives] + <theme_count> themes (<adgroup_count> ad groups, <spendtrap_count> spend-trap) + Ad Copy: <adgroup_count> RSAs, <total_headlines> headlines, <total_descriptions> descriptions (<dki_count> dynamic insertion, <loc_count> location tokens).`
 
 ## CLI Prerequisites
 

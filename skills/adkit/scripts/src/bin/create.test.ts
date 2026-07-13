@@ -66,6 +66,25 @@ const SAMPLE_IDEA = `
 #### Negative Keywords
 
 - jobs — reason: job seekers
+
+### Keyword Themes
+
+> One ad group per theme (spend-trap excluded).
+
+#### Widget Basics — category core
+> Offer: low-threat guide
+
+- what is a widget
+
+#### Widget Purchase — buyer intent
+> Offer: start free trial
+
+- buy widgets online
+- compare widget prices
+
+#### Generic Tools [spend-trap] — keep-but-don't-lead
+
+- generic scheduling tool
 `;
 
 describe("parseTopN", () => {
@@ -124,13 +143,13 @@ describe("buildSkeleton", () => {
     expect(skeleton.campaign.name).toBe("widget-launch-search");
   });
 
-  it("makes one ad group per non-empty tier, in tier order", () => {
-    expect(skeleton.adGroups.map((ag) => ag.name)).toEqual(["Informational", "Commercial"]);
+  it("makes one ad group per keyword theme, in file order, spend-trap excluded", () => {
+    expect(skeleton.adGroups.map((ag) => ag.name)).toEqual(["Widget Basics", "Widget Purchase"]);
   });
 
-  it("packs the tier keywords as PHRASE match", () => {
-    const commercial = skeleton.adGroups.find((ag) => ag.name === "Commercial")!;
-    expect(commercial.keywords).toEqual([
+  it("packs the theme keywords as PHRASE match", () => {
+    const purchase = skeleton.adGroups.find((ag) => ag.name === "Widget Purchase")!;
+    expect(purchase.keywords).toEqual([
       { text: "buy widgets online", matchType: "PHRASE" },
       { text: "compare widget prices", matchType: "PHRASE" },
     ]);
