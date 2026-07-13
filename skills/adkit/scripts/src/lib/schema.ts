@@ -376,6 +376,15 @@ export const AdGroupStatusChangeSchema = z
   .strict();
 export type AdGroupStatusChange = z.infer<typeof AdGroupStatusChangeSchema>;
 
+/** A searchPartners fixes-plan block: toggle campaign.network_settings.target_search_network. */
+export const SearchPartnersChangeSchema = z
+  .object({
+    campaignId: z.coerce.string().regex(/^[0-9]+$/),
+    enabled: z.boolean(),
+  })
+  .strict();
+export type SearchPartnersChange = z.infer<typeof SearchPartnersChangeSchema>;
+
 export const FAILURE_STEPS = [
   "validate-brief",
   "preflight",

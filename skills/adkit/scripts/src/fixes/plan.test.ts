@@ -8,6 +8,7 @@ import {
   newNegatives,
   newPositiveKeywords,
   posKey,
+  searchPartnersPlan,
   validate,
 } from "./plan.js";
 
@@ -400,5 +401,52 @@ describe("adGroupStatus", () => {
     const errs = validate(plan, {}, {});
     expect(errs.some((e) => e.includes("xyz"))).toBe(true);
     expect(errs.some((e) => e.includes("789") && e.includes("status"))).toBe(true);
+  });
+});
+
+// ---------- searchPartners (campaign network_settings.target_search_network toggle) ----------
+
+describe("searchPartners", () => {
+  it("plan splits changes and skips", () => {
+    const blocks = [
+      { campaignId: "1", enabled: false }, // currently true -> change
+      { campaignId: "2", enabled: false }, // currently false -> skip (no-op)
+      { campaignId: "3", enabled: true }, // currently false -> change
+    ];
+    const live = { 1: true, 2: false, 3: false };
+    const [changes, skips] = searchPartnersPlan(blocks, live);
+    expect(changes.map((c) => c.campaignId)).toEqual(["1", "3"]);
+    expect(changes.map((c) => c.current)).toEqual([true, false]);
+    expect(skips.map((s) => s.campaignId)).toEqual(["2"]);
+  });
+
+  it("unknown live setting is a change", () => {
+    // No live setting read (campaign not in the map) => never a no-op skip.
+    const [changes, skips] = searchPartnersPlan([{ campaignId: "9", enabled: false }], {});
+    expect(changes.length).toBe(1);
+    expect(skips).toEqual([]);
+    expect(changes[0].current).toBeNull();
+  });
+
+  it("validation valid passes", () => {
+    const plan = {
+      searchPartners: [
+        { campaignId: "123", enabled: false },
+        { campaignId: 456, enabled: true },
+      ],
+    };
+    expect(validate(plan, {}, {})).toEqual([]);
+  });
+
+  it("validation rejects bad id and non-boolean enabled", () => {
+    const plan = {
+      searchPartners: [
+        { campaignId: "abc", enabled: false },
+        { campaignId: "123", enabled: "off" },
+      ],
+    };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("abc"))).toBe(true);
+    expect(errs.some((e) => e.includes("123") && e.includes("enabled"))).toBe(true);
   });
 });

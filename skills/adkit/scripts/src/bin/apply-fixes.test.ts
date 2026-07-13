@@ -90,6 +90,37 @@ function writePlan(blocks: Array<Record<string, unknown>>): string {
   return p;
 }
 
+/**
+ * Fake client whose search returns the given live campaign network_settings.target_search_network
+ * (the only read a searchPartners-only plan triggers). `mutations` records every mutate batch.
+ */
+function searchPartnersClient(live: Record<number, boolean>): {
+  client: AdsClient;
+  mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }>;
+} {
+  const rows = Object.entries(live).map(([id, enabled]) => ({
+    campaign: { id: Number(id), network_settings: { target_search_network: enabled } },
+  }));
+  const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
+      return rows as Row[];
+    },
+    async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+      mutations.push({ customerId, operations });
+      return { results: operations.map(() => ({ resource_name: "customers/1/campaigns/x" })) };
+    },
+  };
+  return { client, mutations };
+}
+
+/** Write a searchPartners-only plan and return its path. */
+function writeSearchPartnersPlan(blocks: Array<Record<string, unknown>>): string {
+  const p = join(dir, "plan.json");
+  writeFileSync(p, JSON.stringify({ customerId: "8911925499", searchPartners: blocks }));
+  return p;
+}
+
 // ---------------------------------------------------------------------------
 // Early-exit guards (return before any client work)
 // ---------------------------------------------------------------------------
@@ -172,5 +203,84 @@ describe("campaignStatus path", () => {
     expect(out).not.toContain("WARNING: ENABLE starts live spend"); // PAUSE is not a live-spend warning
     const payload = JSON.parse(out.slice(out.indexOf("{")));
     expect(payload.enableStartsLiveSpend).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// searchPartners (campaign network_settings.target_search_network toggle) — dry-run + apply
+// ---------------------------------------------------------------------------
+
+describe("searchPartners path", () => {
+  it("dry-run turning OFF lists the change and does not warn", async () => {
+    const { client, mutations } = searchPartnersClient({ 100: true });
+    currentClient = client;
+    const plan = writeSearchPartnersPlan([{ campaignId: "100", enabled: false }]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0); // dry-run (no --apply)
+    const out = cap.text();
+
+    expect(out).toContain("search partners true -> false");
+    expect(out).not.toContain("WARNING: search partners ON increases reach");
+    expect(mutations).toEqual([]); // dry-run never mutates
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.applied).toBe(false);
+    expect(payload.searchPartnersEnableIncreasesReach).toEqual([]);
+    expect(payload.searchPartnersChanges[0].campaignId).toBe("100");
+  });
+
+  it("dry-run turning ON warns and carries the envelope key", async () => {
+    const { client, mutations } = searchPartnersClient({ 100: false });
+    currentClient = client;
+    const plan = writeSearchPartnersPlan([{ campaignId: "100", enabled: true }]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("search partners false -> true");
+    expect(out).toContain("WARNING: search partners ON increases reach");
+    expect(mutations).toEqual([]);
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.searchPartnersEnableIncreasesReach).toEqual(["100"]);
+  });
+
+  it("idempotent skip (no-op flip is never mutated)", async () => {
+    const { client, mutations } = searchPartnersClient({ 100: false });
+    currentClient = client;
+    const plan = writeSearchPartnersPlan([{ campaignId: "100", enabled: false }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("already false, skipped");
+    expect(mutations).toEqual([]);
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.applied).toBe(true);
+    expect(payload.searchPartnersChanges).toEqual([]);
+    expect(payload.searchPartnersSkipped[0].campaignId).toBe("100");
+  });
+
+  it("apply mutates only network_settings.target_search_network", async () => {
+    const { client, mutations } = searchPartnersClient({ 100: true });
+    currentClient = client;
+    const plan = writeSearchPartnersPlan([{ campaignId: "100", enabled: false }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    cap.text();
+
+    expect(mutations.length).toBe(1);
+    expect(mutations[0]!.operations).toEqual([
+      {
+        entity: "campaign",
+        operation: "update",
+        resource: {
+          resource_name: "customers/8911925499/campaigns/100",
+          network_settings: { target_search_network: false },
+        },
+      },
+    ]);
   });
 });

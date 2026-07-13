@@ -47,7 +47,13 @@ import { readFileSync, statSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 
-import { setAdGroupStatus, setCampaignStatus, buildKeywordOps, buildNegativeKeywordOps } from "../ads/entities.js";
+import {
+  setAdGroupStatus,
+  setCampaignStatus,
+  setSearchPartners,
+  buildKeywordOps,
+  buildNegativeKeywordOps,
+} from "../ads/entities.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
   adGroupStatusPlan,
@@ -56,7 +62,9 @@ import {
   newNegatives,
   newPositiveKeywords,
   posKey,
+  searchPartnersPlan,
   validate,
+  type SearchPartnersPlanEntry,
   type StatusPlanEntry,
 } from "../fixes/plan.js";
 import {
@@ -66,6 +74,7 @@ import {
   applyHeadlinesQuery,
   applyNegativesQuery,
   applyPositiveKeywordsQuery,
+  applySearchPartnersQuery,
 } from "../gaql/builders.js";
 import { enums } from "google-ads-api";
 import type { AdsClient, AdsMutateOperation } from "../lib/auth.js";
@@ -88,6 +97,10 @@ interface CampaignStatusRow {
 
 interface AdGroupStatusRow {
   ad_group: { id: number; status: string };
+}
+
+interface SearchPartnersRow {
+  campaign: { id: number; network_settings: { target_search_network: boolean } };
 }
 
 interface BudgetRow {
@@ -159,6 +172,22 @@ export async function liveAdGroupStatuses(
   }
   const rows = await client.search<AdGroupStatusRow>(customerId, applyAdGroupStatusesQuery(adGroupIds));
   return rows.reduce((acc, r) => acc.set(r.ad_group.id, r.ad_group.status), new Map<number, string>());
+}
+
+/** campaignId -> current network_settings.target_search_network, so a no-op flip can be skipped. */
+export async function liveSearchPartners(
+  client: AdsClient,
+  customerId: string,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Map<number, boolean>> {
+  if (campaignIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.search<SearchPartnersRow>(customerId, applySearchPartnersQuery(campaignIds));
+  return rows.reduce(
+    (acc, r) => acc.set(r.campaign.id, r.campaign.network_settings.target_search_network),
+    new Map<number, boolean>(),
+  );
 }
 
 /** campaignId -> {resource, amountMicros} for the campaign's current budget. */
@@ -242,6 +271,7 @@ interface FixesPlan extends Record<string, unknown> {
   budgets?: Array<Record<string, unknown>>;
   campaignStatus?: Array<Record<string, unknown>>;
   adGroupStatus?: Array<Record<string, unknown>>;
+  searchPartners?: Array<Record<string, unknown>>;
 }
 
 /** A plan section as a typed array (empty when absent). */
@@ -323,6 +353,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     customer,
     section(plan, "adGroupStatus").map((g) => g.adGroupId as string | number),
   );
+  const liveSp = await liveSearchPartners(
+    client,
+    customer,
+    section(plan, "searchPartners").map((s) => s.campaignId as string | number),
+  );
 
   const errs = validate(plan, live, budgets, livePos);
   if (errs.length > 0) {
@@ -337,13 +372,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const enableChanges = statusChanges.filter((c) => c.status === "ENABLED");
   const [agStatusChanges, agStatusSkips] = adGroupStatusPlan(section(plan, "adGroupStatus"), liveAgStatus);
   const agEnableChanges = agStatusChanges.filter((g) => g.status === "ENABLED");
+  const [spChanges, spSkips] = searchPartnersPlan(section(plan, "searchPartners"), liveSp);
+  const spEnableChanges = spChanges.filter((c) => c.enabled === true);
 
   /**
-   * Surface the campaign/ad-group on/off plan as a machine-readable envelope so the
-   * changes/skips (and any live-spend ENABLE) are never lost in narration.
+   * Surface the campaign/ad-group on/off plan (and the searchPartners toggle) as a
+   * machine-readable envelope so the changes/skips (and any live-spend/reach-increasing
+   * ENABLE) are never lost in narration.
    */
   const emitStatusEnvelope = (applied: boolean): void => {
-    if (!(section(plan, "campaignStatus").length > 0 || section(plan, "adGroupStatus").length > 0)) {
+    if (
+      !(
+        section(plan, "campaignStatus").length > 0 ||
+        section(plan, "adGroupStatus").length > 0 ||
+        section(plan, "searchPartners").length > 0
+      )
+    ) {
       return;
     }
     emitJson(
@@ -355,6 +399,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         adGroupStatusChanges: agStatusChanges,
         adGroupStatusSkipped: agStatusSkips,
         adGroupEnableStartsLiveSpend: agEnableChanges.map((g) => g.adGroupId),
+        searchPartnersChanges: spChanges,
+        searchPartnersSkipped: spSkips,
+        searchPartnersEnableIncreasesReach: spEnableChanges.map((c) => c.campaignId),
       }),
     );
   };
@@ -391,6 +438,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     ...statusSkips.map((c) => `campaign ${strOf(c.campaignId)}: status already ${strOf(c.status)}, skipped`),
     ...agStatusChanges.map((g) => `adGroup ${strOf(g.adGroupId)}: status ${strOf(g.current)} -> ${strOf(g.status)}`),
     ...agStatusSkips.map((g) => `adGroup ${strOf(g.adGroupId)}: status already ${strOf(g.status)}, skipped`),
+    ...spChanges.map(
+      (c) => `campaign ${strOf(c.campaignId)}: search partners ${strOf(c.current)} -> ${strOf(c.enabled)}`,
+    ),
+    ...spSkips.map((c) => `campaign ${strOf(c.campaignId)}: search partners already ${strOf(c.enabled)}, skipped`),
   ];
   console.log("validation ok. planned actions:");
   for (const a of actions) {
@@ -409,6 +460,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.log(
       "WARNING: ENABLE resumes live spend on ad group(s): " +
         agEnableChanges.map((g) => String(g.adGroupId)).join(", "),
+    );
+  }
+  if (spEnableChanges.length > 0) {
+    // Turning Search Partners ON increases reach (and spend) — loud surface, same as
+    // ENABLE. Turning it OFF only narrows reach, so it never warns.
+    console.log(
+      "WARNING: search partners ON increases reach on campaign(s): " +
+        spEnableChanges.map((c) => String(c.campaignId)).join(", "),
     );
   }
   if (!apply) {
@@ -562,6 +621,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   for (const g of agStatusSkips) {
     console.log(`  adGroup ${strOf(g.adGroupId)}: status already ${strOf(g.status)}, skipped`);
   }
+
+  // 8) search partners on/off. No-op flips were already filtered into spSkips and
+  // never reach the mutate (idempotent). OFF is always safe; ON was surfaced loudly.
+  for (const c of spChanges) {
+    await setSearchPartners(client, customer, String(c.campaignId), c.enabled as boolean);
+    console.log(`  campaign ${strOf(c.campaignId)}: search partners ${strOf(c.current)} -> ${strOf(c.enabled)}`);
+  }
+  for (const c of spSkips) {
+    console.log(`  campaign ${strOf(c.campaignId)}: search partners already ${strOf(c.enabled)}, skipped`);
+  }
   emitStatusEnvelope(true);
   return 0;
 }
@@ -627,8 +696,8 @@ function rsaUpdateOp(
   };
 }
 
-// Re-export a type used by tests asserting on the status plan entries.
-export type { StatusPlanEntry };
+// Re-export types used by tests asserting on the status/searchPartners plan entries.
+export type { SearchPartnersPlanEntry, StatusPlanEntry };
 
 if (isMainModule(import.meta.url)) {
   main()

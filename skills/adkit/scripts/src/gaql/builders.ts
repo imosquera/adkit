@@ -295,6 +295,20 @@ export function applyCampaignStatusesQuery(
 }
 
 /**
+ * Each campaign's current Search Partners setting, so a searchPartners fixes block
+ * can skip a no-op flip (a campaign already at the requested setting).
+ */
+export function applySearchPartnersQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): string {
+  const ids = campaignIds.map((i) => gaqlId(i)).join(",");
+  return (
+    "SELECT campaign.id, campaign.network_settings.target_search_network " +
+    `FROM campaign WHERE campaign.id IN (${ids})`
+  );
+}
+
+/**
  * Each ad group's current serving status, so an adGroupStatus fixes block can skip
  * a no-op flip (an ad group already in the requested status).
  */
