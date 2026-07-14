@@ -325,6 +325,21 @@ export function applyAdGroupStatusesQuery(
   );
 }
 
+/**
+ * Live (non-removed) ad-group names per campaign, so an `adGroups` (add-ad-group)
+ * fixes block can skip a name that already exists in the target campaign (the
+ * add is idempotent — re-running never creates a duplicate ad group). Ids guarded.
+ */
+export function applyAdGroupNamesQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): string {
+  const ids = campaignIds.map((i) => gaqlId(i)).join(",");
+  return (
+    "SELECT campaign.id, ad_group.name " +
+    `FROM ad_group WHERE campaign.id IN (${ids}) AND ad_group.status != 'REMOVED'`
+  );
+}
+
 /** Live RSA headlines for the ads an appendHeadlines plan touches. */
 export function applyHeadlinesQuery(adIds: ReadonlyArray<string | number>): string {
   const ids = adIds.map((i) => gaqlId(i)).join(",");

@@ -18,8 +18,15 @@
  *   "keywords":  [{"adGroupId": 789, "add": ["ai reply tool"], "remove": [...], "pause": [...]}],
  *   "budgets":   [{"campaignId": 456, "dailyMicros": 50000000, "maxRaisePct": 100}],
  *   "campaignStatus": [{"campaignId": "456", "status": "ENABLED"}],  // flip a campaign on/off
- *   "adGroupStatus": [{"adGroupId": "789", "status": "PAUSED"}]      // flip an ad group on/off
+ *   "adGroupStatus": [{"adGroupId": "789", "status": "PAUSED"}],     // flip an ad group on/off
+ *   "adGroups":  [{"campaignId": 456, "adGroup": {<brief ad group: name, defaultBidMicros, responsiveSearchAd, keywords>}}]  // add a new ad group
  * }
+ *
+ * A new ad group (`adGroups`) is authored in the same shape a /adkit create brief ad
+ * group uses (full 15/4 RSA + 1–30 keywords), validated by the same AdGroupSchema.
+ * The ad group AND its RSA are created PAUSED (won't serve until enabled), so adding
+ * one to a live campaign starts no spend; a name already live in the campaign is
+ * skipped — re-running never duplicates a group.
  *
  * Negative keywords block off-theme search terms. Each `add` item is a bare string
  * (defaults to PHRASE) or {"text","matchType"} with matchType EXACT/PHRASE/BROAD.
@@ -48,6 +55,9 @@ import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 
 import {
+  createAdGroup,
+  createKeywords,
+  createResponsiveSearchAd,
   setAdGroupStatus,
   setCampaignStatus,
   setSearchPartners,
@@ -56,6 +66,7 @@ import {
 } from "../ads/entities.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
+  addAdGroupsPlan,
   adGroupStatusPlan,
   campaignStatusPlan,
   coerceKeyword,
@@ -66,10 +77,12 @@ import {
   posKey,
   searchPartnersPlan,
   validate,
+  type AdGroupCreatePlanEntry,
   type SearchPartnersPlanEntry,
   type StatusPlanEntry,
 } from "../fixes/plan.js";
 import {
+  applyAdGroupNamesQuery,
   applyAdGroupStatusesQuery,
   applyBudgetsQuery,
   applyCampaignStatusesQuery,
@@ -130,6 +143,11 @@ interface PositiveKeywordRow {
 
 interface HeadlineRow {
   ad_group_ad: { ad: { id: number; responsive_search_ad: { headlines: Array<{ text: string }> } } };
+}
+
+interface AdGroupNameRow {
+  campaign: { id: number };
+  ad_group: { name: string };
 }
 
 // Live-state maps are keyed with plan.ts's `keyStr` (imported above) so the
@@ -259,6 +277,28 @@ export async function livePositiveKeywords(
   }, new Map<number, Map<string, string>>());
 }
 
+/**
+ * campaignId -> Set of lowercased live (non-removed) ad-group names, so an
+ * `adGroups` (add-ad-group) block can skip a name that already exists in the target
+ * campaign (the add is idempotent — re-running never creates a duplicate group).
+ */
+export async function liveAdGroupNames(
+  client: AdsClient,
+  customerId: string,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Map<number, Set<string>>> {
+  if (campaignIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.search<AdGroupNameRow>(customerId, applyAdGroupNamesQuery(campaignIds));
+  return rows.reduce((acc, r) => {
+    const set = acc.get(r.campaign.id) ?? new Set<string>();
+    set.add(r.ad_group.name.toLowerCase());
+    acc.set(r.campaign.id, set);
+    return acc;
+  }, new Map<number, Set<string>>());
+}
+
 /** adId -> live RSA headline texts, for an appendHeadlines merge. */
 export async function liveHeadlines(
   client: AdsClient,
@@ -296,6 +336,7 @@ interface FixesPlan extends Record<string, unknown> {
   campaignStatus?: Array<Record<string, unknown>>;
   adGroupStatus?: Array<Record<string, unknown>>;
   searchPartners?: Array<Record<string, unknown>>;
+  adGroups?: Array<Record<string, unknown>>;
 }
 
 /** A plan section as a typed array (empty when absent). */
@@ -382,6 +423,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     customer,
     section(plan, "searchPartners").map((s) => s.campaignId as string | number),
   );
+  const liveAgNames = await liveAdGroupNames(
+    client,
+    customer,
+    section(plan, "adGroups").map((g) => g.campaignId as string | number),
+  );
   // Split into the two plain boolean maps the pure plan.ts functions expect:
   // current target_search_network (searchPartnersPlan's no-op-skip check) and
   // current target_google_search (searchPartnersPreconditionErrors' ENABLE guard).
@@ -403,6 +449,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const agEnableChanges = agStatusChanges.filter((g) => g.status === "ENABLED");
   const [spChanges, spSkips] = searchPartnersPlan(section(plan, "searchPartners"), liveSpEnabled);
   const spEnableChanges = spChanges.filter((c) => c.enabled === true);
+  const [agCreates, agCreateSkips] = addAdGroupsPlan(section(plan, "adGroups"), liveAgNames);
 
   /**
    * Surface the campaign/ad-group on/off plan (and the searchPartners toggle) as a
@@ -471,6 +518,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       (c) => `campaign ${strOf(c.campaignId)}: search partners ${strOf(c.current)} -> ${strOf(c.enabled)}`,
     ),
     ...spSkips.map((c) => `campaign ${strOf(c.campaignId)}: search partners already ${strOf(c.enabled)}, skipped`),
+    ...agCreates.map(
+      (g) =>
+        `+ ad group ${pyRepr(g.name)} -> campaign ${strOf(g.campaignId)} ` +
+        `(RSA 15H/4D + ${g.adGroup.keywords.length} keywords, ad group + ad PAUSED)`,
+    ),
+    ...agCreateSkips.map((g) => `ad group ${pyRepr(g.name)} already in campaign ${strOf(g.campaignId)}, skipped`),
   ];
   console.log("validation ok. planned actions:");
   for (const a of actions) {
@@ -660,6 +713,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   for (const c of spSkips) {
     console.log(`  campaign ${strOf(c.campaignId)}: search partners already ${strOf(c.enabled)}, skipped`);
   }
+
+  // 9) new ad groups. A name already live in the campaign was filtered into
+  // agCreateSkips (idempotent — never a duplicate group). Each create adds one ad
+  // group at a time: ad group (PAUSED) -> RSA (PAUSED) -> keywords (ENABLED). The
+  // group is created PAUSED so adding it to a LIVE campaign starts no spend — it is
+  // inert until explicitly enabled (and its ad is paused too, belt-and-suspenders).
+  for (const g of agCreates) {
+    const campaignRn = `customers/${customer}/campaigns/${strOf(g.campaignId)}`;
+    const agRn = await createAdGroup(client, customer, g.adGroup, campaignRn, "PAUSED");
+    await createResponsiveSearchAd(client, customer, g.adGroup, agRn);
+    const kwRns = await createKeywords(client, customer, g.adGroup, agRn);
+    console.log(
+      `  + ad group ${pyRepr(g.name)} -> campaign ${strOf(g.campaignId)}: ` +
+        `RSA 15H/4D + ${kwRns.length} keywords (ad group + ad PAUSED)`,
+    );
+  }
+  for (const g of agCreateSkips) {
+    console.log(`  ad group ${pyRepr(g.name)} already in campaign ${strOf(g.campaignId)}, skipped`);
+  }
   emitStatusEnvelope(true);
   return 0;
 }
@@ -725,8 +797,8 @@ function rsaUpdateOp(
   };
 }
 
-// Re-export types used by tests asserting on the status/searchPartners plan entries.
-export type { SearchPartnersPlanEntry, StatusPlanEntry };
+// Re-export types used by tests asserting on the status/searchPartners/adGroup plan entries.
+export type { AdGroupCreatePlanEntry, SearchPartnersPlanEntry, StatusPlanEntry };
 
 if (isMainModule(import.meta.url)) {
   main()

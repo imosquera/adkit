@@ -20,7 +20,7 @@ import { formatGoogleAdsError } from "../ads/errors.js";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { parse as yamlParse, stringify as yamlStringify } from "yaml";
+import { parse as yamlParse, stringify as yamlStringify, YAMLParseError } from "yaml";
 import { z } from "zod";
 
 import { publishV1 } from "../ads/publish.js";
@@ -122,15 +122,10 @@ export function buildSkeleton(
       // processed-file slug — fill it in. The pre-publish URL check rejects a
       // leftover TODO because it 404s.
       finalUrl: "https://www.example.com/ideas/TODO-published-slug",
-      // Display-URL "pretty URL" paths (optional): the shown URL is the
-      // finalUrl host + these two keyword-rich segments — e.g.
-      // www.example.com/review-replies/free-trial — while the click still
-      // lands on the long finalUrl. Each ≤15 chars, no spaces or "/",
-      // always lower case (mixed case is coerced down at validation).
-      // Fill with this theme's keyword, or DELETE both lines to omit.
-      // A leftover TODO is rejected at validation.
-      path1: "todo-keyword",
-      path2: "todo-or-omit",
+      // Optional display-URL "pretty URL" paths (path1/path2) are intentionally
+      // omitted from the scaffold — a leftover placeholder is rejected at
+      // validation, so an untouched brief would fail. See the commented
+      // OPTIONAL ADD-ONS template appended below the brief to add them.
     },
     // All theme keywords as PHRASE — close-variant matching + AI Max cover
     // plurals/typos/synonyms, so the SKAG-era PHRASE+EXACT pair is redundant.
@@ -161,25 +156,47 @@ export function buildSkeleton(
       // At least 4 callouts (≤25 chars each), short benefit phrases shown
       // under the ad, e.g. "No new integrations" / "Live in 30 days".
       callouts: range(1, 5).map((i) => `TODO callout ${i} (≤25)`),
-      priceAsset: {
-        type: "SERVICES",
-        languageCode: "en",
-        currencyCode: "USD",
-        offerings: range(1, 4).map((i) => ({
-          header: `TODO price ${i}`,
-          description: "TODO benefit",
-          priceMicros: 1_000_000,
-          finalUrl: "https://www.example.com/ideas/TODO-published-slug",
-        })),
-      },
-      structuredSnippet: {
-        header: "SERVICE_CATALOG",
-        values: ["TODO service 1", "TODO service 2", "TODO service 3"],
-      },
+      // priceAsset + structuredSnippet are OPTIONAL and intentionally omitted from
+      // the scaffold: pre-filled TODO offerings 404 the URL check (priceAsset) or
+      // publish literal "TODO service" text (structuredSnippet), so an untouched
+      // brief would fail or ship junk. Add them from the commented OPTIONAL ADD-ONS
+      // template appended below the brief if you want them.
     },
     adGroups,
   };
 }
+
+/**
+ * Commented-out YAML template for the optional assets the scaffold omits
+ * (priceAsset, structuredSnippet, and per-ad-group path1/path2). Appended below
+ * the brief so a required-only brief validates as-is, while operators who want the
+ * extras have a ready-to-uncomment example. Every line is a `#` comment — the YAML
+ * parser ignores it entirely.
+ */
+export const COMMENTED_OPTIONAL_ASSETS = `
+# ---------------------------------------------------------------------------
+# OPTIONAL ADD-ONS (commented out — a brief validates without them). Uncomment
+# and fill in to include, then remove the leading "# " from each line.
+# ---------------------------------------------------------------------------
+# Under campaign::
+#   priceAsset:
+#     type: SERVICES
+#     languageCode: en
+#     currencyCode: USD
+#     offerings:            # 3–8 offerings
+#       - header: "Plan name (≤25)"
+#         description: "Benefit (≤25)"
+#         priceMicros: 1000000
+#         finalUrl: https://www.example.com/ideas/published-slug
+#   structuredSnippet:
+#     header: SERVICE_CATALOG
+#     values: ["Value one", "Value two", "Value three"]   # 3–10, unique
+#
+# Under an ad group's responsiveSearchAd:: keyword-rich display-URL segments
+# (each ≤15 chars, no spaces or "/"). path2 requires path1.
+#     path1: keyword
+#     path2: segment
+`;
 
 /**
  * Scaffold a skeleton brief YAML from the processed idea markdown into
@@ -203,7 +220,15 @@ function scaffoldBriefFromProcessed(mdPath: string, briefPath: string, maxPerThe
   }
   const skeleton = buildSkeleton(name, themes, negatives);
   mkdirSync(dirname(briefPath), { recursive: true });
-  writeFileSync(briefPath, yamlStringify(skeleton));
+  // defaultStringType QUOTE_DOUBLE double-quotes every string scalar so an
+  // operator editing a headline/description/sitelink in place can type a ": "
+  // (colon-space) without producing invalid YAML — the #1 hand-edit break.
+  // lineWidth: 0 disables folding so long values stay on one quoted line.
+  writeFileSync(
+    briefPath,
+    yamlStringify(skeleton, { defaultStringType: "QUOTE_DOUBLE", defaultKeyType: "PLAIN", lineWidth: 0 }) +
+      COMMENTED_OPTIONAL_ASSETS,
+  );
   const themesPretty = themes.map(([theme, kws]) => `${theme} (${kws.length} kw)`).join("\n  - ");
   const totalKeywords = themes.reduce((n, [, kws]) => n + kws.length, 0);
   const kwWarning = keywordCountWarning(totalKeywords);
@@ -214,7 +239,8 @@ function scaffoldBriefFromProcessed(mdPath: string, briefPath: string, maxPerThe
         ? `⚠ ${kwWarning}\n`
         : `${totalKeywords} keywords total (on target ~${TARGET_KEYWORDS})\n`) +
       `${negatives.length} campaign negative keywords seeded from the processed file\n` +
-      "6 sitelink + 4 callout + 3 price-offering + structured-snippet placeholders added (fill these in too)\n" +
+      "6 sitelink + 4 callout placeholders added (fill these in too)\n" +
+      "priceAsset/structuredSnippet/path1/path2 are OPTIONAL — see the commented template at the end of the brief\n" +
       "fill in headlines/descriptions/finalUrl per ad group, then re-run\n",
   );
   throw new ExitError(2);
@@ -257,7 +283,23 @@ export function readBrief(path: string): Brief {
   if (!existsSync(path)) {
     die(`brief not found: ${path}`);
   }
-  const data = yamlParse(readFileSync(path, "utf8")) as unknown;
+  let data: unknown;
+  try {
+    data = yamlParse(readFileSync(path, "utf8"));
+  } catch (exc) {
+    if (exc instanceof YAMLParseError) {
+      // The classic hand-edit break: an unquoted value containing ": " reads as a
+      // nested mapping. Surface the offending line + the fix instead of the raw
+      // "Nested mappings are not allowed in compact mappings" trace.
+      const where = exc.linePos?.[0] ? ` (line ${exc.linePos[0].line})` : "";
+      die(
+        `brief is not valid YAML${where}: ${exc.message.split("\n")[0]}\n` +
+          '  fix: wrap any value containing a colon-space (": ") in double quotes, ' +
+          'e.g. text: "Protect earned trust: start free"',
+      );
+    }
+    throw exc;
+  }
   try {
     return parseBrief(data);
   } catch (exc) {

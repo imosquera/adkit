@@ -32,6 +32,20 @@ describe("formatBulletText", () => {
     expect(formatBulletText(c)).toBe("info query (150, LOW, $0.50–$–)");
   });
 
+  it("drops the cost segment when CPC is entirely absent (bug 6)", () => {
+    // Keyword Planner returns null low_micros + high_micros for some keywords;
+    // the bullet should read "(6.6k, LOW)" not "(6.6k, LOW, $–)".
+    const c: Candidate = {
+      phrase: "online reputation",
+      source: "api",
+      volume: 6600,
+      competition: "LOW",
+      lowMicros: null,
+      highMicros: null,
+    };
+    expect(formatBulletText(c)).toBe("online reputation (6.6k, LOW)");
+  });
+
   it("is deterministic", () => {
     const c: Candidate = {
       phrase: "x",
