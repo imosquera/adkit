@@ -550,4 +550,24 @@ describe("addAdGroupsPlan", () => {
     expect(creates).toHaveLength(1);
     expect(skips).toHaveLength(0);
   });
+
+  it("collapses a within-plan duplicate (campaignId, name) to a single create", () => {
+    const blocks = [
+      { campaignId: "100", adGroup: adGroupBody({ name: "New Group" }) },
+      { campaignId: "100", adGroup: adGroupBody({ name: "new group" }) },
+    ];
+    const [creates, skips] = addAdGroupsPlan(blocks, undefined);
+    expect(creates.map((c) => c.name)).toEqual(["New Group"]);
+    expect(skips.map((s) => s.name)).toEqual(["new group"]);
+  });
+
+  it("does not collapse same-name groups across different campaigns", () => {
+    const blocks = [
+      { campaignId: "100", adGroup: adGroupBody({ name: "Group" }) },
+      { campaignId: "200", adGroup: adGroupBody({ name: "Group" }) },
+    ];
+    const [creates, skips] = addAdGroupsPlan(blocks, undefined);
+    expect(creates).toHaveLength(2);
+    expect(skips).toHaveLength(0);
+  });
 });
