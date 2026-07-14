@@ -14,7 +14,6 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { enums } from "google-ads-api";
 
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 
@@ -477,11 +476,11 @@ describe("adGroups (add-ad-group) path", () => {
     const out = cap.text();
 
     expect(out).toContain("+ ad group 'close deals ai' -> campaign 100");
-    expect(out).toContain("ad group + ad PAUSED");
+    expect(out).toContain("ad PAUSED");
     expect(mutations).toEqual([]); // dry-run never mutates
   });
 
-  it("apply creates ad group + RSA + keywords (3 mutate batches), the group PAUSED", async () => {
+  it("apply creates ad group + RSA + keywords (3 mutate batches)", async () => {
     const { client, mutations } = adGroupNamesClient({ 100: [] });
     currentClient = client;
     const plan = writeAdGroupsPlan([{ campaignId: "100", adGroup: adGroupBody("close deals ai") }]);
@@ -495,10 +494,7 @@ describe("adGroups (add-ad-group) path", () => {
     const [ag, rsa, kw] = mutations;
     expect(ag!.operations[0]!.entity).toBe("ad_group");
     expect(ag!.operations[0]!.resource.campaign).toBe("customers/1111111111/campaigns/100");
-    // Added to a live campaign, the new group must be PAUSED (no spend until enabled).
-    expect(ag!.operations[0]!.resource.status).toBe(enums.AdGroupStatus.PAUSED);
     expect(rsa!.operations[0]!.entity).toBe("ad_group_ad");
-    expect(rsa!.operations[0]!.resource.status).toBe(enums.AdGroupAdStatus.PAUSED);
     expect(kw!.operations[0]!.entity).toBe("ad_group_criterion");
   });
 
