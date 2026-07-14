@@ -469,6 +469,24 @@ describe("searchPartners", () => {
   });
 });
 
+// ---------- languages (English-only) ----------
+
+describe("languages", () => {
+  it("a digits-only campaignId passes", () => {
+    expect(validate({ languages: [{ campaignId: "23969397981" }, { campaignId: 456 }] }, {}, {})).toEqual([]);
+  });
+
+  it("missing campaignId is flagged", () => {
+    expect(validate({ languages: [{}] }, {}, {}).some((e) => e.includes("missing campaignId"))).toBe(true);
+  });
+
+  it("non-numeric campaignId is flagged", () => {
+    expect(validate({ languages: [{ campaignId: "23x" }] }, {}, {}).some((e) => e.includes("must be numeric"))).toBe(
+      true,
+    );
+  });
+});
+
 // ---------- adGroups (add-ad-group) ----------
 
 /**
