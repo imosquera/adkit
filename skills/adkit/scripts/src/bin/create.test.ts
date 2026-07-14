@@ -14,7 +14,7 @@ import {
   TARGET_KEYWORDS,
 } from "./create.js";
 import { extractNegatives, readThemeGroups, DEFAULT_TOP_N, MAX_KEYWORDS_PER_THEME } from "../ideas/parse.js";
-import type { Brief } from "../lib/schema.js";
+import { parseBrief, type Brief } from "../lib/schema.js";
 
 // Silence the `error: ...` / scaffold-summary stderr writes the die-path emits.
 vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -160,24 +160,24 @@ describe("buildSkeleton", () => {
       headlines: Array<{ text: string }>;
       descriptions: Array<{ text: string }>;
       finalUrl: string;
-      path1: string;
-      path2: string;
     };
     expect(rsa.headlines).toHaveLength(15);
     expect(rsa.descriptions).toHaveLength(4);
     expect(rsa.headlines[0]!.text).toContain("TODO headline 1");
     expect(rsa.finalUrl).toContain("TODO-published-slug");
-    expect(rsa.path1).toBe("todo-keyword");
-    expect(rsa.path2).toBe("todo-or-omit");
   });
 
-  it("seeds campaign negatives from the idea and adds the placeholder assets", () => {
+  it("omits the optional path1/path2 (a leftover placeholder is rejected at validation)", () => {
+    const rsa = skeleton.adGroups[0]!.responsiveSearchAd as Record<string, unknown>;
+    expect(rsa).not.toHaveProperty("path1");
+    expect(rsa).not.toHaveProperty("path2");
+  });
+
+  it("seeds campaign negatives and omits the optional priceAsset/structuredSnippet blocks", () => {
     const campaign = skeleton.campaign as {
       negativeKeywords: unknown[];
       sitelinks: unknown[];
       callouts: unknown[];
-      priceAsset: { offerings: unknown[] };
-      structuredSnippet: { values: unknown[] };
       budgetMicros: number;
       networkSettings: string;
       bidStrategy: string;
@@ -186,12 +186,36 @@ describe("buildSkeleton", () => {
     expect(campaign.negativeKeywords).toEqual([{ text: "jobs", matchType: "PHRASE" }]);
     expect(campaign.sitelinks).toHaveLength(6);
     expect(campaign.callouts).toHaveLength(4);
-    expect(campaign.priceAsset.offerings).toHaveLength(3);
-    expect(campaign.structuredSnippet.values).toHaveLength(3);
+    // Optional asset blocks are omitted so a required-only brief validates (bug 3).
+    expect(campaign).not.toHaveProperty("priceAsset");
+    expect(campaign).not.toHaveProperty("structuredSnippet");
     expect(campaign.budgetMicros).toBe(25_000_000);
     expect(campaign.networkSettings).toBe("search-partners-display");
     expect(campaign.bidStrategy).toBe("maximize-clicks");
     expect(campaign.aiMax).toBe(true);
+  });
+
+  it("a scaffold with only its required TODO fields filled in passes validation (bug 3)", () => {
+    // Simulate an operator filling the required placeholders with valid copy and
+    // leaving every optional block untouched. This must parse without hand-deleting
+    // priceAsset/structuredSnippet/path1/path2.
+    const filled = structuredClone(skeleton) as {
+      campaign: { sitelinks: Array<{ text: string; finalUrl: string }>; callouts: string[] };
+      adGroups: Array<{
+        responsiveSearchAd: { headlines: Array<{ text: string }>; descriptions: Array<{ text: string }>; finalUrl: string };
+      }>;
+    };
+    for (const ag of filled.adGroups) {
+      ag.responsiveSearchAd.headlines = ag.responsiveSearchAd.headlines.map((_, i) => ({ text: `Headline number ${i + 1}` }));
+      ag.responsiveSearchAd.descriptions = ag.responsiveSearchAd.descriptions.map((_, i) => ({ text: `Description number ${i + 1} ok` }));
+      ag.responsiveSearchAd.finalUrl = "https://www.example.com/ideas/widget";
+    }
+    filled.campaign.sitelinks = filled.campaign.sitelinks.map((_, i) => ({
+      text: `Sitelink ${i + 1}`,
+      finalUrl: "https://www.example.com/ideas/widget",
+    }));
+    filled.campaign.callouts = filled.campaign.callouts.map((_, i) => `Callout ${i + 1}`);
+    expect(() => parseBrief(filled)).not.toThrow();
   });
 });
 
@@ -219,6 +243,39 @@ describe("readBrief", () => {
 
   it("dies when the brief file is absent", () => {
     expect(() => readBrief(join(tmpdir(), "definitely-missing-brief-xyz.yaml"))).toThrow(ExitError);
+  });
+
+  it("round-trips a double-quoted description containing a colon-space (bug 2)", () => {
+    // A realistic RSA line: "Protect earned trust: start free ...". Double-quoted,
+    // the colon is safe and the brief parses.
+    const yaml = validBriefYaml().replace(
+      "        - text: Description number 1 ok",
+      '        - text: "Protect earned trust: start free today"',
+    );
+    const path = writeTemp("colon.yaml", yaml);
+    const brief = readBrief(path);
+    expect(brief.adGroups[0]!.responsiveSearchAd.descriptions[0]!.text).toBe(
+      "Protect earned trust: start free today",
+    );
+  });
+
+  it("surfaces an actionable message when an unquoted colon-space breaks the YAML (bug 2)", () => {
+    // Same line WITHOUT quotes → YAMLParseError ("nested mappings"). readBrief must
+    // catch it and tell the operator to quote the value, not leak the raw trace.
+    const yaml = validBriefYaml().replace(
+      "        - text: Description number 1 ok",
+      "        - text: Protect earned trust: start free today",
+    );
+    const path = writeTemp("bad-colon.yaml", yaml);
+    const writes: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    expect(() => readBrief(path)).toThrow(ExitError);
+    const out = writes.join("");
+    expect(out).toContain("not valid YAML");
+    expect(out).toContain("double quotes");
   });
 });
 

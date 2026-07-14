@@ -14,6 +14,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { enums } from "google-ads-api";
 
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 
@@ -412,5 +413,123 @@ describe("live keyword identity keys (numeric match_type)", () => {
     // Key is byte-identical to plan.ts's keyStr(negKey("free","EXACT")) → text is lowercased, name decoded.
     expect(set.has("free\x1fEXACT")).toBe(true);
     expect(set.has("free\x1f2")).toBe(false); // never the raw numeric form
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adGroups (add a new ad group to an existing campaign) — dry-run + apply
+// ---------------------------------------------------------------------------
+
+/**
+ * Fake client whose search returns the given live ad-group name rows (the only read
+ * an adGroups-only plan triggers), and records every mutate batch. Each mutate
+ * returns a synthetic resource_name per op so createAdGroup/RSA/keywords resolve.
+ */
+function adGroupNamesClient(liveNames: Record<number, string[]>): {
+  client: AdsClient;
+  mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }>;
+} {
+  const rows = Object.entries(liveNames).flatMap(([id, names]) =>
+    names.map((name) => ({ campaign: { id: Number(id) }, ad_group: { name } })),
+  );
+  const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
+      return rows as Row[];
+    },
+    async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+      mutations.push({ customerId, operations });
+      return { results: operations.map((_, i) => ({ resource_name: `customers/1/x/${i}` })) };
+    },
+  };
+  return { client, mutations };
+}
+
+/** A valid ad-group body authored with bare-string headlines/keywords (normalized at the boundary). */
+function adGroupBody(name: string): Record<string, unknown> {
+  return {
+    name,
+    defaultBidMicros: 2_000_000,
+    responsiveSearchAd: {
+      headlines: Array.from({ length: 15 }, (_, i) => `headline ${i}`),
+      descriptions: Array.from({ length: 4 }, (_, i) => `description ${i}`),
+      finalUrl: "https://example.com/ideas/x",
+    },
+    keywords: ["close deals ai"],
+  };
+}
+
+/** Write an adGroups-only plan and return its path. */
+function writeAdGroupsPlan(blocks: Array<Record<string, unknown>>): string {
+  const p = join(dir, "plan.json");
+  writeFileSync(p, JSON.stringify({ customerId: "8911925499", adGroups: blocks }));
+  return p;
+}
+
+describe("adGroups (add-ad-group) path", () => {
+  it("dry-run lists the create and never mutates", async () => {
+    const { client, mutations } = adGroupNamesClient({ 100: [] });
+    currentClient = client;
+    const plan = writeAdGroupsPlan([{ campaignId: "100", adGroup: adGroupBody("close deals ai") }]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0); // dry-run (no --apply)
+    const out = cap.text();
+
+    expect(out).toContain("+ ad group 'close deals ai' -> campaign 100");
+    expect(out).toContain("ad group + ad PAUSED");
+    expect(mutations).toEqual([]); // dry-run never mutates
+  });
+
+  it("apply creates ad group + RSA + keywords (3 mutate batches), the group PAUSED", async () => {
+    const { client, mutations } = adGroupNamesClient({ 100: [] });
+    currentClient = client;
+    const plan = writeAdGroupsPlan([{ campaignId: "100", adGroup: adGroupBody("close deals ai") }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    cap.text();
+
+    // createAdGroup, createResponsiveSearchAd, createKeywords -> one mutate batch each.
+    expect(mutations).toHaveLength(3);
+    const [ag, rsa, kw] = mutations;
+    expect(ag!.operations[0]!.entity).toBe("ad_group");
+    expect(ag!.operations[0]!.resource.campaign).toBe("customers/8911925499/campaigns/100");
+    // Added to a live campaign, the new group must be PAUSED (no spend until enabled).
+    expect(ag!.operations[0]!.resource.status).toBe(enums.AdGroupStatus.PAUSED);
+    expect(rsa!.operations[0]!.entity).toBe("ad_group_ad");
+    expect(rsa!.operations[0]!.resource.status).toBe(enums.AdGroupAdStatus.PAUSED);
+    expect(kw!.operations[0]!.entity).toBe("ad_group_criterion");
+  });
+
+  it("idempotent skip: a name already live in the campaign is not re-created", async () => {
+    const { client, mutations } = adGroupNamesClient({ 100: ["Close Deals AI"] }); // case-insensitive collision
+    currentClient = client;
+    const plan = writeAdGroupsPlan([{ campaignId: "100", adGroup: adGroupBody("close deals ai") }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("already in campaign 100, skipped");
+    expect(mutations).toEqual([]); // nothing created
+  });
+
+  it("a bad ad group (14 headlines) fails validation and mutates nothing", async () => {
+    const { client, mutations } = adGroupNamesClient({ 100: [] });
+    currentClient = client;
+    const bad = adGroupBody("bad group");
+    (bad.responsiveSearchAd as { headlines: unknown[] }).headlines = Array.from({ length: 14 }, (_, i) => ({
+      text: `headline ${i}`,
+    }));
+    const plan = writeAdGroupsPlan([{ campaignId: "100", adGroup: bad }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(1); // validation failure
+    const out = cap.text();
+
+    expect(out).toContain("VALIDATION FAILED");
+    expect(out).toContain("adGroup.responsiveSearchAd.headlines");
+    expect(mutations).toEqual([]);
   });
 });

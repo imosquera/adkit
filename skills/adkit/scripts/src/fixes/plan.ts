@@ -11,10 +11,12 @@
 
 import type { ZodIssue } from "zod";
 import {
+  AdGroupSchema,
   AdGroupStatusChangeSchema,
   CampaignStatusChangeSchema,
   KeywordSchema,
   SearchPartnersChangeSchema,
+  type AdGroup,
   type Keyword,
 } from "../lib/schema.js";
 
@@ -588,6 +590,134 @@ function searchPartnersPreconditionErrors(
   return blocks.flatMap(one);
 }
 
+/** A bare string becomes `{text}`; anything else passes through for the schema to judge. */
+function asTextObject(item: unknown): unknown {
+  return typeof item === "string" ? { text: item } : item;
+}
+
+/**
+ * A plan keyword item as a schema-shaped object: a bare string becomes `{text}` (the
+ * schema defaults matchType to PHRASE), and an object's matchType is upper-cased so
+ * the `adGroups` block accepts the same case-insensitive `matchType` the rest of the
+ * update plan does (via coerceKeyword). Anything else passes through unchanged.
+ */
+function asKeywordObject(item: unknown): unknown {
+  if (typeof item === "string") {
+    return { text: item };
+  }
+  if (isObject(item) && typeof item.matchType === "string") {
+    return { ...item, matchType: item.matchType.toUpperCase() };
+  }
+  return item;
+}
+
+/**
+ * Normalize a raw `adGroup` plan value into the object shape {@link AdGroupSchema}
+ * parses — so an `adGroups` block can author headlines/descriptions/keywords as the
+ * bare strings the rest of the update plan uses, not `{text}`/`{text,matchType}`
+ * objects. Purely structural (bare string -> `{text}`, upper-case a keyword's
+ * matchType); the schema remains the single authority on lengths, counts, and
+ * uniqueness. A non-object passes straight through for the schema to reject.
+ */
+function normalizeAdGroup(raw: unknown): unknown {
+  if (!isObject(raw)) {
+    return raw;
+  }
+  const rsa = raw.responsiveSearchAd;
+  return {
+    ...raw,
+    ...(isObject(rsa)
+      ? {
+          responsiveSearchAd: {
+            ...rsa,
+            ...(Array.isArray(rsa.headlines) ? { headlines: rsa.headlines.map(asTextObject) } : {}),
+            ...(Array.isArray(rsa.descriptions) ? { descriptions: rsa.descriptions.map(asTextObject) } : {}),
+          },
+        }
+      : {}),
+    ...(Array.isArray(raw.keywords) ? { keywords: raw.keywords.map(asKeywordObject) } : {}),
+  };
+}
+
+/**
+ * Validate each `adGroups` (add-ad-group) block: a numeric `campaignId` plus an
+ * `adGroup` that must parse against the same {@link AdGroupSchema} /adkit create
+ * enforces (full 15/4 RSA, 1–30 keywords, ≤$15 CPC) after boundary normalization
+ * (bare-string headlines/keywords accepted). Every schema issue surfaces prefixed
+ * with the campaign id and the offending field path, so a bad ad group fails at
+ * validate (dry-run-safe), not mid-apply against the live API.
+ */
+function adGroupsErrors(blocks: Array<Record<string, unknown>>): string[] {
+  const one = (b: Record<string, unknown>): string[] => {
+    const cid = b.campaignId;
+    const idErrors = [
+      ...(cid === undefined || cid === null ? ["adGroups: entry missing campaignId"] : []),
+      ...(cid !== undefined && cid !== null && !isDigitString(cid)
+        ? [`adGroups campaign ${pyRepr(cid)}: campaignId must be numeric`]
+        : []),
+    ];
+    if (b.adGroup === undefined || b.adGroup === null) {
+      return [...idErrors, `adGroups campaign ${strId(cid)}: entry missing adGroup`];
+    }
+    const parsed = AdGroupSchema.safeParse(normalizeAdGroup(b.adGroup));
+    if (parsed.success) {
+      return idErrors;
+    }
+    return [
+      ...idErrors,
+      ...parsed.error.issues.map((issue: ZodIssue) => {
+        const loc = issue.path.map((p) => String(p)).join(".") || "?";
+        return `adGroups campaign ${strId(cid)}: adGroup.${loc}: ${issue.message}`;
+      }),
+    ];
+  };
+  return blocks.flatMap(one);
+}
+
+/** A new-ad-group plan entry: the target campaign, the parsed ad group, and its name. */
+export interface AdGroupCreatePlanEntry {
+  campaignId: unknown;
+  name: string;
+  adGroup: AdGroup;
+}
+
+/** Live ad-group names per campaign: {campaignId -> Set of lowercased names}. */
+type LiveNamesMap = Map<number, ReadonlySet<string>> | Record<number, ReadonlySet<string>>;
+
+function liveNamesFor(map: LiveNamesMap | null | undefined, id: number | null): ReadonlySet<string> {
+  if (map === null || map === undefined || id === null) {
+    return new Set<string>();
+  }
+  const raw = map instanceof Map ? map.get(id) : (map as Record<number, ReadonlySet<string>>)[id];
+  return raw ?? new Set<string>();
+}
+
+/**
+ * Split `adGroups` blocks into [creates, skips] against the live ad-group names in
+ * each target campaign. A block whose ad-group name already exists (case-insensitive)
+ * in its campaign is a skip — the add is idempotent, so re-running a plan never
+ * creates a duplicate group; everything else is a create. Blocks are assumed already
+ * validated (adGroup parses), so a parse failure here drops the block defensively.
+ */
+export function addAdGroupsPlan(
+  blocks: Array<Record<string, unknown>>,
+  liveNames: LiveNamesMap | null | undefined,
+): [AdGroupCreatePlanEntry[], AdGroupCreatePlanEntry[]] {
+  const creates: AdGroupCreatePlanEntry[] = [];
+  const skips: AdGroupCreatePlanEntry[] = [];
+  for (const b of blocks) {
+    const parsed = AdGroupSchema.safeParse(normalizeAdGroup(b.adGroup));
+    if (!parsed.success) {
+      continue;
+    }
+    const adGroup = parsed.data;
+    const entry: AdGroupCreatePlanEntry = { campaignId: b.campaignId, name: adGroup.name, adGroup };
+    const names = liveNamesFor(liveNames, asInt(b.campaignId));
+    (names.has(adGroup.name.toLowerCase()) ? skips : creates).push(entry);
+  }
+  return [creates, skips];
+}
+
 /** Live-state input maps for validate (kept permissive to mirror the Python shell). */
 export interface ValidateLiveState {
   liveHeadlines: Map<unknown, string[]> | Record<string, string[]>;
@@ -620,5 +750,6 @@ export function validate(
     ...statusChangeErrors(arr("adGroupStatus"), AdGroupStatusChangeSchema, "adGroupStatus", "adGroup", "adGroupId"),
     ...searchPartnersErrors(arr("searchPartners")),
     ...searchPartnersPreconditionErrors(arr("searchPartners"), liveSearchPartnersGoogleSearch ?? new Map()),
+    ...adGroupsErrors(arr("adGroups")),
   ];
 }

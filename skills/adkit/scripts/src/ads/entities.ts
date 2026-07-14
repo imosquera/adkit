@@ -152,7 +152,10 @@ export async function createSearchCampaign(
     campaign_budget: budgetRn,
     network_settings: {
       target_google_search: true,
-      target_search_network: true,
+      // Search Partners follow the brief: "search-only" restricts serving to
+      // Google Search results; "search-partners-display" also serves on Google's
+      // search partner sites. Display (target_content_network) is always OFF.
+      target_search_network: expanded,
       target_content_network: false,
       target_partner_search_network: false,
     },
@@ -168,9 +171,6 @@ export async function createSearchCampaign(
     contains_eu_political_advertising:
       enums.EuPoliticalAdvertisingStatus.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING,
   };
-  // `expanded` documents the search-partners intent; target_search_network is on in
-  // both modes (Display stays off regardless), matching the Python behavior.
-  void expanded;
   const op: AdsMutateOperation = { entity: "campaign", operation: "create", resource };
   const result = await client.mutate(customerId, [op]);
   return result.results[0]!.resource_name;
@@ -528,12 +528,20 @@ export async function findExistingAdGroup(
   return rows[0]!.ad_group.resource_name;
 }
 
-/** Create the (enabled) standard-search ad group under `campaignRn`. Returns its resource name. */
+/**
+ * Create the standard-search ad group under `campaignRn`. Returns its resource name.
+ *
+ * `status` defaults to ENABLED — the /adkit create flow builds ad groups inside a
+ * PAUSED campaign, so the group's own status is moot. When ADDING an ad group to an
+ * already-live campaign (the update `adGroups` path), pass "PAUSED" so the new group
+ * cannot serve until it is explicitly enabled (its RSA is created PAUSED too).
+ */
 export async function createAdGroup(
   client: AdsClient,
   customerId: string,
   adGroup: AdGroup,
   campaignRn: string,
+  status: "ENABLED" | "PAUSED" = "ENABLED",
 ): Promise<string> {
   const op: AdsMutateOperation = {
     entity: "ad_group",
@@ -541,7 +549,7 @@ export async function createAdGroup(
     resource: {
       name: adGroup.name,
       campaign: campaignRn,
-      status: enums.AdGroupStatus.ENABLED,
+      status: enums.AdGroupStatus[status],
       type: enums.AdGroupType.SEARCH_STANDARD,
       cpc_bid_micros: adGroup.defaultBidMicros,
     },

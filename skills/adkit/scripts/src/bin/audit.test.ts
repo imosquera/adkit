@@ -20,10 +20,12 @@ import { MIN_KEYWORDS, requireDigits } from "../audit/scoring.js";
 import {
   auditCampaign,
   campaignServing,
+  isManagerMetricsError,
   keywordCpc,
   landingPageMobile,
   landingPagePolicy,
   qualityScore,
+  resolveAuditCustomer,
   resolveCampaign,
   searchTerms,
 } from "./audit.js";
@@ -40,6 +42,49 @@ function fakeClient(pick: (query: string) => unknown[], onSearch?: () => void): 
     },
   };
 }
+
+describe("resolveAuditCustomer (bug 4: MCC/leaf resolution)", () => {
+  const yamlMcc = () => "9999999999"; // yaml has only a login_customer_id (an MCC)
+
+  it("prefers the --customer flag", () => {
+    const got = resolveAuditCustomer({ customer: "1234567890" }, { GOOGLE_ADS_CUSTOMER_ID: "2222222222" }, {
+      yamlLookup: yamlMcc,
+    });
+    expect(got).toBe("1234567890");
+  });
+
+  it("uses GOOGLE_ADS_CUSTOMER_ID (the leaf) instead of falling back to the yaml MCC", () => {
+    // The reported bug: no flag, leaf exported, yaml only has the MCC login id.
+    // Must resolve to the leaf, NOT the manager account.
+    const got = resolveAuditCustomer({ customer: null }, { GOOGLE_ADS_CUSTOMER_ID: "8911925499" }, {
+      yamlLookup: yamlMcc,
+    });
+    expect(got).toBe("8911925499");
+  });
+
+  it("falls back to the yaml only when neither flag nor env is set", () => {
+    const got = resolveAuditCustomer({ customer: null }, {}, { yamlLookup: yamlMcc });
+    expect(got).toBe("9999999999");
+  });
+
+  it("dash-strips a flag value", () => {
+    const got = resolveAuditCustomer({ customer: "891-192-5499" }, {}, { yamlLookup: () => null });
+    expect(got).toBe("8911925499");
+  });
+});
+
+describe("isManagerMetricsError (bug 4)", () => {
+  it("detects the query_error 59 manager-account rejection", () => {
+    const err = {
+      errors: [{ error_code: { query_error: 59 }, message: "Metrics cannot be requested for a manager account." }],
+    };
+    expect(isManagerMetricsError(err)).toBe(true);
+  });
+
+  it("ignores unrelated errors", () => {
+    expect(isManagerMetricsError(new Error("some other failure"))).toBe(false);
+  });
+});
 
 describe("requireDigits guard", () => {
   it("throws on a non-digit id (injection guard runs in the shell)", () => {
