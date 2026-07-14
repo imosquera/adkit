@@ -24,9 +24,8 @@
  *
  * A new ad group (`adGroups`) is authored in the same shape a /adkit create brief ad
  * group uses (full 15/4 RSA + 1–30 keywords), validated by the same AdGroupSchema.
- * The ad group AND its RSA are created PAUSED (won't serve until enabled), so adding
- * one to a live campaign starts no spend; a name already live in the campaign is
- * skipped — re-running never duplicates a group.
+ * Its RSA is created PAUSED (won't serve until enabled), and a name already live in
+ * the campaign is skipped — re-running never duplicates a group.
  *
  * Negative keywords block off-theme search terms. Each `add` item is a bare string
  * (defaults to PHRASE) or {"text","matchType"} with matchType EXACT/PHRASE/BROAD.
@@ -521,7 +520,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     ...agCreates.map(
       (g) =>
         `+ ad group ${pyRepr(g.name)} -> campaign ${strOf(g.campaignId)} ` +
-        `(RSA 15H/4D + ${g.adGroup.keywords.length} keywords, ad group + ad PAUSED)`,
+        `(RSA 15H/4D + ${g.adGroup.keywords.length} keywords, ad PAUSED)`,
     ),
     ...agCreateSkips.map((g) => `ad group ${pyRepr(g.name)} already in campaign ${strOf(g.campaignId)}, skipped`),
   ];
@@ -715,18 +714,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   // 9) new ad groups. A name already live in the campaign was filtered into
-  // agCreateSkips (idempotent — never a duplicate group). Each create adds one ad
-  // group at a time: ad group (PAUSED) -> RSA (PAUSED) -> keywords (ENABLED). The
-  // group is created PAUSED so adding it to a LIVE campaign starts no spend — it is
-  // inert until explicitly enabled (and its ad is paused too, belt-and-suspenders).
+  // agCreateSkips (idempotent — never a duplicate group). Each create mirrors the
+  // /adkit create sequence one ad group at a time: ad group (ENABLED) -> RSA
+  // (PAUSED) -> keywords (ENABLED). The PAUSED ad means the group cannot serve until
+  // its ad is enabled, so adding a group to a live campaign starts no spend on its own.
   for (const g of agCreates) {
     const campaignRn = `customers/${customer}/campaigns/${strOf(g.campaignId)}`;
-    const agRn = await createAdGroup(client, customer, g.adGroup, campaignRn, "PAUSED");
+    const agRn = await createAdGroup(client, customer, g.adGroup, campaignRn);
     await createResponsiveSearchAd(client, customer, g.adGroup, agRn);
     const kwRns = await createKeywords(client, customer, g.adGroup, agRn);
     console.log(
       `  + ad group ${pyRepr(g.name)} -> campaign ${strOf(g.campaignId)}: ` +
-        `RSA 15H/4D + ${kwRns.length} keywords (ad group + ad PAUSED)`,
+        `RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,
     );
   }
   for (const g of agCreateSkips) {

@@ -696,11 +696,8 @@ function liveNamesFor(map: LiveNamesMap | null | undefined, id: number | null): 
  * Split `adGroups` blocks into [creates, skips] against the live ad-group names in
  * each target campaign. A block whose ad-group name already exists (case-insensitive)
  * in its campaign is a skip — the add is idempotent, so re-running a plan never
- * creates a duplicate group; everything else is a create. A second block for the same
- * (campaignId, name) within one plan is also a skip: the first block already stages
- * that create, so classifying the rest as creates would duplicate the group on apply.
- * Blocks are assumed already validated (adGroup parses), so a parse failure here drops
- * the block defensively.
+ * creates a duplicate group; everything else is a create. Blocks are assumed already
+ * validated (adGroup parses), so a parse failure here drops the block defensively.
  */
 export function addAdGroupsPlan(
   blocks: Array<Record<string, unknown>>,
@@ -708,9 +705,6 @@ export function addAdGroupsPlan(
 ): [AdGroupCreatePlanEntry[], AdGroupCreatePlanEntry[]] {
   const creates: AdGroupCreatePlanEntry[] = [];
   const skips: AdGroupCreatePlanEntry[] = [];
-  // Names staged as creates earlier in this loop, per campaign — treated as if live so
-  // duplicate (campaignId, name) blocks within one plan collapse to a single create.
-  const staged = new Map<number | null, Set<string>>();
   for (const b of blocks) {
     const parsed = AdGroupSchema.safeParse(normalizeAdGroup(b.adGroup));
     if (!parsed.success) {
@@ -718,16 +712,8 @@ export function addAdGroupsPlan(
     }
     const adGroup = parsed.data;
     const entry: AdGroupCreatePlanEntry = { campaignId: b.campaignId, name: adGroup.name, adGroup };
-    const campaignId = asInt(b.campaignId);
-    const lowerName = adGroup.name.toLowerCase();
-    const stagedNames = staged.get(campaignId) ?? new Set<string>();
-    const isDuplicate = liveNamesFor(liveNames, campaignId).has(lowerName) || stagedNames.has(lowerName);
-    if (isDuplicate) {
-      skips.push(entry);
-    } else {
-      creates.push(entry);
-      staged.set(campaignId, stagedNames.add(lowerName));
-    }
+    const names = liveNamesFor(liveNames, asInt(b.campaignId));
+    (names.has(adGroup.name.toLowerCase()) ? skips : creates).push(entry);
   }
   return [creates, skips];
 }
