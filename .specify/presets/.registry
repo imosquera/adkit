@@ -1,0 +1,201 @@
+{
+  "schema_version": "1.0",
+  "presets": {
+    "claude-ask-questions": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:df86035abc0a128286bef51699f330b54e1d5d92373ccf1b0ba079b0168a0880",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.clarify",
+          "speckit.checklist"
+        ]
+      },
+      "registered_skills": [
+        "speckit-clarify",
+        "speckit-checklist"
+      ],
+      "installed_at": "2026-07-14T17:44:39.607493+00:00"
+    },
+    "constitution-audit": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:3e9f591a4ea1f4666fb2349abaf00359998962feae8547c3b1be59e467fb34a4",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.plan",
+          "speckit.implement"
+        ]
+      },
+      "registered_skills": [
+        "speckit-plan",
+        "speckit-implement"
+      ],
+      "installed_at": "2026-07-14T17:44:39.758115+00:00"
+    },
+    "explicit-task-dependencies": {
+      "version": "1.1.0",
+      "source": "local",
+      "manifest_hash": "sha256:e0835948c83589556179aa2a663d9cc2633cc32819f65acaa1355d0a829548a2",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.tasks",
+          "speckit.implement"
+        ]
+      },
+      "registered_skills": [
+        "speckit-tasks",
+        "speckit-implement"
+      ],
+      "installed_at": "2026-07-14T17:44:39.935188+00:00"
+    },
+    "functional-constitution": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:d3f15cc7bb6bdf3ab40c93e05642027485118ae57c012408297a62f0a31b56f9",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.constitution"
+        ]
+      },
+      "registered_skills": [
+        "speckit-constitution"
+      ],
+      "installed_at": "2026-07-14T17:44:40.087072+00:00"
+    },
+    "graphify-on-implement": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:204a5f751bbf8f2c7a6b5c893cfb87f8d137b43d093d85d430ca1e1f6d5255d1",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.implement"
+        ]
+      },
+      "registered_skills": [
+        "speckit-implement"
+      ],
+      "installed_at": "2026-07-14T17:44:40.219320+00:00"
+    },
+    "implement-prelude-skills": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:442dbe3b572e0e5cc7d7064828f4f581e8faad70de81bf26d9200d57181d1254",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.implement"
+        ]
+      },
+      "registered_skills": [
+        "speckit-implement"
+      ],
+      "installed_at": "2026-07-14T17:44:40.350358+00:00"
+    },
+    "parse-dont-validate": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:8966ec89ae3afe6bda0b67878fef04366724b54e6e1624b8141aa08adc4f3e60",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.constitution",
+          "speckit.plan",
+          "speckit.implement"
+        ]
+      },
+      "registered_skills": [
+        "speckit-constitution",
+        "speckit-plan",
+        "speckit-implement"
+      ],
+      "installed_at": "2026-07-14T17:44:40.485748+00:00"
+    },
+    "portfolio-audit": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:02bdd4979d98a5db1de9a4d1db9c847aff8019f46ae55bb55a7bcbea689eb051",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.analyze"
+        ]
+      },
+      "registered_skills": [
+        "speckit-analyze"
+      ],
+      "installed_at": "2026-07-14T17:44:40.676794+00:00"
+    },
+    "progress-report": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:1af2df6a1ae1fc246ac3888738d3c321b54ac00e4de9e18512885aee35074525",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.specify",
+          "speckit.plan",
+          "speckit.tasks",
+          "speckit.implement",
+          "speckit.review.run"
+        ]
+      },
+      "registered_skills": [
+        "speckit-specify",
+        "speckit-plan",
+        "speckit-tasks",
+        "speckit-implement",
+        "speckit-review-run"
+      ],
+      "installed_at": "2026-07-14T17:44:40.843038+00:00"
+    },
+    "spec-minimal": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:d69bf08d78752e805fde79a029d036ad70fe1c759f35d2da975e4e214973b2f3",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.specify",
+          "speckit.plan"
+        ]
+      },
+      "registered_skills": [
+        "speckit-specify",
+        "speckit-plan"
+      ],
+      "installed_at": "2026-07-14T17:44:41.132721+00:00"
+    },
+    "worktree-isolation": {
+      "version": "1.2.0",
+      "source": "local",
+      "manifest_hash": "sha256:8c13e10048ec4b571a32ca65b80098786c25f52ab3c8a0c55af1b1df0555388a",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.implement"
+        ]
+      },
+      "registered_skills": [
+        "speckit-implement"
+      ],
+      "installed_at": "2026-07-14T17:44:41.348581+00:00"
+    }
+  }
+}

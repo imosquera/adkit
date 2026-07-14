@@ -1,0 +1,88 @@
+schema_version: "1.0"
+
+extension:
+  id: "review"
+  name: "Review Extension"
+  version: "1.2.0"
+  description: "Code review extension combining a GitHub PR-oriented 4-pass review (architecture, implementation, testing/security, simplicity) with specialized post-implementation agents for code quality, comments, tests, error handling, type design, and simplification. The PR review will additionally invoke the `ponytail` skill (DietrichGebert/ponytail marketplace) when it is available locally. Use /speckit-review-run for local-changes review across all agents, or /speckit-review-pr for a synthesized review of a GitHub PR."
+  author: "beadbits"
+  repository: "local"
+  license: "MIT (upstream agents) and same-as-project (pr command)"
+  homepage: "https://github.com/ismaelJimenez/spec-kit-review"
+  upstream:
+    source: "https://github.com/ismaelJimenez/spec-kit-review"
+    version: "1.0.1"
+    license: "MIT"
+    note: "Agents run/code/comments/tests/errors/types/simplify and detect-changed-files scripts are derived from upstream v1.0.1. See LICENSE-upstream."
+
+requires:
+  speckit_version: ">=0.1.0"
+
+  commands:
+    - "speckit.implement"
+
+provides:
+  config:
+    - name: "review-config.yml"
+      template: "config-template.yml"
+      description: "Review extension configuration — agent toggles for the coordinator"
+      required: false
+
+  scripts:
+    - name: "detect-changed-files.sh"
+      file: "scripts/bash/detect-changed-files.sh"
+      executable: true
+    - name: "detect-changed-files.ps1"
+      file: "scripts/powershell/detect-changed-files.ps1"
+      executable: true
+
+  commands:
+    - name: "speckit.review.run"
+      file: "commands/run.md"
+      description: "Comprehensive code review using specialized agents (coordinator)"
+    - name: "speckit.review.code"
+      file: "commands/code.md"
+      description: "General code quality review — project guideline compliance, bug detection, code quality"
+    - name: "speckit.review.comments"
+      file: "commands/comments.md"
+      description: "Code comment accuracy verification, documentation completeness, comment rot detection"
+    - name: "speckit.review.tests"
+      file: "commands/tests.md"
+      description: "Test coverage quality analysis — behavioral coverage, critical gap identification, test resilience evaluation"
+    - name: "speckit.review.errors"
+      file: "commands/errors.md"
+      description: "Error handling review — silent failure detection, catch block analysis, error logging"
+    - name: "speckit.review.types"
+      file: "commands/types.md"
+      description: "Type design analysis — encapsulation, invariant expression, usefulness, and enforcement"
+    - name: "speckit.review.simplify"
+      file: "commands/simplify.md"
+      description: "Code simplification suggestions — clarity, unnecessary complexity, redundant abstractions"
+    - name: "speckit.review.pr"
+      file: "commands/pr.md"
+      description: "Four-pass PR code review (architecture, implementation, testing/security, simplicity) against a GitHub PR via gh"
+
+hooks:
+  after_implement:
+    command: "speckit.review.run"
+    optional: false
+    prompt: "Run comprehensive review on implemented changes?"
+    description: "Multi-agent code review after implementation (mandatory: surfaces constitution violations even when the upfront audit was skipped)"
+    condition: null
+
+tags:
+  - "review"
+  - "pr-review"
+  - "code-quality"
+  - "testing"
+  - "error-handling"
+  - "github"
+
+defaults:
+  agents:
+    code: true
+    comments: true
+    tests: true
+    errors: true
+    types: true
+    simplify: true

@@ -1,0 +1,43 @@
+schema_version: "1.0"
+
+extension:
+  id: autopilot
+  name: "Issue Backlog Autopilot"
+  version: "0.1.0"
+  description: "Take the oldest eligible open GitHub issue from backlog to a reviewed draft PR by driving the full speckit pipeline unattended (specify → clarify → plan → tasks → implement → review), auto-answering clarify questions and posting progress to the issue at every stage."
+  author: imosquera
+  license: MIT
+
+requires:
+  speckit_version: ">=0.2.0"
+  tools:
+    - name: git
+      required: true
+    - name: gh
+      required: true
+
+provides:
+  scripts:
+    - name: autopilot-schedule.sh
+      file: scripts/bash/autopilot-schedule.sh
+      executable: true
+    - name: autopilot-run.sh
+      file: scripts/bash/autopilot-run.sh
+      executable: true
+    - name: stream-decode.py
+      file: scripts/bash/stream-decode.py
+      executable: true
+
+  commands:
+    - name: speckit.autopilot.run
+      file: commands/speckit.autopilot.run.md
+      description: "Pick the oldest eligible open issue (or a given issue number), create its worktree, run the full speckit pipeline unattended, and open a draft PR that closes it"
+    - name: speckit.autopilot.schedule
+      file: commands/speckit.autopilot.schedule.md
+      description: "Schedule /speckit-autopilot-run on a recurring launchd timer (default every 2h, configurable); also unschedule, status, or run-now. Opt-in, macOS only"
+
+tags:
+  - "workflow"
+  - "github"
+  - "automation"
+  - "orchestration"

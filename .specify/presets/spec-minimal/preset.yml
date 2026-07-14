@@ -1,0 +1,32 @@
+schema_version: "1.0"
+
+preset:
+  id: "spec-minimal"
+  name: "Spec Minimal"
+  version: "1.0.0"
+  description: "Wraps /speckit-specify and /speckit-plan to enforce a strictly minimal artifact set. Specify drops Assumptions, Key Entities, and Success Criteria and adds a GitHub-safe inline HTML preview for UI-touching features. Plan hard-enforces the feature directory to spec.md, plan.md, tasks.md, requirements.md, and optionally quickstart.md — research.md, data-model.md, and contracts/ are forbidden via a mandatory prompt rule plus a read-only post-flight verifier — nothing is ever pre-created on disk."
+  author: "imosquera"
+  repository: "https://github.com/imosquera/speckit-squads"
+  license: "MIT"
+
+requires:
+  speckit_version: ">=0.6.0"
+
+provides:
+  templates:
+    - type: "command"
+      name: "speckit.specify"
+      file: "commands/speckit.specify.md"
+      description: "Composable wrapper for /speckit-specify that trims spec output and adds a GitHub-safe inline HTML UI preview when needed."
+      strategy: "wrap"
+
+    - type: "command"
+      name: "speckit.plan"
+      file: "commands/speckit.plan.md"
+      description: "Composable wrapper for /speckit-plan that strictly enforces a four-file documentation tree (spec.md, plan.md, tasks.md, requirements.md)."
+      strategy: "wrap"
+
+tags:
+  - "spec-minimal"
+  - "minimal"
+  - "artifacts"
