@@ -529,3 +529,95 @@ describe("adGroups (add-ad-group) path", () => {
     expect(mutations).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// languages (English-only) — dry-run + apply
+// ---------------------------------------------------------------------------
+
+/**
+ * Fake client whose search returns the given live language criteria per campaign as
+ * {campaignId: [languageConstant, ...]}, each synthesized with a criterion resource
+ * name so a remove can be asserted. `mutations` records every mutate batch.
+ */
+function languagesClient(live: Record<number, string[]>): {
+  client: AdsClient;
+  mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }>;
+} {
+  const rows = Object.entries(live).flatMap(([id, langs]) =>
+    langs.map((lc) => ({
+      campaign: { id: Number(id) },
+      campaign_criterion: {
+        resource_name: `customers/8911925499/campaignCriteria/${id}~${lc.split("/")[1]}`,
+        language: { language_constant: lc },
+      },
+    })),
+  );
+  const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
+      return rows as Row[];
+    },
+    async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+      mutations.push({ customerId, operations });
+      return { results: operations.map(() => ({ resource_name: "customers/1/campaigns/x" })) };
+    },
+  };
+  return { client, mutations };
+}
+
+function writeLanguagesPlan(blocks: Array<Record<string, unknown>>): string {
+  const p = join(dir, "plan.json");
+  writeFileSync(p, JSON.stringify({ customerId: "8911925499", languages: blocks }));
+  return p;
+}
+
+describe("languages path", () => {
+  it("dry-run: default all-languages campaign is narrowed to English (add), never mutated", async () => {
+    const { client, mutations } = languagesClient({ 100: [] }); // no live language criteria
+    currentClient = client;
+    const plan = writeLanguagesPlan([{ campaignId: "100" }]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0); // dry-run
+    const out = cap.text();
+
+    expect(out).toContain("languages campaign 100: English only (+1 add, -0 remove)");
+    expect(mutations).toEqual([]); // dry-run never mutates
+  });
+
+  it("apply: adds English and removes the other live languages (English-exclusive)", async () => {
+    // German (1001) + Spanish (1003) live, English absent.
+    const { client, mutations } = languagesClient({ 100: ["languageConstants/1001", "languageConstants/1003"] });
+    currentClient = client;
+    const plan = writeLanguagesPlan([{ campaignId: "100" }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("English only (+1 add, -2 remove)");
+    expect(mutations).toHaveLength(1);
+    const ops = mutations[0]!.operations;
+    expect(ops.map((o) => o.operation)).toEqual(["create", "remove", "remove"]);
+    expect((ops[0]!.resource.language as { language_constant: string }).language_constant).toBe(
+      "languageConstants/1000",
+    );
+    expect(ops.slice(1).map((o) => o.resource.resource_name)).toEqual([
+      "customers/8911925499/campaignCriteria/100~1001",
+      "customers/8911925499/campaignCriteria/100~1003",
+    ]);
+  });
+
+  it("idempotent skip: a campaign already English-only is not re-mutated", async () => {
+    const { client, mutations } = languagesClient({ 100: ["languageConstants/1000"] }); // English is the sole language
+    currentClient = client;
+    const plan = writeLanguagesPlan([{ campaignId: "100" }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("languages campaign 100: already English only, skipped");
+    expect(mutations).toEqual([]); // nothing mutated
+  });
+});
