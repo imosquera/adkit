@@ -1,0 +1,27 @@
+schema_version: "1.0"
+
+preset:
+  id: "functional-constitution"
+  name: "Functional Constitution Guardrail"
+  version: "1.0.0"
+  description: "Overrides /speckit-constitution so the generated constitution always includes a mandatory Functional Programming Paradigms section with strict non-imperative constraints."
+  author: "beadbits"
+  repository: "local"
+  license: "same-as-project"
+
+requires:
+  speckit_version: ">=0.6.0"
+
+provides:
+  templates:
+    - type: "command"
+      name: "speckit.constitution"
+      file: "commands/speckit.constitution.md"
+      description: "Constitution command that always injects and normalizes the Functional Programming Paradigms section"
+      replaces: "speckit.constitution"
+
+tags:
+  - "constitution"
+  - "functional-programming"
+  - "governance"
+  - "guardrail"

@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0",
+  "extensions": {
+    "archive": {
+      "version": "1.1.0",
+      "source": "local",
+      "manifest_hash": "sha256:795940653a449c7e754dad74e12d0732cb9ea5345617ea463e321634ae0e5eba",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.archive.feature"
+        ]
+      },
+      "registered_skills": [],
+      "installed_at": "2026-07-14T17:44:38.830950+00:00"
+    },
+    "autopilot": {
+      "version": "0.1.0",
+      "source": "local",
+      "manifest_hash": "sha256:46a57e02a394b227bf29f1bdbc5dc5d8aac577d50a40a230af58521609bba0b9",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.autopilot.run",
+          "speckit.autopilot.schedule"
+        ]
+      },
+      "registered_skills": [],
+      "installed_at": "2026-07-14T17:44:38.949092+00:00"
+    },
+    "git": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:91ed549d09ca180daa6962af625c227e7194b595b17a29f3db6289e1b7115abd",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.git.feature",
+          "speckit.git.worktree",
+          "speckit.git.clean",
+          "speckit.git.commit",
+          "speckit.git.pr"
+        ]
+      },
+      "registered_skills": [],
+      "installed_at": "2026-07-14T17:44:39.077513+00:00"
+    },
+    "progress": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:0eb25bbec7b5c892c0b361822f60a661c3a621f52c7ca5cff756ba04dab80968",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.progress.tasks",
+          "speckit.progress.implement"
+        ]
+      },
+      "registered_skills": [],
+      "installed_at": "2026-07-14T17:44:39.198280+00:00"
+    },
+    "review": {
+      "version": "1.2.0",
+      "source": "local",
+      "manifest_hash": "sha256:3e2d6054dcc597b001c2687d0ae7b8061ae9dd72e0b86586792b1edc0e19382d",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.review.run",
+          "speckit.review.code",
+          "speckit.review.comments",
+          "speckit.review.tests",
+          "speckit.review.errors",
+          "speckit.review.types",
+          "speckit.review.simplify",
+          "speckit.review.pr"
+        ]
+      },
+      "registered_skills": [],
+      "installed_at": "2026-07-14T17:44:39.372803+00:00"
+    },
+    "stale-tasks-guard": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:ace0c1e96f4f081e33863dca9ed0d5a06d1a04fcc1646e2e011de7c28c07a2ae",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "claude": [
+          "speckit.stale-tasks-guard.implement"
+        ]
+      },
+      "registered_skills": [],
+      "installed_at": "2026-07-14T17:44:39.498098+00:00"
+    }
+  }
+}

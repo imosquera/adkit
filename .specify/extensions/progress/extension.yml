@@ -1,0 +1,41 @@
+schema_version: "1.0"
+
+extension:
+  id: "progress"
+  name: "Progress Hooks"
+  version: "1.0.0"
+  description: "Companion to the progress-report preset. The preset wraps the SpecKit cycle commands to keep a per-branch status card current, but the `wrap` strategy is clobbered when another preset REPLACES the tasks or implement command body (e.g. explicit-task-dependencies, constitution-audit). Presets can't declare lifecycle hooks — only extensions can — so this extension supplies before_tasks / before_implement hooks that mark those two phases active on the card regardless of who owns the command body. It owns no writer of its own: its commands resolve the preset's progress_report.py and no-op gracefully if the preset (or the dashboard repo) isn't present. Install alongside the progress-report preset."
+  author: "imosquera"
+  repository: "https://github.com/imosquera/speckit-squads"
+  license: "MIT"
+
+requires:
+  speckit_version: ">=0.6.0"
+
+provides:
+  commands:
+    - name: "speckit.progress.tasks"
+      file: "commands/tasks.md"
+      description: "Hook target for before_tasks: marks the tasks phase active on the dashboard card. Clobber-immune where a replaced /speckit-tasks body would drop the preset's wrap."
+    - name: "speckit.progress.implement"
+      file: "commands/implement.md"
+      description: "Hook target for before_implement: marks the implement phase active on the dashboard card. Clobber-immune where a replaced /speckit-implement body would drop the preset's wrap."
+
+hooks:
+  before_tasks:
+    command: "speckit.progress.tasks"
+    optional: false
+    description: "Mark the tasks phase active on the dashboard card (fires even when /speckit-tasks is replaced by another preset)."
+    condition: null
+  before_implement:
+    command: "speckit.progress.implement"
+    optional: false
+    description: "Mark the implement phase active on the dashboard card (fires even when /speckit-implement is replaced by another preset)."
+    condition: null
+
+tags:
+  - "progress"
+  - "dashboard"
+  - "agent-os"
+  - "hooks"
+  - "observability"

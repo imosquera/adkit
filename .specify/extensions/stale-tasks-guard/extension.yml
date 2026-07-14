@@ -1,0 +1,43 @@
+schema_version: "1.0"
+
+extension:
+  id: "stale-tasks-guard"
+  name: "Stale-Tasks Guard"
+  version: "1.0.0"
+  description: "Halts /speckit-implement when spec.md was modified more recently than tasks.md — the signal that a late /speckit-clarify or /speckit-specify edit invalidated the task plan. Shipped as an extension (before_implement hook) rather than a preset wrap/replace so it fires regardless of which preset owns the /speckit-implement command body (e.g. constitution-audit, explicit-task-dependencies)."
+  author: "speckit-squads"
+  repository: "local"
+  license: "same-as-project"
+
+requires:
+  speckit_version: ">=0.6.0"
+  tools:
+    - name: python3
+      required: true
+    - name: git
+      required: false
+
+provides:
+  scripts:
+    - name: "stale_tasks_guard.py"
+      file: "scripts/python/stale_tasks_guard.py"
+      executable: true
+      description: "Deterministic mtime/commit-time comparison of spec.md vs tasks.md. Resolves the feature directory the same way core Spec Kit does (SPECIFY_FEATURE_DIRECTORY env override, else .specify/feature.json). Exit 0 = not stale or guard skipped (unresolvable feature directory, missing files); exit 1 = stale, prints the STALE TASKS banner. Stdlib-only Python 3; uses git commit time instead of raw mtime for clean files so a fresh worktree checkout doesn't defeat the comparison."
+
+  commands:
+    - name: "speckit.stale-tasks-guard.implement"
+      file: "commands/implement.md"
+      description: "Hook target for before_implement: runs stale_tasks_guard.py and halts the run on exit 1, unless --force was passed on the /speckit-implement invocation."
+
+hooks:
+  before_implement:
+    command: "speckit.stale-tasks-guard.implement"
+    optional: false
+    description: "Detect a stale tasks.md (spec.md modified after tasks.md was generated) and halt /speckit-implement before the implementation loop starts, unless --force is present."
+    condition: null
+
+tags:
+  - "implement"
+  - "guard"
+  - "hooks"
+  - "tasks"

@@ -1,0 +1,28 @@
+schema_version: "1.0"
+
+preset:
+  id: "worktree-isolation"
+  name: "Worktree Isolation (Implement Only)"
+  version: "1.2.0"
+  description: "Overrides /speckit-implement to require operation inside the feature's dedicated git worktree by resolving .specify/feature.json.worktree_path and cd-ing before execution. Implements BeadBits Constitution v2.3.0 Principle VII (Feature-Work Isolation) at implement time."
+  author: "beadbits"
+  repository: "local"
+  license: "same-as-project"
+
+requires:
+  speckit_version: ">=0.6.0"
+
+provides:
+  templates:
+    - type: "command"
+      name: "speckit.implement"
+      file: "commands/speckit.implement.md"
+      description: "/speckit-implement with mandatory cd into the feature's worktree resolved from .specify/feature.json"
+      replaces: "speckit.implement"
+
+tags:
+  - "worktree"
+  - "isolation"
+  - "implement"
+  - "constitution-vii"
+  - "claude"

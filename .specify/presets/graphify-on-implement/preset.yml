@@ -1,0 +1,27 @@
+schema_version: "1.0"
+
+preset:
+  id: "graphify-on-implement"
+  name: "Graphify Finalize on Implement"
+  version: "1.0.0"
+  description: "Overrides /speckit-implement so a graphify refresh is always executed as the final step after implementation completes."
+  author: "beadbits"
+  repository: "local"
+  license: "same-as-project"
+
+requires:
+  speckit_version: ">=0.6.0"
+
+provides:
+  templates:
+    - type: "command"
+      name: "speckit.implement"
+      file: "commands/speckit.implement.md"
+      description: "Implement command with mandatory final graphify update"
+      replaces: "speckit.implement"
+
+tags:
+  - "implement"
+  - "graphify"
+  - "knowledge-graph"
+  - "governance"
