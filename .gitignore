@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node / JS
+node_modules/
+
+# Claude Code local session state
+.claude/

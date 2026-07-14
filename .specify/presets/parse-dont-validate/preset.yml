@@ -1,0 +1,51 @@
+schema_version: "1.0"
+
+preset:
+  id: "parse-dont-validate"
+  name: "Parse, Don't Validate"
+  version: "1.0.0"
+  description: "Overrides /speckit-constitution, /speckit-plan, and /speckit-implement to enforce the 'parse, don't validate' discipline across TypeScript and Python — untrusted input stays untyped-safe (`unknown` / unparsed) at the boundary, parsers return branded/nominal domain types, and a deterministic scanner gates completion by flagging `any`/`Any`, stray deserialization, boolean validators, and casts outside parser modules."
+  author: "speckit-squads"
+  repository: "local"
+  license: "same-as-project"
+
+requires:
+  speckit_version: ">=0.6.0"
+
+provides:
+  scripts:
+    - name: "parse_dont_validate.py"
+      file: "scripts/python/parse_dont_validate.py"
+      executable: true
+      description: "checklist + scan for parse-don't-validate anti-patterns in changed TypeScript and Python (any/Any / stray JSON.parse & json.loads / boolean validators / narrowing casts outside parser modules), with line-comment waivers. Real ASTs, no regex: Python via the stdlib `ast` module, TypeScript by shelling out to the Node helper. Stdlib-only Python 3."
+    - name: "pdv_ts_scan.cjs"
+      file: "scripts/node/pdv_ts_scan.cjs"
+      executable: true
+      description: "Node helper that walks TypeScript sources with the project's TypeScript Compiler API and emits findings as JSON. Requires `node` on PATH and `typescript` installed in the project; the Python driver hard-fails (no regex fallback) if either is missing."
+
+  templates:
+    - type: "command"
+      name: "speckit.constitution"
+      file: "commands/speckit.constitution.md"
+      description: "Constitution command that always injects a canonical 'Parse, Don't Validate' governance section"
+      replaces: "speckit.constitution"
+    - type: "command"
+      name: "speckit.plan"
+      file: "commands/speckit.plan.md"
+      description: "Plan command that requires a 'Parse Boundaries' design section (trust boundaries + branded domain types + parsers). Chainable: exposes a {CORE_TEMPLATE} seam so other presets can wrap it."
+      strategy: "wrap"
+    - type: "command"
+      name: "speckit.implement"
+      file: "commands/speckit.implement.md"
+      description: "Implement command that applies the parse-don't-validate discipline while writing TypeScript and gates completion on a deterministic anti-pattern scan"
+      replaces: "speckit.implement"
+
+tags:
+  - "implement"
+  - "typescript"
+  - "python"
+  - "type-safety"
+  - "parsing"
+  - "domain-modeling"
+  - "functional-programming"
+  - "governance"

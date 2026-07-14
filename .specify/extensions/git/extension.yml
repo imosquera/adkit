@@ -1,0 +1,135 @@
+schema_version: "1.0"
+
+extension:
+  id: git
+  name: "Git Branching Workflow"
+  version: "1.0.0"
+  description: "Feature branch creation, worktree management, feature cleanup, auto-commit hooks, and PR creation"
+  author: spec-kit-core
+  repository: https://github.com/github/spec-kit
+  license: MIT
+
+requires:
+  speckit_version: ">=0.2.0"
+  tools:
+    - name: git
+      required: false
+
+provides:
+  commands:
+    - name: speckit.git.feature
+      file: commands/speckit.git.feature.md
+      description: "Create a feature branch + worktree and (when gh is available) a linked GitHub issue numbered to match the spec"
+    - name: speckit.git.worktree
+      file: commands/speckit.git.worktree.md
+      description: "Create a new worktree under the project's ${PROJ}.worktrees collector"
+    - name: speckit.git.clean
+      file: commands/speckit.git.clean.md
+      description: "Clean up the current feature worktree, branch, issue, and uncommitted changes"
+    - name: speckit.git.commit
+      file: commands/speckit.git.commit.md
+      description: "Auto-commit changes after a Spec Kit command completes"
+    - name: speckit.git.pr
+      file: commands/speckit.git.pr.md
+      description: "Open a GitHub PR for the current feature branch, auto-appending Closes #N from .specify/feature.json when source_issue is set"
+
+  config:
+    - name: "git-config.yml"
+      template: "config-template.yml"
+      description: "Git branching configuration"
+      required: false
+
+hooks:
+  before_specify:
+    command: speckit.git.feature
+    optional: false
+    description: "Create feature branch before specification"
+  before_clarify:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit outstanding changes before clarification?"
+    description: "Auto-commit before spec clarification"
+  before_plan:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit outstanding changes before planning?"
+    description: "Auto-commit before implementation planning"
+  before_tasks:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit outstanding changes before task generation?"
+    description: "Auto-commit before task generation"
+  before_implement:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit outstanding changes before implementation?"
+    description: "Auto-commit before implementation"
+  before_checklist:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit outstanding changes before checklist?"
+    description: "Auto-commit before checklist generation"
+  before_analyze:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit outstanding changes before analysis?"
+    description: "Auto-commit before analysis"
+  before_taskstoissues:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit outstanding changes before issue sync?"
+    description: "Auto-commit before tasks-to-issues conversion"
+  after_constitution:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit constitution changes?"
+    description: "Auto-commit after constitution update"
+  after_specify:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit specification changes?"
+    description: "Auto-commit after specification"
+  after_clarify:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit clarification changes?"
+    description: "Auto-commit after spec clarification"
+  after_plan:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit plan changes?"
+    description: "Auto-commit after implementation planning"
+  after_tasks:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit task changes?"
+    description: "Auto-commit after task generation"
+  after_implement:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit implementation changes?"
+    description: "Auto-commit after implementation"
+  after_checklist:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit checklist changes?"
+    description: "Auto-commit after checklist generation"
+  after_analyze:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit analysis results?"
+    description: "Auto-commit after analysis"
+  after_taskstoissues:
+    command: speckit.git.commit
+    optional: true
+    prompt: "Commit after syncing issues?"
+    description: "Auto-commit after tasks-to-issues conversion"
+
+tags:
+  - "git"
+  - "branching"
+  - "workflow"
+
+config:
+  defaults:
+    branch_numbering: sequential

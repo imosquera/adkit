@@ -1,0 +1,54 @@
+schema_version: "1.0"
+
+preset:
+  id: "progress-report"
+  name: "Progress Report"
+  version: "1.0.0"
+  description: "Wraps the five SpecKit cycle commands (specify, plan, tasks, implement, review) to maintain a live branch-status card per branch in an agent-os dashboard repo (default ~/Code/agent-os, configurable via AGENT_OS_DASHBOARD). Each phase transition rewrites <dashboard>/branches/<branch-slug>.md with per-phase status (done|active|pending|blocked) and review substeps, bumping the timestamp. Skips gracefully when the dashboard isn't present. Works whether autopilot or a human drives the cycle, since it wraps the commands both invoke."
+  author: "imosquera"
+  repository: "https://github.com/imosquera/speckit-squads"
+  license: "MIT"
+
+requires:
+  speckit_version: ">=0.6.0"
+
+provides:
+  scripts:
+    - name: "progress_report.py"
+      file: "scripts/python/progress_report.py"
+      executable: true
+      description: "Deterministic writer for the dashboard branch-status card. Rewrites the whole file on every phase transition, enforces the status vocabulary + ordering rule, tracks review substeps, and bumps `updated`. Stdlib-only Python 3; graceful no-op when the dashboard path is absent."
+
+  templates:
+    - type: "command"
+      name: "speckit.specify"
+      file: "commands/speckit.specify.md"
+      description: "Marks the `specify` phase active on entry and done on completion."
+      strategy: "wrap"
+    - type: "command"
+      name: "speckit.plan"
+      file: "commands/speckit.plan.md"
+      description: "Marks the `plan` phase active on entry and done on completion."
+      strategy: "wrap"
+    - type: "command"
+      name: "speckit.tasks"
+      file: "commands/speckit.tasks.md"
+      description: "Marks the `tasks` phase active on entry and done on completion."
+      strategy: "wrap"
+    - type: "command"
+      name: "speckit.implement"
+      file: "commands/speckit.implement.md"
+      description: "Marks the `implement` phase active on entry and done on completion."
+      strategy: "wrap"
+    - type: "command"
+      name: "speckit.review.run"
+      file: "commands/speckit.review.run.md"
+      description: "Marks the `review` phase active on entry, flips each review substep (code/comments/tests/errors/types/simplify) as its pass runs, and marks review done at the end."
+      strategy: "wrap"
+
+tags:
+  - "progress"
+  - "dashboard"
+  - "agent-os"
+  - "status"
+  - "observability"
