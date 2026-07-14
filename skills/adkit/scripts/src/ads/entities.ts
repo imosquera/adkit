@@ -483,6 +483,37 @@ export async function createNegativeKeywords(
   return (await client.mutate(customerId, ops)).results.map((r) => r.resource_name);
 }
 
+/** English language criterion — the only language the update lever targets. */
+export const ENGLISH_LANGUAGE_CONSTANT = "languageConstants/1000";
+
+/**
+ * Build CampaignCriterion ops to make a campaign English-only: create the English
+ * language criterion (when `addEnglish`) and remove each live non-English language
+ * criterion (by resource name). Pure op-construction (no mutate); mirrors
+ * {@link buildKeywordOps}. Returns [] when English is already the sole language.
+ */
+export function buildLanguageOps(
+  campaignRn: string,
+  addEnglish: boolean,
+  removeResources: string[],
+): AdsMutateOperation[] {
+  const addOps: AdsMutateOperation[] = addEnglish
+    ? [
+        {
+          entity: "campaign_criterion",
+          operation: "create",
+          resource: { campaign: campaignRn, language: { language_constant: ENGLISH_LANGUAGE_CONSTANT } },
+        },
+      ]
+    : [];
+  const removeOps: AdsMutateOperation[] = removeResources.map((rn) => ({
+    entity: "campaign_criterion",
+    operation: "remove",
+    resource: { resource_name: rn },
+  }));
+  return [...addOps, ...removeOps];
+}
+
 /** Target the US + Canada geo constants on the campaign. */
 export async function targetUsCanada(
   client: AdsClient,

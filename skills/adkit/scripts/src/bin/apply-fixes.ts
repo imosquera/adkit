@@ -19,8 +19,14 @@
  *   "budgets":   [{"campaignId": 456, "dailyMicros": 50000000, "maxRaisePct": 100}],
  *   "campaignStatus": [{"campaignId": "456", "status": "ENABLED"}],  // flip a campaign on/off
  *   "adGroupStatus": [{"adGroupId": "789", "status": "PAUSED"}],     // flip an ad group on/off
- *   "adGroups":  [{"campaignId": 456, "adGroup": {<brief ad group: name, defaultBidMicros, responsiveSearchAd, keywords>}}]  // add a new ad group
+ *   "adGroups":  [{"campaignId": 456, "adGroup": {<brief ad group: name, defaultBidMicros, responsiveSearchAd, keywords>}}],  // add a new ad group
+ *   "languages": [{"campaignId": 456}]                               // make the campaign English-only
  * }
+ *
+ * languages makes a campaign serve in English only: it adds the English language
+ * criterion and removes any other live language criteria (Google's default is an
+ * implicit "all languages"). Idempotent — an already-English campaign is reported
+ * skipped, never duplicated.
  *
  * A new ad group (`adGroups`) is authored in the same shape a /adkit create brief ad
  * group uses (full 15/4 RSA + 1–30 keywords), validated by the same AdGroupSchema.
@@ -61,7 +67,9 @@ import {
   setCampaignStatus,
   setSearchPartners,
   buildKeywordOps,
+  buildLanguageOps,
   buildNegativeKeywordOps,
+  ENGLISH_LANGUAGE_CONSTANT,
 } from "../ads/entities.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
@@ -86,6 +94,7 @@ import {
   applyBudgetsQuery,
   applyCampaignStatusesQuery,
   applyHeadlinesQuery,
+  applyLanguagesQuery,
   applyNegativesQuery,
   applyPositiveKeywordsQuery,
   applySearchPartnersQuery,
@@ -147,6 +156,11 @@ interface HeadlineRow {
 interface AdGroupNameRow {
   campaign: { id: number };
   ad_group: { name: string };
+}
+
+interface LanguageRow {
+  campaign: { id: number };
+  campaign_criterion: { resource_name: string; language: { language_constant: string } };
 }
 
 // Live-state maps are keyed with plan.ts's `keyStr` (imported above) so the
@@ -298,6 +312,24 @@ export async function liveAdGroupNames(
   }, new Map<number, Set<string>>());
 }
 
+/** campaignId -> Map<languageConstantRn, criterionRn> of live language criteria. */
+export async function liveLanguages(
+  client: AdsClient,
+  customerId: string,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Map<number, Map<string, string>>> {
+  if (campaignIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.search<LanguageRow>(customerId, applyLanguagesQuery(campaignIds));
+  return rows.reduce((acc, r) => {
+    const inner = acc.get(r.campaign.id) ?? new Map<string, string>();
+    inner.set(r.campaign_criterion.language.language_constant, r.campaign_criterion.resource_name);
+    acc.set(r.campaign.id, inner);
+    return acc;
+  }, new Map<number, Map<string, string>>());
+}
+
 /** adId -> live RSA headline texts, for an appendHeadlines merge. */
 export async function liveHeadlines(
   client: AdsClient,
@@ -336,6 +368,7 @@ interface FixesPlan extends Record<string, unknown> {
   adGroupStatus?: Array<Record<string, unknown>>;
   searchPartners?: Array<Record<string, unknown>>;
   adGroups?: Array<Record<string, unknown>>;
+  languages?: Array<Record<string, unknown>>;
 }
 
 /** A plan section as a typed array (empty when absent). */
@@ -427,6 +460,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     customer,
     section(plan, "adGroups").map((g) => g.campaignId as string | number),
   );
+  const liveLangs = await liveLanguages(
+    client,
+    customer,
+    section(plan, "languages").map((l) => l.campaignId as string | number),
+  );
   // Split into the two plain boolean maps the pure plan.ts functions expect:
   // current target_search_network (searchPartnersPlan's no-op-skip check) and
   // current target_google_search (searchPartnersPreconditionErrors' ENABLE guard).
@@ -449,6 +487,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const [spChanges, spSkips] = searchPartnersPlan(section(plan, "searchPartners"), liveSpEnabled);
   const spEnableChanges = spChanges.filter((c) => c.enabled === true);
   const [agCreates, agCreateSkips] = addAdGroupsPlan(section(plan, "adGroups"), liveAgNames);
+  // languages: make each listed campaign English-only — add English if absent, remove
+  // every other live language criterion. Idempotent: no ops when already English.
+  const languageActions = section(plan, "languages").map((l) => {
+    const live = liveLangs.get(asId(l.campaignId)) ?? new Map<string, string>();
+    const addEnglish = !live.has(ENGLISH_LANGUAGE_CONSTANT);
+    const remove = [...live].filter(([lc]) => lc !== ENGLISH_LANGUAGE_CONSTANT).map(([, rn]) => rn);
+    return { campaignId: l.campaignId, addEnglish, remove };
+  });
 
   /**
    * Surface the campaign/ad-group on/off plan (and the searchPartners toggle) as a
@@ -523,6 +569,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         `(RSA 15H/4D + ${g.adGroup.keywords.length} keywords, ad PAUSED)`,
     ),
     ...agCreateSkips.map((g) => `ad group ${pyRepr(g.name)} already in campaign ${strOf(g.campaignId)}, skipped`),
+    ...languageActions.map((l) =>
+      l.addEnglish || l.remove.length > 0
+        ? `languages campaign ${strOf(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`
+        : `languages campaign ${strOf(l.campaignId)}: already English only, skipped`,
+    ),
   ];
   console.log("validation ok. planned actions:");
   for (const a of actions) {
@@ -711,6 +762,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
   for (const c of spSkips) {
     console.log(`  campaign ${strOf(c.campaignId)}: search partners already ${strOf(c.enabled)}, skipped`);
+  }
+
+  // 8c) language targeting: make each listed campaign English-only. Idempotent — an
+  // already-English campaign yields no ops and is reported skipped.
+  for (const l of languageActions) {
+    const ops = buildLanguageOps(`customers/${customer}/campaigns/${strOf(l.campaignId)}`, l.addEnglish, l.remove);
+    if (ops.length === 0) {
+      console.log(`  languages campaign ${strOf(l.campaignId)}: already English only, skipped`);
+      continue;
+    }
+    await client.mutate(customer, ops);
+    console.log(
+      `  languages campaign ${strOf(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`,
+    );
   }
 
   // 9) new ad groups. A name already live in the campaign was filtered into

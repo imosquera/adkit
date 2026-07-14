@@ -340,6 +340,23 @@ export function applyAdGroupNamesQuery(
   );
 }
 
+/**
+ * Live (non-removed) language targeting criteria per campaign, so a `languages`
+ * (English-only) block can add English when absent and remove every other language.
+ * Ids guarded digits-only.
+ */
+export function applyLanguagesQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): string {
+  const ids = campaignIds.map((i) => gaqlId(i)).join(",");
+  return (
+    "SELECT campaign.id, campaign_criterion.resource_name, " +
+    "campaign_criterion.language.language_constant FROM campaign_criterion " +
+    `WHERE campaign.id IN (${ids}) AND campaign_criterion.type = LANGUAGE ` +
+    "AND campaign_criterion.status != 'REMOVED'"
+  );
+}
+
 /** Live RSA headlines for the ads an appendHeadlines plan touches. */
 export function applyHeadlinesQuery(adIds: ReadonlyArray<string | number>): string {
   const ids = adIds.map((i) => gaqlId(i)).join(",");

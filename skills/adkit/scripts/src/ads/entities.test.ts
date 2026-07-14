@@ -4,8 +4,10 @@ import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js
 import { parseBrief, type Keyword } from "../lib/schema.js";
 import {
   ALL_DEVICES,
+  ENGLISH_LANGUAGE_CONSTANT,
   GEO_TARGETS,
   buildKeywordOps,
+  buildLanguageOps,
   createAdGroup,
   createCallouts,
   createNegativeKeywords,
@@ -340,6 +342,38 @@ describe("buildKeywordOps", () => {
     const ops = buildKeywordOps("customers/1/adGroups/2", [{ text: "dtc customer service ai", matchType: "EXACT" }], [], []);
     expect(ops).toHaveLength(1);
     expect((ops[0]!.resource["keyword"] as { match_type: number }).match_type).toBe(enums.KeywordMatchType.EXACT);
+  });
+});
+
+describe("buildLanguageOps", () => {
+  const rn = "customers/123/campaigns/9";
+
+  it("adds English when it isn't live (default all-languages -> English only)", () => {
+    const ops = buildLanguageOps(rn, true, []);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.operation).toBe("create");
+    expect(ops[0]!.resource["campaign"]).toBe(rn);
+    expect((ops[0]!.resource["language"] as { language_constant: string }).language_constant).toBe(
+      ENGLISH_LANGUAGE_CONSTANT,
+    );
+  });
+
+  it("is an idempotent no-op when English is already the sole language", () => {
+    // English already live, nothing else to remove -> no ops (reported skipped upstream).
+    expect(buildLanguageOps(rn, false, [])).toEqual([]);
+  });
+
+  it("removes the other live languages to make it English-exclusive", () => {
+    // English absent + two other languages live: add English, remove both others.
+    const ops = buildLanguageOps(rn, true, [
+      "customers/123/campaignCriteria/9~1001",
+      "customers/123/campaignCriteria/9~1003",
+    ]);
+    expect(ops.map((o) => o.operation)).toEqual(["create", "remove", "remove"]);
+    expect(ops.slice(1).map((o) => o.resource["resource_name"])).toEqual([
+      "customers/123/campaignCriteria/9~1001",
+      "customers/123/campaignCriteria/9~1003",
+    ]);
   });
 });
 

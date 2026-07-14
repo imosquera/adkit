@@ -354,6 +354,24 @@ function negativesErrors(negatives: Array<Record<string, unknown>>): string[] {
   return negatives.flatMap(one);
 }
 
+/**
+ * Validate each `languages` block: a `campaignId` that is present and digits-only. The
+ * lever is "make this campaign English-only", so there is nothing else to parse — a bad
+ * campaign id fails at dry-run rather than mid-apply. Mirrors {@link negativesErrors}.
+ */
+function languagesErrors(languageBlocks: Array<Record<string, unknown>>): string[] {
+  const one = (lg: Record<string, unknown>): string[] => {
+    const cid = lg.campaignId;
+    return [
+      ...(cid === undefined || cid === null ? ["languages: entry missing campaignId"] : []),
+      ...(cid !== undefined && cid !== null && !isDigitString(cid)
+        ? [`languages campaign ${pyRepr(cid)}: campaignId must be numeric`]
+        : []),
+    ];
+  };
+  return languageBlocks.flatMap(one);
+}
+
 /** Render an id for the `{x}` (str, not repr) slots — Python's f-string `{cid}`. */
 function strId(value: unknown): string {
   if (value === undefined || value === null) {
@@ -751,5 +769,6 @@ export function validate(
     ...searchPartnersErrors(arr("searchPartners")),
     ...searchPartnersPreconditionErrors(arr("searchPartners"), liveSearchPartnersGoogleSearch ?? new Map()),
     ...adGroupsErrors(arr("adGroups")),
+    ...languagesErrors(arr("languages")),
   ];
 }
