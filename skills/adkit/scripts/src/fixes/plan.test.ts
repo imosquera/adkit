@@ -1,6 +1,7 @@
 /** Unit tests for the SDK-free validation/coercion in fixes/plan.ts. */
 import { describe, expect, it } from "vitest";
 import {
+  addAdGroupsPlan,
   adGroupStatusPlan,
   campaignStatusPlan,
   coerceKeyword,
@@ -465,5 +466,88 @@ describe("searchPartners", () => {
     const plan = { searchPartners: [{ campaignId: "100", enabled: true }] };
     expect(validate(plan, {}, {}, undefined, {})).toEqual([]);
     expect(validate(plan, {}, {}, undefined, { 100: true })).toEqual([]);
+  });
+});
+
+// ---------- adGroups (add-ad-group) ----------
+
+/**
+ * A valid ad-group block body authored with the bare-string ergonomics the rest of
+ * the update plan uses: string headlines/descriptions and a lower-case keyword
+ * matchType (the boundary normalizer coerces both to the schema shape).
+ */
+function adGroupBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    name: "close deals ai",
+    defaultBidMicros: 2_000_000,
+    responsiveSearchAd: {
+      headlines: h(15),
+      descriptions: d(4),
+      finalUrl: "https://example.com/ideas/close-deals-ai",
+    },
+    keywords: ["close deals ai", { text: "ai deal closer", matchType: "exact" }],
+    ...overrides,
+  };
+}
+
+describe("adGroups validation", () => {
+  it("a valid add-ad-group block passes", () => {
+    const plan = { adGroups: [{ campaignId: "23955052962", adGroup: adGroupBody() }] };
+    expect(validate(plan, {}, {})).toEqual([]);
+  });
+
+  it("missing campaignId is flagged", () => {
+    const plan = { adGroups: [{ adGroup: adGroupBody() }] };
+    expect(validate(plan, {}, {}).some((e) => e.includes("missing campaignId"))).toBe(true);
+  });
+
+  it("non-numeric campaignId is flagged", () => {
+    const plan = { adGroups: [{ campaignId: "abc", adGroup: adGroupBody() }] };
+    expect(validate(plan, {}, {}).some((e) => e.includes("campaignId must be numeric"))).toBe(true);
+  });
+
+  it("missing adGroup is flagged", () => {
+    const plan = { adGroups: [{ campaignId: "100" }] };
+    expect(validate(plan, {}, {}).some((e) => e.includes("missing adGroup"))).toBe(true);
+  });
+
+  it("a bad RSA (14 headlines) surfaces the field path", () => {
+    const bad = adGroupBody({
+      responsiveSearchAd: {
+        headlines: h(14).map((text) => ({ text })),
+        descriptions: d(4).map((text) => ({ text })),
+        finalUrl: "https://example.com/x",
+      },
+    });
+    const errs = validate({ adGroups: [{ campaignId: "100", adGroup: bad }] }, {}, {});
+    expect(errs.some((e) => e.includes("adGroup.responsiveSearchAd.headlines"))).toBe(true);
+  });
+
+  it("too many keywords (>30) is flagged", () => {
+    const bad = adGroupBody({
+      keywords: Array.from({ length: 31 }, (_, i) => ({ text: `kw ${i}`, matchType: "PHRASE" })),
+    });
+    const errs = validate({ adGroups: [{ campaignId: "100", adGroup: bad }] }, {}, {});
+    expect(errs.some((e) => e.includes("adGroup.keywords"))).toBe(true);
+  });
+});
+
+describe("addAdGroupsPlan", () => {
+  it("splits creates from name-collision skips (case-insensitive)", () => {
+    const blocks = [
+      { campaignId: "100", adGroup: adGroupBody({ name: "brand new group" }) },
+      { campaignId: "100", adGroup: adGroupBody({ name: "Existing Group" }) },
+    ];
+    const liveNames = { 100: new Set(["existing group"]) };
+    const [creates, skips] = addAdGroupsPlan(blocks, liveNames);
+    expect(creates.map((c) => c.name)).toEqual(["brand new group"]);
+    expect(skips.map((s) => s.name)).toEqual(["Existing Group"]);
+  });
+
+  it("with no live names everything is a create", () => {
+    const blocks = [{ campaignId: "100", adGroup: adGroupBody({ name: "a" }) }];
+    const [creates, skips] = addAdGroupsPlan(blocks, undefined);
+    expect(creates).toHaveLength(1);
+    expect(skips).toHaveLength(0);
   });
 });

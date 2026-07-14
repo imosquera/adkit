@@ -41,7 +41,7 @@ import {
   requireDigits,
   type CannibalizationPair,
 } from "../audit/scoring.js";
-import { resolveCustomer } from "../cli/args.js";
+import { resolveCustomer, type ResolveCustomerOptions } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
   auditAdGroupAdQuery,
@@ -1328,14 +1328,65 @@ function parseAudarArgs(argv: string[]): ParsedArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Customer resolution + the manager-metrics guard.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the customer to QUERY: `--customer` flag → `GOOGLE_ADS_CUSTOMER_ID` env
+ * → yaml (target, then login). Mirrors create.ts precedence. Including the env leaf
+ * is the fix for the MCC trap: without it, an operator with only `login_customer_id`
+ * (an MCC) in google-ads.yaml would query metrics against the manager and hit
+ * "Metrics cannot be requested for a manager account" even with a leaf exported.
+ */
+export function resolveAuditCustomer(
+  args: { customer: string | null },
+  env: NodeJS.ProcessEnv = process.env,
+  opts: ResolveCustomerOptions = {},
+): string | null {
+  return resolveCustomer([args.customer, env["GOOGLE_ADS_CUSTOMER_ID"] ?? null], opts);
+}
+
+/** True when a Google Ads error is the "metrics on a manager account" rejection (query_error 59). */
+export function isManagerMetricsError(exc: unknown): boolean {
+  const msg = formatGoogleAdsError(exc).toLowerCase();
+  return msg.includes("manager account") || msg.includes('"query_error":59') || msg.includes("query_error:59");
+}
+
+/** Actionable guidance shown when metrics were queried against a manager (MCC) account. */
+export function managerMetricsHint(): string {
+  return (
+    "metrics were requested against a manager (MCC) account, which Google Ads rejects. " +
+    "Pass --customer <leaf-account-id> (or export GOOGLE_ADS_CUSTOMER_ID=<leaf>). " +
+    "google-ads.yaml's login_customer_id is the MCC login header, not a query target."
+  );
+}
+
+// ---------------------------------------------------------------------------
 // main.
 // ---------------------------------------------------------------------------
 
+/**
+ * Wrap {@link runAudit} so a manager-metrics rejection (querying the MCC by
+ * mistake) surfaces as {@link managerMetricsHint} instead of the raw error 59.
+ * Other errors propagate to the run guard's generic formatter.
+ */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+  try {
+    return await runAudit(argv);
+  } catch (err) {
+    if (isManagerMetricsError(err)) {
+      emitJson(errorEnvelope(managerMetricsHint()));
+      return 2;
+    }
+    throw err;
+  }
+}
+
+export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<number> {
   const args = parseAudarArgs(argv);
-  const customer = resolveCustomer([args.customer]);
+  const customer = resolveAuditCustomer(args);
   if (!customer) {
-    emitJson(errorEnvelope("Provide --customer (or set login_customer_id in yaml)"));
+    emitJson(errorEnvelope("Provide --customer or export GOOGLE_ADS_CUSTOMER_ID (or set a target/login id in yaml)"));
     return 2;
   }
   requireDigits("customer", customer);

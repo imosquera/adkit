@@ -1,6 +1,6 @@
 ---
 description: "Build the full Go-To-Market block for a processed idea: Keyword Planner-decorated keyword tiers (volume/competition/CPC), a semantic Keyword Themes grouping (the ad-group source of truth for /adkit create), PLUS a theme-matched Responsive Search Ad set (15 headlines / 4 descriptions) per theme. Reads raw, writes processed under Go To Market > Keywords + Keyword Themes + Ad Copy. (Merged ads:keywords + idea:adcopy.)"
-argument-hint: "ideas/raw/<file>.md [--geo geoTargetConstants/N] [--language languageConstants/N] [optional idea notes]"
+argument-hint: "ideas/raw/<file>.md | ideas/processed/<file>.md [--geo geoTargetConstants/N] [--language languageConstants/N] [optional idea notes]"
 user-invocable: true
 disable-model-invocation: false
 ---
@@ -30,11 +30,13 @@ You also classify each keyword by intent tier (which doubles as a buying-cycle t
 ## Input Contract
 
 1. `$ARGUMENTS` is required.
-2. Parse the first path-like token from `$ARGUMENTS` as the **raw** idea markdown file to read, preserving quoted paths with spaces.
-3. The file must exist, must be a markdown file (`.md` or `.markdown`), and MUST resolve under `ideas/raw/` relative to the current working directory (this worktree). Do NOT look in sibling worktrees, the main checkout, or any other path outside this worktree.
-4. Derive the **output** path by swapping `ideas/raw/` for `ideas/processed/` in the input path. Example: input `ideas/raw/inventive.md` → output `ideas/processed/inventive.md`. If the processed file does not exist yet, create it with a minimal frontmatter + the keywords section (the rest of the processed idea is the job of `/idea:process`).
-5. Treat all remaining `$ARGUMENTS` text as optional idea notes. If optional idea notes are present, use them as additional context alongside the raw markdown file content.
-6. If no valid raw markdown file is provided, return: `Error: Provide a valid raw idea markdown file path under this worktree's ideas/raw/ directory, for example ideas/raw/example.md.`
+2. Parse the first path-like token from `$ARGUMENTS` as the input idea markdown file, preserving quoted paths with spaces. It may be a **raw** file (`ideas/raw/<name>.md`) or an already-**processed** file (`ideas/processed/<name>.md`) — accept either.
+3. The file must exist, must be a markdown file (`.md` or `.markdown`), and MUST resolve under `ideas/raw/` **or** `ideas/processed/` relative to the current working directory (this worktree). Do NOT look in sibling worktrees, the main checkout, or any other path outside this worktree.
+4. Determine the **source** and **output** paths from the input:
+   - If the input is under `ideas/raw/`, the source is that raw file and the **output** is the same name under `ideas/processed/` (swap `ideas/raw/` → `ideas/processed/`). Example: `ideas/raw/inventive.md` → output `ideas/processed/inventive.md`. If the processed file does not exist yet, create it with a minimal frontmatter + the keywords section (the rest of the processed idea is the job of `/idea:process`).
+   - If the input is **already** under `ideas/processed/`, the source and output are that same file — read it in place for context and write the Go To Market sections back into it. Do NOT require or fabricate a raw stub; the processed file already carries the full context.
+5. Treat all remaining `$ARGUMENTS` text as optional idea notes. If optional idea notes are present, use them as additional context alongside the input markdown file content.
+6. If no valid idea markdown file is provided, return: `Error: Provide a valid idea markdown file path under this worktree's ideas/raw/ or ideas/processed/ directory, for example ideas/raw/example.md or ideas/processed/example.md.`
 
 ## Output Contract
 
@@ -153,10 +155,10 @@ Keep recommended offers concrete (a real artifact or action), not abstract ("nur
 
 ## Execution Steps
 
-1. Parse `$ARGUMENTS`. Extract the raw markdown file path (under `ideas/raw/`). Extract optional `--geo <value>` and `--language <value>` tokens (treat as paired). Remaining text is idea notes.
-2. Validate the raw markdown file exists.
-3. Compute the **processed** output path: replace `ideas/raw/` with `ideas/processed/` in the input path. If the processed file does not exist, create it with minimal frontmatter (`---\nsource_file: <raw path>\n---`) so subsequent edits attach somewhere stable.
-4. Read the full raw markdown file (and any existing processed file for context — operator edits to keywords are still discarded when the section is rewritten).
+1. Parse `$ARGUMENTS`. Extract the input markdown file path (under `ideas/raw/` **or** `ideas/processed/`). Extract optional `--geo <value>` and `--language <value>` tokens (treat as paired). Remaining text is idea notes.
+2. Validate the input markdown file exists.
+3. Compute the **processed** output path: if the input is under `ideas/raw/`, replace `ideas/raw/` with `ideas/processed/`; if the input is already under `ideas/processed/`, the output is that same file. If the processed file does not exist, create it with minimal frontmatter (`---\nsource_file: <input path>\n---`) so subsequent edits attach somewhere stable.
+4. Read the full input markdown file for context. When the input is a raw file, also read any existing processed file for context. (Operator edits to keywords are still discarded when the section is rewritten.)
 5. **Anchor on the idea's core theme, then brainstorm seeds.** First extract 3–6 *core theme tokens* from the raw idea — its differentiator, primary audience, and the specific channels/jobs it names (for a brand-voice reply tool: `brand voice`, `replies`, `reviews`, `comments`, `social`, `DTC`). These tokens are the relevance yardstick reused in steps 9 and 11; record them. Then brainstorm an initial candidate list (`seeds`) from the raw idea + optional notes + theme tokens, using the Keyword Research Guidance and Intent Definitions above. **Seeds must combine the category with the differentiator and audience** (`brand voice reply tool`, `reply to reviews ai`, `social comment response`) — do NOT seed bare category stems alone (`chatbot`, `ai writing tool`); Keyword Planner expands bare stems into generic consumer noise that drowns the on-theme niche. (Seeds may pair the differentiator with the category to *probe* its volume, but do not expect zero-volume differentiator phrasings to survive as kept keywords — see Keyword Research Guidance item 8.)
 6. Extract the first `https?://` URL found in either the raw or processed file. If none, leave it empty.
 7. Invoke the Keyword Planner CLI to decorate and expand the candidate set:
@@ -220,7 +222,7 @@ Keep recommended offers concrete (a real artifact or action), not abstract ("nur
      - appointment scheduling software
      - online scheduling tool
      ```
-16. Update the **processed** file (computed in step 3) according to Section Update Rules. The raw file is never modified.
+16. Update the **processed** file (computed in step 3) according to Section Update Rules. A raw input file is never modified; when the input *is* the processed file, edits are written back into it in place.
 17. Re-read the processed file and verify:
    - exactly one `## Go To Market` section exists,
    - exactly one `### Keywords` subsection exists,

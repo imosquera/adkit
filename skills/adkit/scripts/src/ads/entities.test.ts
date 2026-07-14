@@ -6,6 +6,7 @@ import {
   ALL_DEVICES,
   GEO_TARGETS,
   buildKeywordOps,
+  createAdGroup,
   createCallouts,
   createNegativeKeywords,
   createPriceAsset,
@@ -56,6 +57,22 @@ function briefFixture(campaignOverrides: Record<string, unknown>): ReturnType<ty
     ],
   });
 }
+
+describe("createAdGroup", () => {
+  it("defaults to an ENABLED ad group (the /adkit create flow, inside a PAUSED campaign)", async () => {
+    const { client, calls } = makeFake();
+    const ag = briefFixture({}).adGroups[0]!;
+    await createAdGroup(client, "123", ag, CAMPAIGN_RN);
+    expect(calls[0]!.ops[0]!.resource["status"]).toBe(enums.AdGroupStatus.ENABLED);
+  });
+
+  it("creates the ad group PAUSED when asked (adding to a live campaign — bug 5)", async () => {
+    const { client, calls } = makeFake();
+    const ag = briefFixture({}).adGroups[0]!;
+    await createAdGroup(client, "123", ag, CAMPAIGN_RN, "PAUSED");
+    expect(calls[0]!.ops[0]!.resource["status"]).toBe(enums.AdGroupStatus.PAUSED);
+  });
+});
 
 describe("targetUsCanada", () => {
   it("sets both geos on the campaign", async () => {
@@ -182,8 +199,12 @@ describe("createSearchCampaign", () => {
     expect((resource["ai_max_setting"] as { enable_ai_max: boolean }).enable_ai_max).toBe(false);
   });
 
-  it("keeps Display off but search partners on for both network modes", async () => {
-    for (const networkSettings of ["search-partners-display", "search-only"] as const) {
+  it("honors networkSettings: Search Partners follow the brief, Display always off", async () => {
+    const cases = [
+      { networkSettings: "search-only", expectedSearchNetwork: false },
+      { networkSettings: "search-partners-display", expectedSearchNetwork: true },
+    ] as const;
+    for (const { networkSettings, expectedSearchNetwork } of cases) {
       const { client, calls } = makeFake();
       await createSearchCampaign(client, "123", briefFixture({ networkSettings }), "customers/123/budgets/1");
       const ns = campaignResource(calls[0]!.ops[0]!)["network_settings"] as {
@@ -192,7 +213,7 @@ describe("createSearchCampaign", () => {
         target_content_network: boolean;
       };
       expect(ns.target_google_search).toBe(true);
-      expect(ns.target_search_network).toBe(true);
+      expect(ns.target_search_network).toBe(expectedSearchNetwork);
       expect(ns.target_content_network).toBe(false);
     }
   });
