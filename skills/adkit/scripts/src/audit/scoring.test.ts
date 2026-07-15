@@ -72,6 +72,13 @@ describe("conceptWords", () => {
   it("falls back to the theme name even for a short name without keywords", () => {
     expect(conceptWords("Salon Software", [])).toEqual(["salon", "software"]);
   });
+
+  it("no longer special-cases a former I/N/C/T tier label — falls back to it like any other name", () => {
+    // Locks in the removal of TIER_NAMES: these labels used to short-circuit to [] when
+    // an ad group had no fetched keywords; now they fall back to the name like any other.
+    expect(conceptWords("Commercial", [])).toEqual(["commercial"]);
+    expect(conceptWords("transactional", [])).toEqual(["transactional"]);
+  });
 });
 
 // ---------- pathToExcellent ----------
