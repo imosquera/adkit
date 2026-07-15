@@ -87,7 +87,6 @@ export {
   pathToExcellent,
   requireDigits,
   SHARED_HEADLINE_GROUPS,
-  TIER_NAMES,
 } from "./audit/scoring.js";
 export type { CannibalizationPair, DifferentiationGap, ServingCampaign } from "./audit/scoring.js";
 

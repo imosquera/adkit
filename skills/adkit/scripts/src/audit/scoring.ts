@@ -30,13 +30,6 @@ export const MIN_KEYWORDS = 25;
 /** headline shared across >= this many ad groups in one campaign = keyword-agnostic boilerplate */
 export const SHARED_HEADLINE_GROUPS = 3;
 
-export const TIER_NAMES: ReadonlySet<string> = new Set([
-  "informational",
-  "navigational",
-  "commercial",
-  "transactional",
-]);
-
 // Impression-share thresholds — WHY a campaign isn't winning more impressions (a
 // separate axis from ad strength: an EXCELLENT ad can still hold tiny IS).
 /** below this, there is meaningful impression share to win back */
@@ -46,11 +39,10 @@ export const LOST_HI = 0.1;
 
 /**
  * Words a winning headline should contain. Prefer the ad group's actual keywords;
- * fall back to the name only when it isn't a generic intent-tier label.
+ * fall back to the ad group's own name when there are none.
  */
 export function conceptWords(agName: string, keywords: readonly string[]): string[] {
-  const src =
-    keywords.length > 0 ? keywords.join(" ") : TIER_NAMES.has(agName.toLowerCase()) ? "" : agName;
+  const src = keywords.length > 0 ? keywords.join(" ") : agName;
   return src
     .toLowerCase()
     .replace(/,/g, " ")

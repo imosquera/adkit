@@ -54,12 +54,7 @@ const SAMPLE_IDEA = `
 
 ### Keywords
 
-#### Informational
-
 - what is a widget
-
-#### Commercial
-
 - buy widgets online
 - compare widget prices
 
