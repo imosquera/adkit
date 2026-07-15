@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { applyPositiveKeywordsQuery, auditAdGroupAdQuery, auditSearchTermsQuery } from "./builders.js";
+import {
+  applyPositiveKeywordsQuery,
+  auditAdGroupAdQuery,
+  auditKeywordMetricsQuery,
+  auditSearchTermsQuery,
+} from "./builders.js";
+
+describe("auditKeywordMetricsQuery", () => {
+  it("counts only ENABLED keywords so a paused keyword's spend stops driving clusterSplits", () => {
+    const q = auditKeywordMetricsQuery(30, ["12345"]);
+    expect(q).toContain("FROM keyword_view");
+    expect(q).toContain("ad_group_criterion.status = 'ENABLED'");
+    expect(q).toContain("segments.date DURING LAST_30_DAYS");
+  });
+});
 
 describe("auditSearchTermsQuery", () => {
   it("guards ids digits-only", () => {
