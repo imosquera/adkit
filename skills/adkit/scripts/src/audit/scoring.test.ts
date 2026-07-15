@@ -58,21 +58,19 @@ describe("differentiationGaps", () => {
 
 describe("conceptWords", () => {
   it("prefers keywords", () => {
-    expect(conceptWords("Commercial", ["best ai chatbot", "ai bot"])).toEqual([
+    expect(conceptWords("Best Ai Chatbot", ["best ai chatbot", "ai bot"])).toEqual([
       "best",
       "chatbot",
       "bot", // >2 chars, "ai" dropped
     ]);
   });
 
-  it("falls back to name when not a tier", () => {
+  it("falls back to the ad group name when there are no keywords", () => {
     expect(conceptWords("Best Ai Chatbot", [])).toEqual(["best", "chatbot"]);
   });
 
-  it("is empty for a bare tier name without keywords", () => {
-    // tier names are intent labels, not keywords — never score against them
-    expect(conceptWords("Commercial", [])).toEqual([]);
-    expect(conceptWords("transactional", [])).toEqual([]);
+  it("falls back to the theme name even for a short name without keywords", () => {
+    expect(conceptWords("Salon Software", [])).toEqual(["salon", "software"]);
   });
 });
 

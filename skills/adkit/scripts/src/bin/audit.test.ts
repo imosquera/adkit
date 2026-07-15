@@ -100,7 +100,7 @@ describe("auditCampaign", () => {
   it("is read-only and flags me-too copy against a differentiation profile", async () => {
     // one ad group, one ad whose copy is a generic AI promise; no extensions.
     const adRow = {
-      ad_group: { name: "Commercial" },
+      ad_group: { name: "AiChatbot" },
       ad_group_ad: {
         ad: {
           id: 10,
@@ -135,7 +135,7 @@ describe("auditCampaign", () => {
     });
 
     const camp = { campaign: { id: 1, name: "x", status: "ENABLED" } };
-    const result = await auditCampaign(client, "123", camp, [], { Commercial: ["ai chatbot"] }, profile);
+    const result = await auditCampaign(client, "123", camp, [], { AiChatbot: ["ai chatbot"] }, profile);
 
     expect(searches).toBeGreaterThan(0);
     // the ad itself is flagged as undifferentiated me-too copy
@@ -153,7 +153,7 @@ describe("auditCampaign", () => {
 
   it("does not flag me-too copy under the empty profile", async () => {
     const adRow = {
-      ad_group: { name: "Commercial" },
+      ad_group: { name: "AiChatbot" },
       ad_group_ad: {
         ad: {
           id: 10,
@@ -170,7 +170,7 @@ describe("auditCampaign", () => {
     };
     const client = fakeClient((query) => (query.includes("FROM ad_group_ad") ? [adRow] : []));
     const camp = { campaign: { id: 1, name: "x", status: "ENABLED" } };
-    const result = await auditCampaign(client, "123", camp, [], { Commercial: ["ai chatbot"] }, {
+    const result = await auditCampaign(client, "123", camp, [], { AiChatbot: ["ai chatbot"] }, {
       competitors: [],
       axes: [],
       genericPhrases: [],
@@ -188,7 +188,7 @@ describe("auditCampaign keyword-count finding", () => {
   const client = fakeClient(() => []);
 
   it("flags a campaign with fewer than MIN_KEYWORDS, counting across ad groups", async () => {
-    const agKeywords = { Commercial: ["a", "b"], Brand: ["c"] }; // 3 total
+    const agKeywords = { AiChatbot: ["a", "b"], Brand: ["c"] }; // 3 total
     const result = await auditCampaign(client, "123", camp, [], agKeywords, emptyProfile);
     expect(result.keywords).toBe(3);
     const finding = result.campaignFindings.find((f) => f.issue === "keywords_under");
@@ -198,7 +198,7 @@ describe("auditCampaign keyword-count finding", () => {
   });
 
   it("does not flag a campaign at or above MIN_KEYWORDS", async () => {
-    const agKeywords = { Commercial: Array.from({ length: MIN_KEYWORDS }, (_, i) => `kw${i}`) };
+    const agKeywords = { AiChatbot: Array.from({ length: MIN_KEYWORDS }, (_, i) => `kw${i}`) };
     const result = await auditCampaign(client, "123", camp, [], agKeywords, emptyProfile);
     expect(result.keywords).toBe(MIN_KEYWORDS);
     expect(result.campaignFindings.some((f) => f.issue === "keywords_under")).toBe(false);
@@ -217,7 +217,7 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
   // the API omitted still parses to 0H/0D and is flagged as under-filled, not crashed.
   it("auditCampaign: an RSA with omitted asset lists scores as 0H/0D, no throw", async () => {
     const rsaMissingAssets = {
-      ad_group: { name: "Commercial" },
+      ad_group: { name: "AiChatbot" },
       ad_group_ad: {
         ad: { id: 10, final_urls: ["https://x"] }, // responsive_search_ad omitted by the API
         ad_strength: "PENDING",
