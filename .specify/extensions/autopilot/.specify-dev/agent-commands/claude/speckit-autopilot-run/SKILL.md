@@ -29,10 +29,15 @@ You are the coordinator, not the implementer: prefer invoking the sibling
 $ARGUMENTS
 ```
 
-Optional. If the input contains an issue number (e.g. `#42` or `42`), work **that**
-issue instead of auto-picking the oldest — but still apply the eligibility checks in
-Step 1 and refuse (explaining why) if it's already in progress or parked. With no
-input, auto-pick per Step 1.
+Optional. If the input contains an issue number (e.g. `#42` or `42`), extract it as
+`N` and work **that** issue instead of auto-picking the oldest — but still apply the
+eligibility checks in Step 1 (via `preflight-issues.py`) and refuse (explaining why)
+if it's already in progress, parked, or already claimed by another autopilot run.
+With no input, auto-pick per Step 1 and set `N` to whichever issue the script picks.
+This is also how the wrapper (`autopilot-run.sh`) hands off: it runs its own
+preflight to decide whether to launch at all, then passes the picked issue number as
+`$ARGUMENTS` so this run binds to the exact same issue instead of re-picking
+independently.
 
 ## Operating contract
 
@@ -79,74 +84,91 @@ step after writing code is worse than one that never starts.
    skip silently.) The suggestion is a one-time nudge at the start; don't repeat it
    later in the run.
 
-## Step 1 — Pick the oldest eligible issue
+## Step 1 — Pick the oldest eligible issue (or validate the given one)
 
 "Oldest" = earliest `createdAt`. "Eligible" = open, not already in progress, not
-parked. Compute it deterministically, then show your pick before proceeding.
+parked, not already claimed by another autopilot run. Compute it deterministically,
+then show your pick before proceeding.
 
-**Fetch to a file — never pipe `gh` into a stdin-heredoc script.** The tempting
-one-liner `gh issue list --json … | python3 - <<'PY' … json.load(sys.stdin) … PY`
-**always fails** with `JSONDecodeError: Expecting value: line 1 column 1 (char 0)`.
+**Fetch to a file, via the shared script — never pipe `gh` into a stdin-heredoc
+script.** The tempting one-liner
+`gh issue list --json … | python3 - <<'PY' … json.load(sys.stdin) … PY` **always
+fails** with `JSONDecodeError: Expecting value: line 1 column 1 (char 0)`.
 `python3 -` reads its *program* from stdin, and the heredoc `<<'PY'` binds stdin to
 the heredoc text — that redirect wins over the pipe, so `gh`'s JSON never reaches
 Python and `json.load(sys.stdin)` reads an empty stream. You cannot route both the
-script *and* the data through one stdin. Land the data in a file first, then let the
-heredoc script read the **file** (stdin stays free for the program):
+script *and* the data through one stdin. `fetch-open-issues.sh` sidesteps this by
+landing the data in a file first (sorted oldest-first, `body` included for the
+empty-body check below), so every reader — this skill or `preflight-issues.py`
+directly — takes a **file path**, never stdin:
 
 ```bash
-# Sort inside gh (--jq) so the file is already oldest-first. Include `body` — the
-# empty-body eligibility check below needs it. Fail loud on a bad fetch rather than
-# leaving an empty file for the parser to choke on.
-gh issue list --state open --limit 200 \
-  --json number,title,labels,createdAt,assignees,body \
-  --jq 'sort_by(.createdAt)' > /tmp/autopilot_issues.json \
-  || { echo "gh issue list failed — run 'gh auth status' and confirm a GitHub remote"; exit 1; }
-[ -s /tmp/autopilot_issues.json ] || { echo "gh returned no data — treat as a failure, not an empty backlog"; exit 1; }
+FETCH_SCRIPT="$CLAUDE_PROJECT_DIR/.specify/extensions/autopilot/scripts/bash/fetch-open-issues.sh"
+bash "$FETCH_SCRIPT" /tmp/autopilot_issues.json
 ```
 
-Then rank eligibility by **reading the file** (note `json.load(open(...))`, not
-`sys.stdin`, so the heredoc-script stays valid):
+**Run the shared eligibility script for BOTH paths — never restate the rules
+inline.** `preflight-issues.py` is the single source of truth for what counts as
+eligible (block labels — including `autopilot:claimed` — empty body, and an
+existing branch/worktree/PR). An inline reimplementation of this list has drifted
+from the script before (the explicit-issue path once omitted `autopilot:claimed`,
+which is exactly how two runs collided on the same issue — see issue #19). Always
+`exec` the script instead:
 
 ```bash
-python3 - <<'PY'
-import json
-issues = json.load(open("/tmp/autopilot_issues.json"))   # file, NOT sys.stdin
-block = {"blocked","wontfix","duplicate","needs-discussion","needs discussion",
-         "on-hold","on hold","question","epic"}
-for i in issues:                                          # already oldest-first
-    labels = {l["name"].lower() for l in i["labels"]}
-    reason = ("parked:" + ",".join(sorted(labels & block))) if (labels & block) \
-             else ("empty-body" if not (i.get("body") or "").strip() else "")
-    print(f'#{i["number"]:<4} {i["createdAt"][:10]}  '
-          f'{("SKIP " + reason) if reason else "ELIGIBLE"}  :: {i["title"][:60]}')
-PY
+PREFLIGHT_SCRIPT="$CLAUDE_PROJECT_DIR/.specify/extensions/autopilot/scripts/bash/preflight-issues.py"
+
+# With an explicit issue number in $ARGUMENTS, validate THAT issue only:
+python3 "$PREFLIGHT_SCRIPT" /tmp/autopilot_issues.json "$N"
+# => "PICK: #42 \"Fix the thing\" (explicit)"  or  "SKIP: #42 <reason>"
+
+# With no input, auto-pick the oldest eligible issue:
+python3 "$PREFLIGHT_SCRIPT" /tmp/autopilot_issues.json
+# => "PICK: #42 \"Fix the thing\" (7 open, 2 parked, 1 in-progress)"  or  "SKIP: ..."
 ```
 
-Label/empty-body skips are handled above; still apply the **in-progress** check
-(branch / worktree / open PR) below before committing to a pick. When an explicit
-issue number was given, validate *it* against the same rules instead of scanning.
-
-Exclude an issue when any of these hold:
-
-- **Blocked/parked labels** — any of `blocked`, `wontfix`, `duplicate`,
-  `needs-discussion`, `on-hold`, `question`, `epic` (match case-insensitively; treat
-  close variants like `needs discussion` the same).
-- **Already in progress** — a local or remote branch, an existing worktree, or an
-  open PR already references this issue number. Check:
-  ```bash
-  git branch -a --list "*${N}-*"        # a branch numbered to the issue
-  git worktree list | grep -E "/${N}-"  # an existing worktree
-  gh pr list --state open --search "${N} in:title,body" --json number,headRefName
-  ```
-  If any hit, the issue is being worked — skip it.
-- **Not automatable** — the body is empty, or it's a pure question/discussion with no
-  implementable ask. Skip and move to the next.
+A `SKIP:` result on the explicit-issue path means **stop immediately** — do not
+create a spec, branch, worktree, or commit. Report the exact SKIP reason to the
+user (e.g. "already claimed by another autopilot run" or "already in progress on
+branch 082-…") before ending the session. A `SKIP:` result on the auto-pick path
+means the whole backlog is unworkable right now — say so and stop; that's success,
+not failure, unless the script reported a hard failure (couldn't parse issues),
+which is a Stop condition.
 
 `gh issue list` already excludes PRs, so you won't accidentally grab one.
 
 **Report the pick** to the user in one line (number, title, why it was chosen over
-older ones that were skipped) before you start building. If nothing is eligible, say
-the backlog is clear and stop — that's success, not failure.
+older ones that were skipped) before you start building.
+
+### Claim it immediately — before any other action
+
+The moment you have a `PICK:` result, claim the issue **before** doing anything
+else (before Step 2's worktree work, before writing any file). This is the one and
+only place that applies the `autopilot:claimed` label — the wrapper script
+(`autopilot-run.sh`) no longer claims on your behalf; it only decides whether to
+launch you and which issue to hand you. That split matters: if the wrapper claimed
+*and* the skill claimed, a session could see its own wrapper-applied claim during
+its eligibility check and mistake it for a competing run (the "self-starve" bug).
+Because claiming now happens exactly once, per run, inside the skill, that
+confusion can't happen — you always know the claim on your picked issue is yours.
+
+```bash
+gh label create "autopilot:claimed" --color "0075ca" \
+  --description "Autopilot is actively working this issue" 2>/dev/null || true
+gh issue edit "$N" --add-label "autopilot:claimed" \
+  || { echo "claim failed on #$N — stopping rather than risk a collision"; exit 1; }
+```
+
+Labeling isn't a perfect distributed lock (no compare-and-swap), so treat it as one
+layer of a defense-in-depth: the local single-flight lock in `autopilot-run.sh`
+serializes same-machine ticks, this label serializes cross-machine/manual runs, and
+Step 2's fresh liveness re-check catches the residual race window. Remember to
+**remove this label on every exit path** — success (end of Step 9) or any Stop
+condition (see [Stop conditions](#stop-conditions)):
+
+```bash
+gh issue edit "$N" --remove-label "autopilot:claimed" 2>/dev/null || true
+```
 
 ## Step 2 — Bind a worktree to the EXISTING issue (avoid the duplicate-issue trap)
 
@@ -155,6 +177,28 @@ issue and number the branch to it. Here the issue already exists, so you must by
 that and bind to issue `#N` instead — otherwise you get a duplicate issue and
 mismatched numbering.
 
+0. **Re-check for a competing branch/worktree/PR right before creating anything.**
+   Step 1's check happened moments ago; re-run it once more to shrink the race
+   window as close to zero as the claim label allows. Use `--worktree-check`, NOT
+   a full re-run of Step 1's eligibility script against the issue list — by now
+   you've already added `autopilot:claimed` to `#N` yourself, so re-running the
+   label-aware check would see your own claim and incorrectly report a collision
+   with yourself on every single run. `--worktree-check` only looks at
+   branches/worktrees/PRs, never labels, so it can't trip on your own claim:
+   ```bash
+   python3 "$PREFLIGHT_SCRIPT" --worktree-check "$N"
+   ```
+   If this reports `LIVE:` (a branch, worktree, or PR for `#N` now exists — e.g. a
+   sibling run created one in the interim), **do not resume it — stop and report it
+   as a collision**, same as a Step 1 SKIP, and remove your own claim first (see the
+   cleanup snippet above). There is no automatic resume path in this skill: an
+   existing branch or worktree for `#N` is always treated as another run's
+   in-progress work, never as something to pick back up, because a live sibling and
+   a crashed leftover look identical at a glance (this ambiguity — an empty
+   just-created worktree mistaken for an abandoned one — is exactly how two runs
+   collided on issue #150; see issue #19). If a human wants to actually resume a
+   dead worktree, that's a deliberate manual action outside this skill, not
+   something to infer here. Only `CLEAR` means proceed.
 1. Derive a slug from the issue title (kebab-case, trimmed) and the branch name
    `NNN-slug`, zero-padded to the repo's convention (e.g. `082-signup-thankyou`).
 2. Create the branch + worktree **without** creating an issue by forcing the branch
@@ -289,6 +333,12 @@ built, the assumptions you made (link the earlier clarify comment), gate status
 (tests/lint/audit green), and anything left for the human (a task deferred, a creds
 step, a judgment call worth a second look).
 
+**Remove the claim** now that a draft PR exists to show for it — the open PR itself
+is a stronger in-progress signal than the label from here on:
+```bash
+gh issue edit "$N" --remove-label "autopilot:claimed" 2>/dev/null || true
+```
+
 Then report the same summary to the user, leading with the PR URL.
 
 ## Stop conditions (hard blockers only)
@@ -306,6 +356,13 @@ the user only when continuing would be reckless or is impossible:
   and the same gate still fails for a reason you don't understand. Surface the exact
   error rather than thrash or paper over it.
 
+**Whenever you stop after having claimed an issue** (i.e. any stop from Step 1's
+claim onward), remove the claim before ending the session — a stuck claim on a
+dead run would block the issue forever:
+```bash
+gh issue edit "$N" --remove-label "autopilot:claimed" 2>/dev/null || true
+```
+
 A skipped or deferred *task* is not a blocker — note it and keep going. The bar for
 stopping is "a human would be angry I proceeded," not "this got hard."
 
@@ -321,3 +378,18 @@ stopping is "a human would be angry I proceeded," not "this got hard."
 - **Answer clarify, don't skip it** — clarify catches the ambiguities that sink an
   implementation; auto-answering (with a logged rationale) keeps that value while
   removing the human wait.
+- **Claiming lives in exactly one place** — the skill body, not the wrapper. Two
+  autopilot runs collided on issue #150 partly because `autopilot-run.sh` claimed
+  the label before launching `claude -p`, so that session's own preflight could see
+  its own wrapper-applied claim and misread it as a competing run. Now the wrapper
+  only picks and hands off an issue number; the skill claims once, per run, so a run
+  always recognizes its own claim as its own.
+- **One eligibility script, not two copies** — the explicit-issue path used to
+  restate the block-label list inline and had already drifted from
+  `preflight-issues.py` (missing `autopilot:claimed`) by the time #150 collided.
+  Both paths now `exec` the same script so they can't drift again.
+- **Never auto-resume a branch/worktree** — an empty, seconds-old worktree from a
+  sibling run and a crashed leftover from days ago look identical at first glance.
+  Proving "dead" (no open PR, no fresh pickup comment, no recent activity, no live
+  `claude` process) is cheap; treating a live sibling as abandoned is not — it's
+  exactly what happened on issue #150. When any signal is ambiguous, skip.

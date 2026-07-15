@@ -5,8 +5,12 @@ description: Comprehensive code review using specialized agents — orchestrates
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
   author: github-spec-kit
-  source: review:commands/run.md
+  source: extension:review
+user-invocable: true
+disable-model-invocation: false
 ---
+
+# Review Run Skill
 
 # Comprehensive PR Review
 
