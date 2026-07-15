@@ -8,33 +8,6 @@ installed:
 settings:
   auto_execute_hooks: true
 hooks:
-  before_specify:
-  - extension: git
-    command: speckit.git.feature
-    enabled: true
-    optional: false
-    priority: 10
-    prompt: Execute speckit.git.feature?
-    description: Create feature branch before specification
-    condition: null
-  before_clarify:
-  - extension: git
-    command: speckit.git.commit
-    enabled: true
-    optional: true
-    priority: 10
-    prompt: Commit outstanding changes before clarification?
-    description: Auto-commit before spec clarification
-    condition: null
-  before_plan:
-  - extension: git
-    command: speckit.git.commit
-    enabled: true
-    optional: true
-    priority: 10
-    prompt: Commit outstanding changes before planning?
-    description: Auto-commit before implementation planning
-    condition: null
   before_tasks:
   - extension: git
     command: speckit.git.commit
@@ -80,6 +53,51 @@ hooks:
     description: Detect a stale tasks.md (spec.md modified after tasks.md was generated)
       and halt /speckit-implement before the implementation loop starts, unless --force
       is present.
+    condition: null
+  after_implement:
+  - extension: git
+    command: speckit.git.commit
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Commit implementation changes?
+    description: Auto-commit after implementation
+    condition: null
+  - extension: review
+    command: speckit.review.run
+    enabled: true
+    optional: false
+    priority: 10
+    prompt: Run comprehensive review on implemented changes?
+    description: 'Multi-agent code review after implementation (mandatory: surfaces
+      constitution violations even when the upfront audit was skipped)'
+    condition: null
+  before_specify:
+  - extension: git
+    command: speckit.git.feature
+    enabled: true
+    optional: false
+    priority: 10
+    prompt: Execute speckit.git.feature?
+    description: Create feature branch before specification
+    condition: null
+  before_clarify:
+  - extension: git
+    command: speckit.git.commit
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Commit outstanding changes before clarification?
+    description: Auto-commit before spec clarification
+    condition: null
+  before_plan:
+  - extension: git
+    command: speckit.git.commit
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Commit outstanding changes before planning?
+    description: Auto-commit before implementation planning
     condition: null
   before_checklist:
   - extension: git
@@ -152,24 +170,6 @@ hooks:
     priority: 10
     prompt: Commit task changes?
     description: Auto-commit after task generation
-    condition: null
-  after_implement:
-  - extension: git
-    command: speckit.git.commit
-    enabled: true
-    optional: true
-    priority: 10
-    prompt: Commit implementation changes?
-    description: Auto-commit after implementation
-    condition: null
-  - extension: review
-    command: speckit.review.run
-    enabled: true
-    optional: false
-    priority: 10
-    prompt: Run comprehensive review on implemented changes?
-    description: 'Multi-agent code review after implementation (mandatory: surfaces
-      constitution violations even when the upfront audit was skipped)'
     condition: null
   after_checklist:
   - extension: git
