@@ -7,14 +7,14 @@ Negatives are the other half of relevance. Without them, broad and phrase match 
 Create three shared negative keyword lists in your account:
 
 1. **Global Exclusions** — applied to every campaign. Brand-safety terms, competitor names you never want to serve on, unambiguously wrong-intent terms.
-2. **Non-Commercial** — informational, job seeker, student intent. Applied to all lead gen / solution campaigns.
+2. **Low Theme-Relevance** — terms that don't match any live Keyword Theme's buyer intent (learning/research phrasing, job seeker, student intent, and similar). Applied to all lead gen / solution campaigns.
 3. **Campaign-Specific** — added at campaign level (not shared). For terms that are fine in one campaign but wrong in another (e.g., competitor brand terms fine in competitor campaign, negative everywhere else).
 
 ---
 
-## Category 1: Educational & Informational Intent
+## Category 1: Educational & Research Intent
 
-These searchers want to learn, not buy. They click, consume, and never convert.
+These searchers want to learn, not buy — the phrasing doesn't match any live Keyword Theme's buyer intent. They click, consume, and never convert.
 
 **Negative keywords:** course, courses, tutorial, tutorials, certification, certifications, training, class, classes, degree, university, college, school, academic, student, scholarship, syllabus, curriculum, textbook, exam, quiz, study, learn, learning, education, educational, define, definition, what is, meaning of, explain, example, examples, pdf, ppt, presentation, paper, thesis, dissertation, free course, online course
 
@@ -90,7 +90,7 @@ Apply these on day 1 before launch, before you have any STR data:
 
 **Job seekers:** jobs, careers, salary, hire, recruit, job description, internship
 
-**Informational:** what is, definition, meaning, wikipedia, reddit, forum
+**Low theme-relevance / research:** what is, definition, meaning, wikipedia, reddit, forum
 
 **Student / research:** essay, thesis, research, assignment, university, course
 

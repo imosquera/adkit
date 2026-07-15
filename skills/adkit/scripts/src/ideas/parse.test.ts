@@ -131,16 +131,14 @@ describe("readThemeGroups", () => {
   });
 
   it("returns empty when there is no ### Keyword Themes section (create then requires a gtm re-run)", () => {
-    const onlyTiers = `
+    const onlyFlatKeywords = `
 ## Go To Market
 
 ### Keywords
 
-#### Commercial
-
 - buy widgets
 `;
-    expect(readThemeGroups(onlyTiers, 20)).toEqual([]);
+    expect(readThemeGroups(onlyFlatKeywords, 20)).toEqual([]);
     expect(readThemeGroups("## Something Else\n\n- foo\n", 20)).toEqual([]);
   });
 });
@@ -151,8 +149,6 @@ describe("extractNegatives", () => {
 ## Go To Market
 
 ### Keywords
-
-#### Commercial
 
 - buy widgets
 
@@ -170,7 +166,7 @@ describe("extractNegatives", () => {
   });
 
   it("returns empty when absent", () => {
-    const md = "## Go To Market\n\n### Keywords\n\n#### Commercial\n\n- buy widgets\n";
+    const md = "## Go To Market\n\n### Keywords\n\n- buy widgets\n";
     expect(extractNegatives(md)).toEqual([]);
   });
 });

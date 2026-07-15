@@ -25,18 +25,22 @@ Volume estimates and CPC ranges only. Never use it as the primary discovery sour
 
 ---
 
-## Classify by Intent
+## Route by Theme Relevance
 
-Every candidate belongs to one of four buckets. Paid budget concentrates on **transactional + commercial**. Informational belongs to SEO. Navigational belongs to a dedicated brand campaign.
+A candidate's paid-worthiness is judged by whether it's **on-theme** for a live
+Keyword Theme (an ad group `/adkit gtm` will actually build), not by a fixed intent
+label. Paid budget concentrates on candidates that carry buyer language for a real
+theme — comparison/vendor-evaluation phrasing (`best [x]`, `[competitor]
+alternative`, `[x] vs [y]`), category-purchase phrasing (`[category] software`, `buy
+[x]`, `[competitor] pricing`, `free trial [x]`), and brand/destination phrasing
+(`<brand> pricing`, `<tool> demo`) all route to paid when they map to a theme.
+Pure-learning phrasing (`what is [x]`, `how to [task]`, `[topic] guide`) that carries
+no buyer intent for any live theme routes to SEO instead of paid — the signal is
+"does this searcher want the transaction the product needs," not which label the
+phrase happens to wear.
 
-| Intent           | Pattern                                                                   | Paid priority           |
-| ---------------- | ------------------------------------------------------------------------- | ----------------------- |
-| **Transactional**| `[category] software`, `buy [x]`, `[competitor] pricing`, `free trial [x]`| Primary                 |
-| **Commercial**   | `best [x]`, `[competitor] alternative`, `[x] vs [y]`, `[JTBD phrase] tool`| Primary                 |
-| **Informational**| `what is [x]`, `how to [task]`, `[topic] guide`                           | Send to SEO, not paid   |
-| **Navigational** | Brand + variants                                                           | Separate brand campaign |
-
-A candidate straddling two buckets belongs to the higher-intent one.
+A candidate straddling two themes belongs to the theme its dominant buyer intent
+matches; see `reference/gtm.md` for the full screening + theme-clustering steps.
 
 ---
 
@@ -61,6 +65,6 @@ One JTBD (job-to-be-done) per ad group. Each ad group maps to one ad copy and on
 - **External sources:** interviews · reviews · competitor LPs · autosuggest — available at launch
 - **Internal sources:** Search Console · STR · site search — once data exists
 - **Keyword Planner:** sizing only, never discovery
-- **Intent → paid:** transactional / commercial first · informational = SEO · navigational = brand campaign
+- **Routing → paid:** on-theme buyer/comparison/destination language first · pure-learning phrasing with no theme match = SEO
 - **Screening:** 2-month intent-to-buy · long-tail · retargeting potential
 - **Grouping:** one JTBD per ad group, ≤15 keywords

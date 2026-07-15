@@ -22,7 +22,7 @@ Create campaigns based on control boundaries, not features:
 | -------------- | ---------------------------------- | ----------------------------------------------------------------------------------------- |
 | **Brand**      | Your brand name + variants         | Bid even if you rank organically — competitors will otherwise serve above your result. Cheapest click in the account. |
 | **Competitor** | Named competitor terms             | Requires comparison landing pages. Separate budget and bidding from solution campaigns.   |
-| **Solution**   | Solution-aware, high intent        | Core budget. Transactional + commercial keywords. Largest allocation.                     |
+| **Solution**   | Solution-aware, high intent        | Core budget. High-intent buyer/comparison keywords. Largest allocation.                   |
 | **Problem**    | Problem-aware, longer funnel       | Lower intent, lower bids. Feeds the pipeline but converts slower.                        |
 
 ---
