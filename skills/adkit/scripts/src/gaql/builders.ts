@@ -118,6 +118,7 @@ export function auditKeywordMetricsQuery(
   return (
     "SELECT campaign.id, ad_group_criterion.keyword.text, metrics.average_cpc " +
     `FROM keyword_view WHERE campaign.id IN (${ids}) ` +
+    "AND ad_group_criterion.status = 'ENABLED' " +
     `AND segments.date DURING LAST_${Math.trunc(days)}_DAYS`
   );
 }
