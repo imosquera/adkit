@@ -25,8 +25,35 @@ vi.mock("../lib/auth.js", async (importOriginal) => {
   return { ...actual, loadClient: () => currentClient };
 });
 
-const { main, livePositiveKeywords, liveNegatives } = await import("./apply-fixes.js");
+const { main, livePositiveKeywords, liveNegatives, rsaUpdateOp } = await import("./apply-fixes.js");
 const { validate } = await import("../fixes/plan.js");
+
+// ---------------------------------------------------------------------------
+// rsaUpdateOp — the field-mask shape depends on which fields are present.
+// ---------------------------------------------------------------------------
+
+describe("rsaUpdateOp", () => {
+  it("URL-only repoint omits responsive_search_ad (avoids FIELD_HAS_SUBFIELDS)", () => {
+    const op = rsaUpdateOp("111", 999, null, null, "https://x.io/p");
+    const r = op.resource as Record<string, unknown>;
+    expect(r.responsive_search_ad).toBeUndefined();
+    expect(r.final_urls).toEqual(["https://x.io/p"]);
+  });
+
+  it("copy rewrite sets responsive_search_ad and no final_urls when URL absent", () => {
+    const op = rsaUpdateOp("111", 999, ["h"], ["d"], null);
+    const r = op.resource as Record<string, unknown>;
+    expect(r.responsive_search_ad).toEqual({ headlines: [{ text: "h" }], descriptions: [{ text: "d" }] });
+    expect(r.final_urls).toBeUndefined();
+  });
+
+  it("copy + URL sets both", () => {
+    const op = rsaUpdateOp("111", 999, ["h"], ["d"], "https://x.io/p");
+    const r = op.resource as Record<string, unknown>;
+    expect(r.responsive_search_ad).toBeDefined();
+    expect(r.final_urls).toEqual(["https://x.io/p"]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Fakes + fixtures

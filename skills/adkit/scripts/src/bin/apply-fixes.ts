@@ -19,6 +19,7 @@
  *   "budgets":   [{"campaignId": 456, "dailyMicros": 50000000, "maxRaisePct": 100}],
  *   "campaignStatus": [{"campaignId": "456", "status": "ENABLED"}],  // flip a campaign on/off
  *   "adGroupStatus": [{"adGroupId": "789", "status": "PAUSED"}],     // flip an ad group on/off
+ *   "adStatus": [{"adId": "123", "status": "ENABLED"}],             // flip a single ad on/off (e.g. enable a new group's PAUSED ad)
  *   "adGroups":  [{"campaignId": 456, "adGroup": {<brief ad group: name, defaultBidMicros, responsiveSearchAd, keywords>}}],  // add a new ad group
  *   "languages": [{"campaignId": 456}]                               // make the campaign English-only
  * }
@@ -64,6 +65,7 @@ import {
   createKeywords,
   createResponsiveSearchAd,
   setAdGroupStatus,
+  setAdGroupAdStatus,
   setCampaignStatus,
   setSearchPartners,
   buildKeywordOps,
@@ -75,6 +77,7 @@ import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
   addAdGroupsPlan,
   adGroupStatusPlan,
+  adStatusPlan,
   campaignStatusPlan,
   coerceKeyword,
   keyStr,
@@ -91,6 +94,7 @@ import {
 import {
   applyAdGroupNamesQuery,
   applyAdGroupStatusesQuery,
+  applyAdStatusesQuery,
   applyBudgetsQuery,
   applyCampaignStatusesQuery,
   applyHeadlinesQuery,
@@ -123,6 +127,12 @@ interface CampaignStatusRow {
 
 interface AdGroupStatusRow {
   ad_group: { id: number; status: string };
+}
+
+interface AdStatusRow {
+  ad_group: { id: number };
+  // ad_group_ad.status arrives as the raw numeric enum (decoded via adGroupAdStatusName).
+  ad_group_ad: { ad: { id: number }; status: string | number };
 }
 
 // network_settings is optional here (not `{ target_search_network: boolean }`
@@ -215,6 +225,39 @@ export async function liveAdGroupStatuses(
   }
   const rows = await client.search<AdGroupStatusRow>(customerId, applyAdGroupStatusesQuery(adGroupIds));
   return rows.reduce((acc, r) => acc.set(r.ad_group.id, r.ad_group.status), new Map<number, string>());
+}
+
+/**
+ * adId -> {status, adGroupId}. The status map drives the idempotent no-op skip; the
+ * adGroup map resolves the ad_group_ad resource name at apply time (it needs both
+ * ids, but an adStatus block only carries the adId).
+ */
+export async function liveAdStatuses(
+  client: AdsClient,
+  customerId: string,
+  adIds: ReadonlyArray<string | number>,
+): Promise<{ status: Map<number, string>; adGroup: Map<number, number> }> {
+  if (adIds.length === 0) {
+    return { status: new Map(), adGroup: new Map() };
+  }
+  const rows = await client.search<AdStatusRow>(customerId, applyAdStatusesQuery(adIds));
+  return rows.reduce(
+    (acc, r) => {
+      acc.status.set(r.ad_group_ad.ad.id, adGroupAdStatusName(r.ad_group_ad.status));
+      acc.adGroup.set(r.ad_group_ad.ad.id, r.ad_group.id);
+      return acc;
+    },
+    { status: new Map<number, string>(), adGroup: new Map<number, number>() },
+  );
+}
+
+/**
+ * ad_group_ad.status arrives as the RAW NUMERIC enum (e.g. 3), unlike campaign.status
+ * and ad_group.status which arrive as their string name. Decode to the name so the
+ * idempotent no-op skip in adStatusPlan compares like-for-like ("ENABLED"/"PAUSED").
+ */
+function adGroupAdStatusName(status: string | number): string {
+  return typeof status === "number" ? (enums.AdGroupAdStatus[status] ?? String(status)) : status;
 }
 
 /**
@@ -366,6 +409,7 @@ interface FixesPlan extends Record<string, unknown> {
   budgets?: Array<Record<string, unknown>>;
   campaignStatus?: Array<Record<string, unknown>>;
   adGroupStatus?: Array<Record<string, unknown>>;
+  adStatus?: Array<Record<string, unknown>>;
   searchPartners?: Array<Record<string, unknown>>;
   adGroups?: Array<Record<string, unknown>>;
   languages?: Array<Record<string, unknown>>;
@@ -450,6 +494,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     customer,
     section(plan, "adGroupStatus").map((g) => g.adGroupId as string | number),
   );
+  const liveAdSt = await liveAdStatuses(
+    client,
+    customer,
+    section(plan, "adStatus").map((a) => a.adId as string | number),
+  );
   const liveSp = await liveSearchPartners(
     client,
     customer,
@@ -484,6 +533,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const enableChanges = statusChanges.filter((c) => c.status === "ENABLED");
   const [agStatusChanges, agStatusSkips] = adGroupStatusPlan(section(plan, "adGroupStatus"), liveAgStatus);
   const agEnableChanges = agStatusChanges.filter((g) => g.status === "ENABLED");
+  const [adStatusChanges, adStatusSkips] = adStatusPlan(section(plan, "adStatus"), liveAdSt.status);
+  const adEnableChanges = adStatusChanges.filter((a) => a.status === "ENABLED");
   const [spChanges, spSkips] = searchPartnersPlan(section(plan, "searchPartners"), liveSpEnabled);
   const spEnableChanges = spChanges.filter((c) => c.enabled === true);
   const [agCreates, agCreateSkips] = addAdGroupsPlan(section(plan, "adGroups"), liveAgNames);
@@ -506,6 +557,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       !(
         section(plan, "campaignStatus").length > 0 ||
         section(plan, "adGroupStatus").length > 0 ||
+        section(plan, "adStatus").length > 0 ||
         section(plan, "searchPartners").length > 0
       )
     ) {
@@ -520,6 +572,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         adGroupStatusChanges: agStatusChanges,
         adGroupStatusSkipped: agStatusSkips,
         adGroupEnableStartsLiveSpend: agEnableChanges.map((g) => g.adGroupId),
+        adStatusChanges,
+        adStatusSkipped: adStatusSkips,
+        adEnableStartsLiveSpend: adEnableChanges.map((a) => a.adId),
         searchPartnersChanges: spChanges,
         searchPartnersSkipped: spSkips,
         searchPartnersEnableIncreasesReach: spEnableChanges.map((c) => c.campaignId),
@@ -528,7 +583,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   };
 
   const actions: string[] = [
-    ...section(plan, "rewrites").map((r) => `rewrite ad ${strOf(r.adId)} -> 15H/4D`),
+    ...section(plan, "rewrites").map((r) => {
+      const hasCopy = Array.isArray(r.headlines) || Array.isArray(r.descriptions);
+      const parts = [hasCopy ? "15H/4D" : null, r.finalUrl != null ? "finalUrl" : null].filter(Boolean);
+      return `rewrite ad ${strOf(r.adId)} -> ${parts.join(" + ")}`;
+    }),
     ...section(plan, "appendHeadlines").map((a) => {
       const cur = live.get(asId(a.adId)) ?? [];
       const add = Array.isArray(a.add) ? (a.add as string[]) : [];
@@ -559,6 +618,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     ...statusSkips.map((c) => `campaign ${strOf(c.campaignId)}: status already ${strOf(c.status)}, skipped`),
     ...agStatusChanges.map((g) => `adGroup ${strOf(g.adGroupId)}: status ${strOf(g.current)} -> ${strOf(g.status)}`),
     ...agStatusSkips.map((g) => `adGroup ${strOf(g.adGroupId)}: status already ${strOf(g.status)}, skipped`),
+    ...adStatusChanges.map((a) => `ad ${strOf(a.adId)}: status ${strOf(a.current)} -> ${strOf(a.status)}`),
+    ...adStatusSkips.map((a) => `ad ${strOf(a.adId)}: status already ${strOf(a.status)}, skipped`),
     ...spChanges.map(
       (c) => `campaign ${strOf(c.campaignId)}: search partners ${strOf(c.current)} -> ${strOf(c.enabled)}`,
     ),
@@ -594,6 +655,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         agEnableChanges.map((g) => String(g.adGroupId)).join(", "),
     );
   }
+  if (adEnableChanges.length > 0) {
+    // Enabling an ad makes it eligible to serve (live spend) — same loud surface.
+    console.log(
+      "WARNING: ENABLE starts live serving of ad(s): " +
+        adEnableChanges.map((a) => String(a.adId)).join(", "),
+    );
+  }
   if (spEnableChanges.length > 0) {
     // Turning Search Partners ON increases reach (and spend) — loud surface, same as
     // ENABLE. Turning it OFF only narrows reach, so it never warns.
@@ -613,7 +681,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // 1) RSA rewrites + appends
   const adOps: AdsMutateOperation[] = [];
   for (const rw of section(plan, "rewrites")) {
-    adOps.push(rsaUpdateOp(customer, rw.adId, rw.headlines as string[], rw.descriptions as string[]));
+    // A rewrite may carry headlines/descriptions, a finalUrl, or both. Absent asset
+    // arrays pass as null so a URL-only repoint leaves the live RSA copy untouched.
+    const hs = Array.isArray(rw.headlines) ? (rw.headlines as string[]) : null;
+    const ds = Array.isArray(rw.descriptions) ? (rw.descriptions as string[]) : null;
+    adOps.push(rsaUpdateOp(customer, rw.adId, hs, ds, rw.finalUrl as string | undefined));
   }
   for (const ap of section(plan, "appendHeadlines")) {
     const cur = live.get(asId(ap.adId)) ?? [];
@@ -754,6 +826,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.log(`  adGroup ${strOf(g.adGroupId)}: status already ${strOf(g.status)}, skipped`);
   }
 
+  // 7b) individual ad on/off. Resolve the parent adGroupId from live state (the
+  // ad_group_ad resource name needs both ids). Same idempotent + loud-ENABLE contract.
+  for (const a of adStatusChanges) {
+    const adGroupId = liveAdSt.adGroup.get(asId(a.adId));
+    await setAdGroupAdStatus(client, customer, String(adGroupId), String(a.adId), a.status as "ENABLED" | "PAUSED");
+    console.log(`  ad ${strOf(a.adId)}: status ${strOf(a.current)} -> ${strOf(a.status)}`);
+  }
+  for (const a of adStatusSkips) {
+    console.log(`  ad ${strOf(a.adId)}: status already ${strOf(a.status)}, skipped`);
+  }
+
   // 8) search partners on/off. No-op flips were already filtered into spSkips and
   // never reach the mutate (idempotent). OFF is always safe; ON was surfaced loudly.
   for (const c of spChanges) {
@@ -838,11 +921,12 @@ function pyRepr(value: unknown): string {
  * present on the `responsive_search_ad` resource. `headlines`/`descriptions` are set
  * only when non-null (an append passes descriptions === null to leave them untouched).
  */
-function rsaUpdateOp(
+export function rsaUpdateOp(
   customerId: string,
   adId: unknown,
   headlines: string[] | null,
   descriptions: string[] | null,
+  finalUrl?: string | null,
 ): AdsMutateOperation {
   const rsa: Record<string, unknown> = {};
   if (headlines !== null) {
@@ -851,14 +935,20 @@ function rsaUpdateOp(
   if (descriptions !== null) {
     rsa["descriptions"] = descriptions.map((text) => ({ text }));
   }
-  return {
-    entity: "ad",
-    operation: "update",
-    resource: {
-      resource_name: `customers/${customerId}/ads/${strOf(adId)}`,
-      responsive_search_ad: rsa,
-    },
+  const resource: Record<string, unknown> = {
+    resource_name: `customers/${customerId}/ads/${strOf(adId)}`,
   };
+  // Only mask responsive_search_ad when we actually change an asset — an empty
+  // {} makes Google derive a field mask over the whole submessage (FIELD_HAS_SUBFIELDS).
+  if (Object.keys(rsa).length > 0) {
+    resource["responsive_search_ad"] = rsa;
+  }
+  // final_urls lives on the Ad resource (sibling of responsive_search_ad); set it
+  // only when the rewrite asks to repoint the ad, so headline-only rewrites are unchanged.
+  if (finalUrl != null) {
+    resource["final_urls"] = [finalUrl];
+  }
+  return { entity: "ad", operation: "update", resource };
 }
 
 // Re-export types used by tests asserting on the status/searchPartners/adGroup plan entries.

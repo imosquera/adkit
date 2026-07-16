@@ -13,6 +13,7 @@ import type { ZodIssue } from "zod";
 import {
   AdGroupSchema,
   AdGroupStatusChangeSchema,
+  AdStatusChangeSchema,
   CampaignStatusChangeSchema,
   KeywordSchema,
   SearchPartnersChangeSchema,
@@ -246,6 +247,7 @@ export interface StatusPlanEntry {
   current: unknown;
   campaignId?: unknown;
   adGroupId?: unknown;
+  adId?: unknown;
 }
 
 /** Live status maps: {id -> statusName}. */
@@ -271,7 +273,7 @@ function liveStatusFor(map: LiveStatusMap, id: number | null): string | undefine
 function statusPlan(
   blocks: Array<Record<string, unknown>>,
   liveStatuses: LiveStatusMap,
-  idKey: "campaignId" | "adGroupId",
+  idKey: "campaignId" | "adGroupId" | "adId",
 ): [StatusPlanEntry[], StatusPlanEntry[]] {
   const entries: StatusPlanEntry[] = blocks.map((b) => {
     const current = liveStatusFor(liveStatuses, asInt(b[idKey]));
@@ -294,6 +296,13 @@ export function adGroupStatusPlan(
   liveStatuses: LiveStatusMap,
 ): [StatusPlanEntry[], StatusPlanEntry[]] {
   return statusPlan(blocks, liveStatuses, "adGroupId");
+}
+
+export function adStatusPlan(
+  blocks: Array<Record<string, unknown>>,
+  liveStatuses: LiveStatusMap,
+): [StatusPlanEntry[], StatusPlanEntry[]] {
+  return statusPlan(blocks, liveStatuses, "adId");
 }
 
 /** A searchPartners-change plan entry carrying the target and current (live) boolean. */
@@ -382,12 +391,26 @@ function strId(value: unknown): string {
 
 function rewritesErrors(rewrites: Array<Record<string, unknown>>): string[] {
   const one = (rw: Record<string, unknown>): string[] => {
-    const hs = Array.isArray(rw.headlines) ? (rw.headlines as string[]) : [];
-    const ds = Array.isArray(rw.descriptions) ? (rw.descriptions as string[]) : [];
     const adId = strId(rw.adId);
+    const hasH = Array.isArray(rw.headlines);
+    const hasD = Array.isArray(rw.descriptions);
+    const hasUrl = rw.finalUrl != null;
+    // A rewrite must do something: replace copy, repoint the URL, or both.
+    if (!hasH && !hasD && !hasUrl) {
+      return [`ad ${adId}: rewrite has no headlines, descriptions, or finalUrl`];
+    }
+    // finalUrl-only repoint is valid (copy left untouched); the 15/4 rules apply
+    // only to the asset arrays that are actually present.
+    const hs = hasH ? (rw.headlines as string[]) : [];
+    const ds = hasD ? (rw.descriptions as string[]) : [];
+    const urlErr =
+      hasUrl && !(typeof rw.finalUrl === "string" && /^https:\/\//i.test(rw.finalUrl))
+        ? [`ad ${adId}: finalUrl must be an https:// URL`]
+        : [];
     return [
-      ...(hs.length !== H_TARGET ? [`ad ${adId}: ${hs.length} headlines (need ${H_TARGET})`] : []),
-      ...(ds.length !== D_TARGET ? [`ad ${adId}: ${ds.length} descriptions (need ${D_TARGET})`] : []),
+      ...urlErr,
+      ...(hasH && hs.length !== H_TARGET ? [`ad ${adId}: ${hs.length} headlines (need ${H_TARGET})`] : []),
+      ...(hasD && ds.length !== D_TARGET ? [`ad ${adId}: ${ds.length} descriptions (need ${D_TARGET})`] : []),
       ...(new Set(hs).size !== hs.length ? [`ad ${adId}: duplicate headline`] : []),
       ...(new Set(ds).size !== ds.length ? [`ad ${adId}: duplicate description`] : []),
       ...hs.filter((h) => h.length > H_MAX).map((h) => `ad ${adId}: headline >${H_MAX} (${h.length}) ${pyRepr(h)}`),
@@ -528,7 +551,10 @@ function keywordsErrors(
   return keywordBlocks.flatMap(one);
 }
 
-type StatusSchema = typeof CampaignStatusChangeSchema | typeof AdGroupStatusChangeSchema;
+type StatusSchema =
+  | typeof CampaignStatusChangeSchema
+  | typeof AdGroupStatusChangeSchema
+  | typeof AdStatusChangeSchema;
 
 /**
  * Shared shape for campaignStatus/adGroupStatus: each block must parse against the
@@ -766,6 +792,7 @@ export function validate(
     ...keywordsErrors(arr("keywords"), livePositive),
     ...statusChangeErrors(arr("campaignStatus"), CampaignStatusChangeSchema, "campaignStatus", "campaign", "campaignId"),
     ...statusChangeErrors(arr("adGroupStatus"), AdGroupStatusChangeSchema, "adGroupStatus", "adGroup", "adGroupId"),
+    ...statusChangeErrors(arr("adStatus"), AdStatusChangeSchema, "adStatus", "ad", "adId"),
     ...searchPartnersErrors(arr("searchPartners")),
     ...searchPartnersPreconditionErrors(arr("searchPartners"), liveSearchPartnersGoogleSearch ?? new Map()),
     ...adGroupsErrors(arr("adGroups")),
