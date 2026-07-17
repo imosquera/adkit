@@ -1,7 +1,7 @@
 ---
 name: adkit
-description: "Manage Google Ads search campaigns — create, audit, update, report, and GTM keyword/ad-copy generation. Usage: /adkit create | /adkit audit | /adkit update | /adkit report | /adkit gtm"
-argument-hint: "create | audit | update | report | gtm"
+description: "Manage Google Ads search campaigns — create, audit, update, report, research, and GTM keyword/ad-copy generation. Usage: /adkit create | /adkit audit | /adkit update | /adkit report | /adkit research | /adkit gtm"
+argument-hint: "create | audit | update | report | research | gtm"
 user-invocable: true
 ---
 
@@ -39,4 +39,5 @@ Read the [shared conventions](reference/conventions.md) once before any subcomma
 | `audit` | Analysis | Audit live ad strength and surface actionable fixes (read-only) | [reference/audit.md](reference/audit.md) |
 | `update` | Publishing | Apply headline/description rewrites and sitelink changes to live ads | [reference/update.md](reference/update.md) |
 | `report` | Analysis | Pull performance metrics and generate a markdown + Chart.js dashboard | [reference/report.md](reference/report.md) |
+| `research` | Analysis | Research competitors + keywords: seed from competitors/campaign, expand to adjacent keywords/competitors, rank the landscape by theme (volume, cost, competitiveness) | [reference/research.md](reference/research.md) |
 | `gtm` | Planning | Generate keyword tiers and RSA ad copy for a processed idea | [reference/gtm.md](reference/gtm.md) |
