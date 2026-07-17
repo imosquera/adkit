@@ -6,12 +6,9 @@ import {
   campaignTotalsQuery,
   dateWindow,
   keywordQuery,
-  metricDict,
-  microsToCurrency,
-  remediationHint,
-  safeRatio,
   searchTermQuery,
-} from "./report.js";
+} from "../gaql/builders.js";
+import { metricDict, microsToCurrency, remediationHint, safeRatio } from "./report.js";
 import { toGaql } from "../gaql/search-args.js";
 
 describe("dateWindow", () => {

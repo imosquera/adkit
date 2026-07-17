@@ -1,23 +1,12 @@
 /**
- * Pure helpers for the /adkit report skill: GAQL query builders (re-exported) and
- * metric derivation. No SDK imports — every function is referentially transparent
- * and covered by report.test.ts.
+ * Pure helpers for the /adkit report skill: metric derivation and error-hint
+ * mapping. No SDK imports — every function is referentially transparent and
+ * covered by report.test.ts. GAQL query builders live in the central
+ * `gaql/builders` module; callers import them directly from there.
  *
  * The IO entrypoint injects the as-of date and feeds raw API values into these
  * functions; nothing here reads the clock or mutates input.
  */
-
-// GAQL builders live in the central gaql package; re-exported here so callers
-// (and report.test.ts) keep importing them from lib/report unchanged.
-export {
-  adGroupQuery,
-  adQuery,
-  campaignDailyQuery,
-  campaignTotalsQuery,
-  dateWindow,
-  keywordQuery,
-  searchTermQuery,
-} from "../gaql/builders.js";
 
 /**
  * Map a Google Ads API error message to an actionable next step. Bad/expired

@@ -19,6 +19,7 @@ import {
   type AdGroup,
   type Keyword,
 } from "../lib/schema.js";
+import { pyRepr, pyStr } from "../cli/py-format.js";
 
 export const H_MAX = 30;
 export const D_MAX = 90;
@@ -36,26 +37,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Python `repr` for the values that flow through the error strings: single-quoted
- * strings, bare numbers/booleans/None. The tests assert on substrings produced by
- * `f"...{x!r}..."`, so match Python's quoting.
- */
-function pyRepr(value: unknown): string {
-  if (typeof value === "string") {
-    return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
-  }
-  if (value === null || value === undefined) {
-    return "None";
-  }
-  if (value === true) {
-    return "True";
-  }
-  if (value === false) {
-    return "False";
-  }
-  return String(value);
-}
+// pyRepr / pyStr live in cli/py-format.ts (shared with apply-fixes.ts).
 
 /** Python `type(item).__name__` for the coercion error message. */
 function pyTypeName(value: unknown): string {
@@ -344,10 +326,10 @@ function negativesErrors(negatives: Array<Record<string, unknown>>): string[] {
       ...(cid !== undefined && cid !== null && !isDigitString(cid)
         ? [`negatives campaign ${pyRepr(cid)}: campaignId must be numeric`]
         : []),
-      ...(items.length === 0 ? [`negatives campaign ${strId(ng.campaignId)}: empty add list`] : []),
+      ...(items.length === 0 ? [`negatives campaign ${pyStr(ng.campaignId)}: empty add list`] : []),
       ...items.flatMap((item) => {
         const err = coerceKeyword(item)[1];
-        return err ? [`negatives campaign ${strId(ng.campaignId)}: ${pyRepr(item)}: ${err}`] : [];
+        return err ? [`negatives campaign ${pyStr(ng.campaignId)}: ${pyRepr(item)}: ${err}`] : [];
       }),
     ];
   };
@@ -372,19 +354,11 @@ function languagesErrors(languageBlocks: Array<Record<string, unknown>>): string
   return languageBlocks.flatMap(one);
 }
 
-/** Render an id for the `{x}` (str, not repr) slots — Python's f-string `{cid}`. */
-function strId(value: unknown): string {
-  if (value === undefined || value === null) {
-    return "None";
-  }
-  return String(value);
-}
-
 function rewritesErrors(rewrites: Array<Record<string, unknown>>): string[] {
   const one = (rw: Record<string, unknown>): string[] => {
     const hs = Array.isArray(rw.headlines) ? (rw.headlines as string[]) : [];
     const ds = Array.isArray(rw.descriptions) ? (rw.descriptions as string[]) : [];
-    const adId = strId(rw.adId);
+    const adId = pyStr(rw.adId);
     return [
       ...(hs.length !== H_TARGET ? [`ad ${adId}: ${hs.length} headlines (need ${H_TARGET})`] : []),
       ...(ds.length !== D_TARGET ? [`ad ${adId}: ${ds.length} descriptions (need ${D_TARGET})`] : []),
@@ -412,7 +386,7 @@ function appendHeadlinesErrors(
     const cur = getLive(ap.adId);
     const add = Array.isArray(ap.add) ? (ap.add as string[]) : [];
     const full = [...cur, ...add.filter((h) => !cur.includes(h))];
-    const adId = strId(ap.adId);
+    const adId = pyStr(ap.adId);
     return [
       ...(full.length !== H_TARGET
         ? [`ad ${adId}: append -> ${full.length}H (need ${H_TARGET}; have ${cur.length})`]
@@ -464,18 +438,18 @@ function budgetsErrors(
     const cid = b.campaignId;
     const target = b.dailyMicros;
     if (typeof target !== "number" || !Number.isInteger(target) || target <= 0) {
-      return [`budget campaign ${strId(cid)}: dailyMicros must be a positive int`];
+      return [`budget campaign ${pyStr(cid)}: dailyMicros must be a positive int`];
     }
     const cur = getBudget(cid)?.amountMicros;
     if (cur === undefined || cur === null) {
-      return [`budget campaign ${strId(cid)}: no current budget found`];
+      return [`budget campaign ${pyStr(cid)}: no current budget found`];
     }
     const rawPct = typeof b.maxRaisePct === "number" ? b.maxRaisePct : MAX_RAISE_PCT_CAP;
     const pct = Math.min(rawPct, MAX_RAISE_PCT_CAP); // cap can only be lowered
     const cap = cur * (1 + pct / 100);
     return target > cap
       ? [
-          `budget campaign ${strId(cid)}: $${(target / 1e6).toFixed(2)} exceeds guardrail ` +
+          `budget campaign ${pyStr(cid)}: $${(target / 1e6).toFixed(2)} exceeds guardrail ` +
             `($${(cur / 1e6).toFixed(2)} +${pct}% = $${(cap / 1e6).toFixed(2)})`,
         ]
       : [];
@@ -498,11 +472,11 @@ function keywordsErrors(
       items.flatMap((item) => {
         const [kw, err] = coerceKeyword(item);
         if (err) {
-          return [`keywords adGroup ${strId(agid)}: ${label} ${pyRepr(item)}: ${err}`];
+          return [`keywords adGroup ${pyStr(agid)}: ${label} ${pyRepr(item)}: ${err}`];
         }
         if (kw !== null && !liveKeys.has(keyStr(posKey(kw.text, kw.matchType)))) {
           return [
-            `keywords adGroup ${strId(agid)}: cannot ${label} ` +
+            `keywords adGroup ${pyStr(agid)}: cannot ${label} ` +
               `${kw.text}[${kw.matchType}] — not present on the ad group`,
           ];
         }
@@ -515,11 +489,11 @@ function keywordsErrors(
         ? [`keywords adGroup ${pyRepr(agid)}: adGroupId must be numeric`]
         : []),
       ...(add.length === 0 && remove.length === 0 && pause.length === 0
-        ? [`keywords adGroup ${strId(agid)}: empty operation lists (add/remove/pause)`]
+        ? [`keywords adGroup ${pyStr(agid)}: empty operation lists (add/remove/pause)`]
         : []),
       ...add.flatMap((item) => {
         const err = coerceKeyword(item)[1];
-        return err ? [`keywords adGroup ${strId(agid)}: add ${pyRepr(item)}: ${err}`] : [];
+        return err ? [`keywords adGroup ${pyStr(agid)}: add ${pyRepr(item)}: ${err}`] : [];
       }),
       ...rpErrors("remove", remove),
       ...rpErrors("pause", pause),
@@ -600,7 +574,7 @@ function searchPartnersPreconditionErrors(
     const googleSearch = liveBoolFor(liveGoogleSearch, asInt(b.campaignId));
     return googleSearch === false
       ? [
-          `searchPartners campaign ${strId(b.campaignId)}: cannot enable search partners while ` +
+          `searchPartners campaign ${pyStr(b.campaignId)}: cannot enable search partners while ` +
             "Google Search targeting is off for this campaign",
         ]
       : [];
@@ -675,7 +649,7 @@ function adGroupsErrors(blocks: Array<Record<string, unknown>>): string[] {
         : []),
     ];
     if (b.adGroup === undefined || b.adGroup === null) {
-      return [...idErrors, `adGroups campaign ${strId(cid)}: entry missing adGroup`];
+      return [...idErrors, `adGroups campaign ${pyStr(cid)}: entry missing adGroup`];
     }
     const parsed = AdGroupSchema.safeParse(normalizeAdGroup(b.adGroup));
     if (parsed.success) {
@@ -685,7 +659,7 @@ function adGroupsErrors(blocks: Array<Record<string, unknown>>): string[] {
       ...idErrors,
       ...parsed.error.issues.map((issue: ZodIssue) => {
         const loc = issue.path.map((p) => String(p)).join(".") || "?";
-        return `adGroups campaign ${strId(cid)}: adGroup.${loc}: ${issue.message}`;
+        return `adGroups campaign ${pyStr(cid)}: adGroup.${loc}: ${issue.message}`;
       }),
     ];
   };

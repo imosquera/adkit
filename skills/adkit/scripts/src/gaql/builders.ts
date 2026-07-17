@@ -8,19 +8,23 @@
  * conditions, orderings?, limit? }`) rather than a GAQL string, so the same value
  * can drive both the SDK backend (via {@link toGaql}) and the google-ads-mcp
  * `search` tool (which wants decomposed args, not raw GAQL). Builders are pure
- * functions (no SDK import); the IO shells run them. The /adkit report builders
- * historically lived in lib/report; they are re-exported from there for backwards
- * compatibility.
+ * functions (no SDK import); the IO shells run them.
+ *
+ * Structure: three families (report / audit / apply) share a handful of small
+ * factories — {@link reportQuery} for the metric+date-window reads, and
+ * {@link inListQuery} for the `<col> IN (ids…)` reads. Each public builder is a
+ * thin, named wrapper over a factory, so call sites and the golden-string parity
+ * tests stay stable while the `{ id.map(gaqlId).join(",") }` fragment and the
+ * `SearchArgs` shape live in exactly one place instead of being copy-pasted ~20×.
  */
 
 import { gaqlId } from "./escape.js";
 import type { SearchArgs } from "./search-args.js";
 
 // ===========================================================================
-// /adkit report builders (re-exported by lib/report)
+// Shared fragments & factories
 // ===========================================================================
 
-// Shared fragments — defined once, reused by every builder (DRY).
 const _ENABLED = "campaign.status = 'ENABLED'";
 const _METRICS: readonly string[] = [
   "metrics.cost_micros",
@@ -54,70 +58,128 @@ function _whereConds(start: string, end: string): readonly string[] {
   return [_ENABLED, `segments.date BETWEEN '${start}' AND '${end}'`];
 }
 
-export function campaignTotalsQuery(start: string, end: string): SearchArgs {
+/**
+ * Factory for the /adkit report reads: `SELECT <dims>, <metrics> FROM <resource>
+ * WHERE ENABLED AND date BETWEEN …`. The families differ only in `resource`, the
+ * leading dimension fields, and (for the daily view) an ORDER BY — everything else
+ * (the metric columns, the WHERE) is identical.
+ */
+function reportQuery(
+  resource: string,
+  dims: readonly string[],
+  start: string,
+  end: string,
+  orderings?: readonly string[],
+): SearchArgs {
   return {
-    resource: "campaign",
-    fields: ["campaign.id", "campaign.name", "campaign.status", ..._METRICS],
+    resource,
+    fields: [...dims, ..._METRICS],
     conditions: _whereConds(start, end),
+    ...(orderings ? { orderings } : {}),
   };
+}
+
+/** `segments.date DURING LAST_<n>_DAYS` window predicate (n truncated to an int). */
+function lastNDays(days: number): string {
+  return `segments.date DURING LAST_${Math.trunc(days)}_DAYS`;
+}
+
+/**
+ * Factory for every `<idColumn> IN (id, id, …)` read (the audit + apply families).
+ * Ids are guarded digits-only via {@link gaqlId} here — the single home for that
+ * `.map(gaqlId).join(",")` fragment. `extra` is appended verbatim after the IN
+ * clause, so callers control the exact remaining WHERE order (status filters, date
+ * windows, type filters).
+ */
+function inListQuery(
+  resource: string,
+  fields: readonly string[],
+  idColumn: string,
+  ids: ReadonlyArray<string | number>,
+  extra: readonly string[] = [],
+): SearchArgs {
+  const inClause = `${idColumn} IN (${ids.map((i) => gaqlId(i)).join(",")})`;
+  return { resource, fields, conditions: [inClause, ...extra] };
+}
+
+/**
+ * The shared campaign-scope predicate ladder used by the campaign-list reads:
+ * a single id wins, else ENABLED-only, else no scope. Returned as the trailing
+ * conditions so callers can prepend a date window.
+ */
+function campaignScope(
+  onlyEnabled: boolean,
+  campaignId: string | null | undefined,
+): readonly string[] {
+  return campaignId
+    ? [`campaign.id = ${gaqlId(campaignId)}`]
+    : onlyEnabled
+      ? [_ENABLED]
+      : [];
+}
+
+// ===========================================================================
+// /adkit report builders
+// ===========================================================================
+
+export function campaignTotalsQuery(start: string, end: string): SearchArgs {
+  return reportQuery("campaign", ["campaign.id", "campaign.name", "campaign.status"], start, end);
 }
 
 export function campaignDailyQuery(start: string, end: string): SearchArgs {
-  return {
-    resource: "campaign",
-    fields: ["campaign.id", "campaign.name", "segments.date", ..._METRICS],
-    conditions: _whereConds(start, end),
-    orderings: ["segments.date"],
-  };
+  return reportQuery(
+    "campaign",
+    ["campaign.id", "campaign.name", "segments.date"],
+    start,
+    end,
+    ["segments.date"],
+  );
 }
 
 export function adGroupQuery(start: string, end: string): SearchArgs {
-  return {
-    resource: "ad_group",
-    fields: ["campaign.id", "ad_group.id", "ad_group.name", ..._METRICS],
-    conditions: _whereConds(start, end),
-  };
+  return reportQuery("ad_group", ["campaign.id", "ad_group.id", "ad_group.name"], start, end);
 }
 
 export function adQuery(start: string, end: string): SearchArgs {
   // ad_group_ad.ad.name is often blank for search ads; the report shell falls
   // back to the id so every ad has a label. ad_strength is Google's creative
   // quality grade (POOR/AVERAGE/GOOD/EXCELLENT) — a fix-the-ad signal.
-  return {
-    resource: "ad_group_ad",
-    fields: [
+  return reportQuery(
+    "ad_group_ad",
+    [
       "campaign.id",
       "ad_group.id",
       "ad_group_ad.ad.id",
       "ad_group_ad.ad.name",
       "ad_group_ad.ad.type",
       "ad_group_ad.ad_strength",
-      ..._METRICS,
     ],
-    conditions: _whereConds(start, end),
-  };
+    start,
+    end,
+  );
 }
 
 export function keywordQuery(start: string, end: string): SearchArgs {
-  return {
-    resource: "keyword_view",
-    fields: [
+  return reportQuery(
+    "keyword_view",
+    [
       "campaign.id",
       "ad_group.id",
       "ad_group_criterion.keyword.text",
       "ad_group_criterion.keyword.match_type",
-      ..._METRICS,
     ],
-    conditions: _whereConds(start, end),
-  };
+    start,
+    end,
+  );
 }
 
 export function searchTermQuery(start: string, end: string): SearchArgs {
-  return {
-    resource: "search_term_view",
-    fields: ["campaign.id", "ad_group.id", "search_term_view.search_term", ..._METRICS],
-    conditions: _whereConds(start, end),
-  };
+  return reportQuery(
+    "search_term_view",
+    ["campaign.id", "ad_group.id", "search_term_view.search_term"],
+    start,
+    end,
+  );
 }
 
 // ===========================================================================
@@ -129,16 +191,13 @@ export function searchTermQuery(start: string, end: string): SearchArgs {
  * {campaignId: {adGroupName: [kw]}}. Ids are guarded digits-only.
  */
 export function auditKeywordsQuery(campaignIds: ReadonlyArray<string | number>): SearchArgs {
-  const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return {
-    resource: "ad_group_criterion",
-    fields: ["campaign.id", "ad_group.name", "ad_group_criterion.keyword.text"],
-    conditions: [
-      `campaign.id IN (${ids})`,
-      "ad_group_criterion.type = 'KEYWORD'",
-      "ad_group_criterion.status != 'REMOVED'",
-    ],
-  };
+  return inListQuery(
+    "ad_group_criterion",
+    ["campaign.id", "ad_group.name", "ad_group_criterion.keyword.text"],
+    "campaign.id",
+    campaignIds,
+    ["ad_group_criterion.type = 'KEYWORD'", "ad_group_criterion.status != 'REMOVED'"],
+  );
 }
 
 /**
@@ -149,16 +208,13 @@ export function auditKeywordMetricsQuery(
   days: number,
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return {
-    resource: "keyword_view",
-    fields: ["campaign.id", "ad_group_criterion.keyword.text", "metrics.average_cpc"],
-    conditions: [
-      `campaign.id IN (${ids})`,
-      "ad_group_criterion.status = 'ENABLED'",
-      `segments.date DURING LAST_${Math.trunc(days)}_DAYS`,
-    ],
-  };
+  return inListQuery(
+    "keyword_view",
+    ["campaign.id", "ad_group_criterion.keyword.text", "metrics.average_cpc"],
+    "campaign.id",
+    campaignIds,
+    ["ad_group_criterion.status = 'ENABLED'", lastNDays(days)],
+  );
 }
 
 /**
@@ -170,10 +226,9 @@ export function auditSearchTermsQuery(
   days: number,
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return {
-    resource: "search_term_view",
-    fields: [
+  return inListQuery(
+    "search_term_view",
+    [
       "campaign.id",
       "search_term_view.search_term",
       "metrics.cost_micros",
@@ -181,8 +236,10 @@ export function auditSearchTermsQuery(
       "metrics.clicks",
       "metrics.conversions",
     ],
-    conditions: [`campaign.id IN (${ids})`, `segments.date DURING LAST_${Math.trunc(days)}_DAYS`],
-  };
+    "campaign.id",
+    campaignIds,
+    [lastNDays(days)],
+  );
 }
 
 /** List campaigns to audit: a single id, ENABLED-only, or all. */
@@ -190,15 +247,10 @@ export function auditCampaignsQuery(
   onlyEnabled: boolean,
   campaignId: string | null | undefined,
 ): SearchArgs {
-  const conditions = campaignId
-    ? [`campaign.id = ${gaqlId(campaignId)}`]
-    : onlyEnabled
-      ? ["campaign.status = 'ENABLED'"]
-      : [];
   return {
     resource: "campaign",
     fields: ["campaign.id", "campaign.name", "campaign.status"],
-    conditions,
+    conditions: campaignScope(onlyEnabled, campaignId),
     orderings: ["campaign.name"],
   };
 }
@@ -224,10 +276,9 @@ export function auditExtCountQuery(campId: string, fieldType: string): SearchArg
 export function auditQualityScoreQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return {
-    resource: "keyword_view",
-    fields: [
+  return inListQuery(
+    "keyword_view",
+    [
       "campaign.id",
       "ad_group_criterion.keyword.text",
       "ad_group_criterion.quality_info.quality_score",
@@ -235,12 +286,10 @@ export function auditQualityScoreQuery(
       "ad_group_criterion.quality_info.creative_quality_score",
       "ad_group_criterion.quality_info.post_click_quality_score",
     ],
-    conditions: [
-      `campaign.id IN (${ids})`,
-      "ad_group_criterion.type = 'KEYWORD'",
-      "ad_group_criterion.status != 'REMOVED'",
-    ],
-  };
+    "campaign.id",
+    campaignIds,
+    ["ad_group_criterion.type = 'KEYWORD'", "ad_group_criterion.status != 'REMOVED'"],
+  );
 }
 
 /** All non-removed RSAs in a campaign with the fields the creative audit reads. */
@@ -278,10 +327,9 @@ export function auditLandingPageMobileQuery(
   days: number,
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return {
-    resource: "landing_page_view",
-    fields: [
+  return inListQuery(
+    "landing_page_view",
+    [
       "campaign.id",
       "landing_page_view.unexpanded_final_url",
       "metrics.mobile_friendly_clicks_percentage",
@@ -291,8 +339,10 @@ export function auditLandingPageMobileQuery(
       "metrics.impressions",
       "metrics.ctr",
     ],
-    conditions: [`campaign.id IN (${ids})`, `segments.date DURING LAST_${Math.trunc(days)}_DAYS`],
-  };
+    "campaign.id",
+    campaignIds,
+    [lastNDays(days)],
+  );
 }
 
 /**
@@ -318,12 +368,6 @@ export function auditServingQuery(
   onlyEnabled: boolean,
   campaignId: string | null | undefined,
 ): SearchArgs {
-  const base = [`segments.date DURING LAST_${Math.trunc(days)}_DAYS`];
-  const conditions = campaignId
-    ? [...base, `campaign.id = ${gaqlId(campaignId)}`]
-    : onlyEnabled
-      ? [...base, "campaign.status = 'ENABLED'"]
-      : base;
   return {
     resource: "campaign",
     fields: [
@@ -337,7 +381,7 @@ export function auditServingQuery(
       "metrics.search_budget_lost_impression_share",
       "metrics.search_rank_lost_impression_share",
     ],
-    conditions,
+    conditions: [lastNDays(days), ...campaignScope(onlyEnabled, campaignId)],
   };
 }
 
@@ -349,32 +393,29 @@ export function auditServingQuery(
 export function applyNegativesQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return {
-    resource: "campaign_criterion",
-    fields: [
+  return inListQuery(
+    "campaign_criterion",
+    [
       "campaign.id",
       "campaign_criterion.keyword.text",
       "campaign_criterion.keyword.match_type",
     ],
-    conditions: [
-      `campaign.id IN (${ids})`,
-      "campaign_criterion.negative = TRUE",
-      "campaign_criterion.type = KEYWORD",
-    ],
-  };
+    "campaign.id",
+    campaignIds,
+    ["campaign_criterion.negative = TRUE", "campaign_criterion.type = KEYWORD"],
+  );
 }
 
 /** Each campaign's current budget resource + amount, for the budget guardrail. */
 export function applyBudgetsQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return {
-    resource: "campaign",
-    fields: ["campaign.id", "campaign_budget.resource_name", "campaign_budget.amount_micros"],
-    conditions: [`campaign.id IN (${ids})`],
-  };
+  return inListQuery(
+    "campaign",
+    ["campaign.id", "campaign_budget.resource_name", "campaign_budget.amount_micros"],
+    "campaign.id",
+    campaignIds,
+  );
 }
 
 /**
@@ -384,12 +425,7 @@ export function applyBudgetsQuery(
 export function applyCampaignStatusesQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return {
-    resource: "campaign",
-    fields: ["campaign.id", "campaign.status"],
-    conditions: [`campaign.id IN (${ids})`],
-  };
+  return inListQuery("campaign", ["campaign.id", "campaign.status"], "campaign.id", campaignIds);
 }
 
 /**
@@ -401,16 +437,16 @@ export function applyCampaignStatusesQuery(
 export function applySearchPartnersQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return {
-    resource: "campaign",
-    fields: [
+  return inListQuery(
+    "campaign",
+    [
       "campaign.id",
       "campaign.network_settings.target_search_network",
       "campaign.network_settings.target_google_search",
     ],
-    conditions: [`campaign.id IN (${ids})`],
-  };
+    "campaign.id",
+    campaignIds,
+  );
 }
 
 /**
@@ -420,12 +456,7 @@ export function applySearchPartnersQuery(
 export function applyAdGroupStatusesQuery(
   adGroupIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = adGroupIds.map((i) => gaqlId(i)).join(",");
-  return {
-    resource: "ad_group",
-    fields: ["ad_group.id", "ad_group.status"],
-    conditions: [`ad_group.id IN (${ids})`],
-  };
+  return inListQuery("ad_group", ["ad_group.id", "ad_group.status"], "ad_group.id", adGroupIds);
 }
 
 /**
@@ -436,12 +467,13 @@ export function applyAdGroupStatusesQuery(
 export function applyAdGroupNamesQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return {
-    resource: "ad_group",
-    fields: ["campaign.id", "ad_group.name"],
-    conditions: [`campaign.id IN (${ids})`, "ad_group.status != 'REMOVED'"],
-  };
+  return inListQuery(
+    "ad_group",
+    ["campaign.id", "ad_group.name"],
+    "campaign.id",
+    campaignIds,
+    ["ad_group.status != 'REMOVED'"],
+  );
 }
 
 /**
@@ -452,30 +484,27 @@ export function applyAdGroupNamesQuery(
 export function applyLanguagesQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return {
-    resource: "campaign_criterion",
-    fields: [
+  return inListQuery(
+    "campaign_criterion",
+    [
       "campaign.id",
       "campaign_criterion.resource_name",
       "campaign_criterion.language.language_constant",
     ],
-    conditions: [
-      `campaign.id IN (${ids})`,
-      "campaign_criterion.type = LANGUAGE",
-      "campaign_criterion.status != 'REMOVED'",
-    ],
-  };
+    "campaign.id",
+    campaignIds,
+    ["campaign_criterion.type = LANGUAGE", "campaign_criterion.status != 'REMOVED'"],
+  );
 }
 
 /** Live RSA headlines for the ads an appendHeadlines plan touches. */
 export function applyHeadlinesQuery(adIds: ReadonlyArray<string | number>): SearchArgs {
-  const ids = adIds.map((i) => gaqlId(i)).join(",");
-  return {
-    resource: "ad_group_ad",
-    fields: ["ad_group_ad.ad.id", "ad_group_ad.ad.responsive_search_ad.headlines"],
-    conditions: [`ad_group_ad.ad.id IN (${ids})`],
-  };
+  return inListQuery(
+    "ad_group_ad",
+    ["ad_group_ad.ad.id", "ad_group_ad.ad.responsive_search_ad.headlines"],
+    "ad_group_ad.ad.id",
+    adIds,
+  );
 }
 
 /**
@@ -487,10 +516,9 @@ export function applyHeadlinesQuery(adIds: ReadonlyArray<string | number>): Sear
 export function applyPositiveKeywordsQuery(
   adGroupIds: ReadonlyArray<string | number>,
 ): SearchArgs {
-  const ids = adGroupIds.map((i) => gaqlId(i)).join(",");
-  return {
-    resource: "ad_group_criterion",
-    fields: [
+  return inListQuery(
+    "ad_group_criterion",
+    [
       "ad_group.id",
       "ad_group_criterion.criterion_id",
       "ad_group_criterion.resource_name",
@@ -498,11 +526,12 @@ export function applyPositiveKeywordsQuery(
       "ad_group_criterion.keyword.match_type",
       "ad_group_criterion.status",
     ],
-    conditions: [
-      `ad_group.id IN (${ids})`,
+    "ad_group.id",
+    adGroupIds,
+    [
       "ad_group_criterion.type = KEYWORD",
       "ad_group_criterion.negative = FALSE",
       "ad_group_criterion.status != 'REMOVED'",
     ],
-  };
+  );
 }
