@@ -8,6 +8,14 @@
 
 **Input**: User description: "Add geo / region breakdown to /ads:report — port the geo/region reporting behaviour from lead-drop PR #112 into the adkit source so the report gains a per-country and per-region performance breakdown."
 
+## Clarifications
+
+### Session 2026-07-17
+
+- Q: How should `cost_per_conversion` be handled when aggregating a geo/region bucket? → A: Recompute from summed totals (cost ÷ conversions, 0 when conversions=0), same treatment as ctr/avg_cpc — summing a per-unit rate across buckets is meaningless. (lead-drop PR #112 summed it additively; adkit corrects this and the vendored copy should follow.)
+- Q: Key each bucket by the raw geo-target id, or resolve to human-readable names? → A: Key by the raw identifier the API returns (numeric country criterion id for `geo`; region segment/resource name for `geo_regions`); no name-resolution lookups. Downstream analyze/visualize resolves names.
+- Q: What happens to rows whose geographic key is null/absent? → A: Group them into a single deterministic sentinel bucket rather than dropping them, so aggregated totals still reconcile with the underlying rows.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - See spend and performance by country (Priority: P1)
@@ -73,8 +81,9 @@ the same way as `geo`.
   resolve to 0 rather than dividing by zero.
 - **A single campaign serving one country**: that country appears once with that
   campaign's metrics unchanged (aggregation over one row is the identity).
-- **Rows whose geographic key is absent/null**: handled deterministically (grouped
-  under a single "unknown" bucket or skipped) rather than throwing.
+- **Rows whose geographic key is absent/null**: grouped into a single deterministic
+  sentinel bucket (never dropped, never thrown) so aggregated totals still reconcile
+  with the underlying rows.
 
 ## Requirements *(mandatory)*
 
@@ -95,9 +104,10 @@ the same way as `geo`.
   conversions) across all campaigns for each country.
 - **FR-005**: The report MUST aggregate the region rows into a `geo_regions` collection
   keyed by region identifier, summing the additive metrics the same way.
-- **FR-006**: For each aggregated bucket, the report MUST recompute the derived rates
-  (ctr, avg_cpc) from the summed totals after aggregation, and MUST NOT carry the
-  per-row derived rates through unchanged.
+- **FR-006**: For each aggregated bucket, the report MUST recompute all derived rates
+  (ctr, avg_cpc, and cost_per_conversion) from the summed totals after aggregation, and
+  MUST NOT carry the per-row derived rates through unchanged. cost_per_conversion is
+  cost ÷ conversions (0 when conversions is 0).
 - **FR-007**: Divide-by-zero for the derived rates MUST resolve to 0 (zero impressions →
   ctr 0; zero clicks → avg_cpc 0), matching the existing report metric behaviour.
 - **FR-008**: Both `geo` and `geo_regions` collections MUST be ordered by cost
