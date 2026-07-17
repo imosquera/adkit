@@ -159,6 +159,118 @@ export type DifferentiationGap = {
   fix: string;
 };
 
+/** Headlines that should carry an ad-group keyword theme word for a tightly-themed ad. */
+export const MIN_KEYWORD_HEADLINES = 3;
+
+/**
+ * Message-match / theme-coherence check across the four levels of an ad group, so the
+ * whole funnel points at the same searches:
+ *   (1) the ad group NAME shares a theme word with its search keywords,
+ *   (2) the ad HEADLINES carry those keyword theme words (the copy targets the terms the
+ *       ad group actually bids on),
+ *   (3) the DESCRIPTIONS carry them too, and
+ *   (4) the LANDING PAGE the ad points at carries them — judged against the final URL's
+ *       slug (domain + path words), the only landing-page verbiage the Ads API exposes
+ *       (there is no page body here, and this scorer stays IO-free).
+ * Theme words are the >2-char tokens of the ad group's keywords. Returns a finding naming
+ * every level that fails to align, or null when all present levels align — or when there
+ * are no keywords to align to (an empty keyword set can't be a mismatch). A level with no
+ * evidence (a null/empty final URL) is skipped rather than flagged.
+ *
+ * Pure: same inputs -> same finding, no IO.
+ */
+export function keywordAlignment(
+  agName: string,
+  keywords: readonly string[],
+  headlines: readonly string[],
+  descriptions: readonly string[],
+  finalUrl: string | null,
+): AlignmentGap | null {
+  const themeWords = [
+    ...new Set(
+      keywords
+        .join(" ")
+        .toLowerCase()
+        .replace(/,/g, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 2),
+    ),
+  ];
+  if (themeWords.length === 0) {
+    return null;
+  }
+  const containsTheme = (text: string): boolean =>
+    themeWords.some((w) => text.toLowerCase().includes(w));
+
+  const nameAligned = containsTheme(agName);
+  const headlinesWithKeyword = headlines.filter(containsTheme).length;
+  const descriptionsWithKeyword = descriptions.filter(containsTheme).length;
+  // Landing-page verbiage proxy: the final URL's words (domain labels + path slug), the
+  // only landing-page text the Ads API returns. Absent URL => no evidence => not judged.
+  const landingWords = urlWords(finalUrl);
+  const landingPageAligned =
+    landingWords === null ? null : themeWords.some((w) => landingWords.includes(w));
+
+  const misaligned: string[] = [
+    ...(!nameAligned ? ["ad group name"] : []),
+    ...(headlinesWithKeyword < MIN_KEYWORD_HEADLINES ? ["headlines"] : []),
+    ...(descriptionsWithKeyword < 1 ? ["descriptions"] : []),
+    ...(landingPageAligned === false ? ["landing page"] : []),
+  ];
+  if (misaligned.length === 0) {
+    return null;
+  }
+  return {
+    issue: "keyword_alignment",
+    themeWords,
+    nameAligned,
+    headlinesWithKeyword,
+    descriptionsWithKeyword,
+    landingPageAligned,
+    misaligned,
+    fix:
+      `Align ${misaligned.join(", ")} to the ad group's keywords ` +
+      `(theme: ${listRepr(themeWords.slice(0, 5))}) so the ad group name, keywords, ` +
+      "ad copy, and landing page all target the same searches.",
+  };
+}
+
+/**
+ * Lowercased >2-char word tokens of a URL — domain labels + path slug, minus the TLD and
+ * common structural noise (www, http, html). Returns null for an absent/blank/unparseable
+ * URL so the caller can treat "no landing-page evidence" as not-judged rather than a miss.
+ */
+function urlWords(finalUrl: string | null): string[] | null {
+  if (finalUrl === null || finalUrl.trim() === "") {
+    return null;
+  }
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(finalUrl) ? finalUrl : `https://${finalUrl}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(withScheme);
+  } catch {
+    return null;
+  }
+  const hostLabels = parsed.hostname.split(".").slice(0, -1); // drop the TLD
+  const structural = new Set(["www", "http", "https", "html", "htm", "php", "aspx"]);
+  const words = [...hostLabels, ...parsed.pathname.split(/[^a-z0-9]+/i)]
+    .map((w) => w.toLowerCase())
+    .filter((w) => w.length > 2 && !structural.has(w));
+  return words;
+}
+
+export type AlignmentGap = {
+  issue: "keyword_alignment";
+  themeWords: string[];
+  nameAligned: boolean;
+  headlinesWithKeyword: number;
+  descriptionsWithKeyword: number;
+  /** true = URL slug carries the theme, false = it doesn't, null = no URL to judge. */
+  landingPageAligned: boolean | null;
+  misaligned: string[];
+  fix: string;
+};
+
 /**
  * Caller-facing CLI guard for GAQL id interpolation: ids must be bare digits, no
  * injection. Absent (null/undefined) is allowed. Delegates the digits check to the
