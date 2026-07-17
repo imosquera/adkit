@@ -69,6 +69,13 @@ A maintainer looking for a formatting or metrics helper finds one obvious home i
 - **An `index.ts` public export is consumed by a caller outside `scripts/src`.** Such exports (or the `lib/report` re-export seam) are only removed after confirming no consumer depends on them; otherwise the export is preserved.
 - **Scope creep into workflow docs.** `reference/*.md` and `SKILL.md` are out of scope for this pass and must not be modified.
 
+## Clarifications
+
+### Session 2026-07-17 (auto-answered by autopilot — see issue #28 comment)
+
+- Q: When consolidating the 26 GAQL builders, replace them with a new data-driven API, or keep the named functions? → A: Preserve the existing named builder exports (`campaignTotalsQuery`, `auditKeywordsQuery`, `applyNegativesQuery`, …) as thin wrappers over a parameterized core, so every call site, test, and `index.ts` export stays stable and equivalence is provable.
+- Q: The issue permits behavior changes if called out — what is the default posture on user-visible output (CLI text, query fields, JSON envelope) for this pass? → A: Behavior-preserving by default. This is an internal refactor; aim for zero user-visible output changes. Any unavoidable delta must be minimal and explicitly listed in the PR (FR-008).
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
@@ -80,7 +87,8 @@ A maintainer looking for a formatting or metrics helper finds one obvious home i
 - **FR-005**: Shared logic across `bin/apply-fixes.ts`, `fixes/plan.ts`, and the other heavy files (`ads/entities.ts`, `bin/research.ts`) MUST be extracted where duplication exists, rather than left copy-pasted.
 - **FR-006**: Overlapping helpers across `lib/` MUST be consolidated to a single home per responsibility, and the `lib/report` backwards-compat re-export MUST be collapsed unless an external consumer requires it.
 - **FR-007**: The full `vitest` suite MUST pass at the end of the change; tests may only be modified to reflect an intentional, listed behavior change, never weakened to paper over a regression.
-- **FR-008**: Any change to CLI output text, query fields, or the JSON envelope shape MUST be enumerated explicitly in the PR description as a behavior delta; silent behavior changes are not permitted.
+- **FR-008**: This pass is behavior-preserving by default — it MUST aim for zero user-visible output changes (CLI text, query fields, JSON envelope). Any unavoidable delta MUST be minimal and enumerated explicitly in the PR description; silent behavior changes are not permitted.
+- **FR-012**: The consolidation MUST preserve the existing named builder exports as thin wrappers over the parameterized core, keeping every current call site, test, and `index.ts` export resolvable without edits (removals allowed only when unused and called out per FR-008).
 - **FR-009**: The change MUST produce a measurable reduction in duplication/line count across the three scoped areas, and the PR MUST report the before/after deltas.
 - **FR-010**: The change MUST NOT modify the `reference/*.md` workflow docs or `SKILL.md` routing (explicitly out of scope).
 - **FR-011**: A short consolidation survey (what was merged/removed, with behavior deltas) MUST be posted to issue #28 as the audit trail before the refactor is presented for review.
