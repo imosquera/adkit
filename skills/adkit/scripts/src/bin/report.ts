@@ -39,11 +39,9 @@ import {
   campaignTotalsQuery,
   dateWindow,
   keywordQuery,
-  metricDict,
-  type MetricDict,
-  remediationHint,
   searchTermQuery,
-} from "../lib/report.js";
+} from "../gaql/builders.js";
+import { metricDict, type MetricDict, remediationHint } from "../lib/report.js";
 
 /** The account/manager we report on by default (overridable via args). */
 export const DEFAULT_CUSTOMER = "8911925499"; // 891-192-5499

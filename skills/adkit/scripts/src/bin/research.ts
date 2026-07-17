@@ -29,6 +29,7 @@ import { resolveCustomer } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
 import { formatBulletText } from "../lib/markdown.js";
 import { competitionLabel, formatCpcRange } from "../lib/metrics.js";
+import { microsToCurrency } from "../lib/report.js";
 import { comparisonKey, MAX_KEYWORD_CHARS, MIN_VOLUME } from "../lib/merge.js";
 import {
   buildRequest,
@@ -314,7 +315,7 @@ export interface ScoredKeyword extends AggregatedKeyword {
   readonly opportunity: number;
 }
 
-const cpcHighDollars = (k: AggregatedKeyword): number => (k.highMicros ?? 0) / 1_000_000;
+const cpcHighDollars = (k: AggregatedKeyword): number => microsToCurrency(k.highMicros);
 
 /**
  * Score every keyword's competitiveness and opportunity. Pure, and deterministic
