@@ -37,17 +37,26 @@ export const IS_OPPORTUNITY = 0.65;
 /** losing >10% IS to a cause => flag that cause */
 export const LOST_HI = 0.1;
 
+/** Lowercased >2-char word tokens of a blob (commas treated as spaces). Order-preserving. */
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/,/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+}
+
+/** Escape a string for literal use inside a RegExp. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Words a winning headline should contain. Prefer the ad group's actual keywords;
  * fall back to the ad group's own name when there are none.
  */
 export function conceptWords(agName: string, keywords: readonly string[]): string[] {
-  const src = keywords.length > 0 ? keywords.join(" ") : agName;
-  return src
-    .toLowerCase()
-    .replace(/,/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2);
+  return tokenize(keywords.length > 0 ? keywords.join(" ") : agName);
 }
 
 /**
@@ -156,6 +165,126 @@ export function differentiationGaps(
 export type DifferentiationGap = {
   issue: "undifferentiated_copy";
   missingAxes: string[];
+  fix: string;
+};
+
+/** Headlines that should carry an ad-group keyword theme word for a tightly-themed ad. */
+export const MIN_KEYWORD_HEADLINES = 3;
+
+/**
+ * Message-match / theme-coherence check across the four levels of an ad group, so the
+ * whole funnel points at the same searches:
+ *   (1) the ad group NAME shares a theme word with its search keywords,
+ *   (2) the ad HEADLINES carry those keyword theme words (the copy targets the terms the
+ *       ad group actually bids on),
+ *   (3) the DESCRIPTIONS carry them too, and
+ *   (4) the LANDING PAGE the ad points at carries them — judged against the final URL's
+ *       slug (domain + path words), the only landing-page verbiage the Ads API exposes
+ *       (there is no page body here, and this scorer stays IO-free).
+ * Theme words are the >2-char tokens of the ad group's keywords. Returns a finding naming
+ * every level that fails to align, or null when all present levels align — or when there
+ * are no keywords to align to (an empty keyword set can't be a mismatch). A level with no
+ * evidence (a null/empty final URL) is skipped rather than flagged.
+ *
+ * Pure: same inputs -> same finding, no IO.
+ */
+export function keywordAlignment(
+  agName: string,
+  keywords: readonly string[],
+  headlines: readonly string[],
+  descriptions: readonly string[],
+  finalUrl: string | null,
+): AlignmentGap | null {
+  const themeWords = [...new Set(tokenize(keywords.join(" ")))];
+  if (themeWords.length === 0) {
+    return null;
+  }
+  // Left word-boundary match: a theme word must BEGIN a word, so "app" doesn't count
+  // "happy" as aligned — but any suffix is allowed, so inflections still match ("chatbot"
+  // covers "chatbots"). A trailing boundary would break that inflection handling.
+  const themeRes = themeWords.map((w) => new RegExp(`\\b${escapeRegExp(w)}`, "i"));
+  const containsTheme = (text: string): boolean => themeRes.some((re) => re.test(text));
+
+  const nameAligned = containsTheme(agName);
+  const headlinesWithKeyword = headlines.filter(containsTheme).length;
+  const descriptionsWithKeyword = descriptions.filter(containsTheme).length;
+  // Landing-page verbiage proxy: the final URL's words (domain labels + path slug), the
+  // only landing-page text the Ads API returns. Word-boundary matched (join then
+  // containsTheme) so it agrees with the copy levels — "chatbots" in a slug still covers
+  // theme "chatbot". Absent URL => no evidence => not judged.
+  const landingWords = urlWords(finalUrl);
+  const landingPageAligned = landingWords === null ? null : containsTheme(landingWords.join(" "));
+
+  // An under-filled ad group can't carry the theme in 3 headlines it doesn't have — cap
+  // the target at the headlines present so this doesn't just restate `headlines_under`.
+  const headlineTarget = Math.min(headlines.length, MIN_KEYWORD_HEADLINES);
+  const misaligned: string[] = [
+    ...(!nameAligned ? ["ad group name"] : []),
+    ...(headlinesWithKeyword < headlineTarget ? ["headlines"] : []),
+    ...(descriptions.length > 0 && descriptionsWithKeyword < 1 ? ["descriptions"] : []),
+    ...(landingPageAligned === false ? ["landing page"] : []),
+  ];
+  if (misaligned.length === 0) {
+    return null;
+  }
+  return {
+    issue: "keyword_alignment",
+    themeWords,
+    nameAligned,
+    headlinesWithKeyword,
+    descriptionsWithKeyword,
+    landingPageAligned,
+    misaligned,
+    fix:
+      `Align ${misaligned.join(", ")} to the ad group's keywords ` +
+      `(theme: ${listRepr(themeWords.slice(0, 5))}) so the ad group name, keywords, ` +
+      "ad copy, and landing page all target the same searches.",
+  };
+}
+
+/**
+ * Lowercased >2-char word tokens of a URL — domain labels + path slug, minus the TLD and
+ * common structural noise (www, http, html) and public-suffix labels. Returns null for an
+ * absent/blank/unparseable URL so the caller can treat "no landing-page evidence" as
+ * not-judged rather than a miss.
+ */
+function urlWords(finalUrl: string | null): string[] | null {
+  if (finalUrl === null || finalUrl.trim() === "") {
+    return null;
+  }
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(finalUrl) ? finalUrl : `https://${finalUrl}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(withScheme);
+  } catch {
+    return null;
+  }
+  const hostLabels = parsed.hostname.split(".").slice(0, -1); // drop the TLD
+  // Drop scheme/file noise AND the second-level labels of multi-part public suffixes
+  // (com.br, co.uk, com.au, gob.mx, web.za, govt.nz, …) so a suffix component like "com"
+  // isn't mistaken for keyword theme copy. Deliberately NOT the full Public Suffix List —
+  // that's a heavy dependency for a slug-proxy heuristic; this covers the common labels
+  // (the ≤2-char ones like co/ac/or/ne are already dropped by the >2-char filter below).
+  const structural = new Set([
+    "www", "http", "https", "html", "htm", "php", "aspx",
+    "com", "net", "org", "gov", "edu", "mil", "int", "biz", "info",
+    "gob", "web", "govt", "gouv", "ltd", "plc", "asn", "nom", "sch",
+  ]);
+  const words = [...hostLabels, ...parsed.pathname.split(/[^a-z0-9]+/i)]
+    .map((w) => w.toLowerCase())
+    .filter((w) => w.length > 2 && !structural.has(w));
+  return words;
+}
+
+export type AlignmentGap = {
+  issue: "keyword_alignment";
+  themeWords: string[];
+  nameAligned: boolean;
+  headlinesWithKeyword: number;
+  descriptionsWithKeyword: number;
+  /** true = URL slug carries the theme, false = it doesn't, null = no URL to judge. */
+  landingPageAligned: boolean | null;
+  misaligned: string[];
   fix: string;
 };
 
