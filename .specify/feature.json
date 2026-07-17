@@ -1,7 +1,7 @@
 {
-  "branch_name": "017-remove-inct-tiers",
-  "feature_num": "017",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/017-remove-inct-tiers",
-  "source_issue": 17,
-  "feature_directory": "specs/017-remove-inct-tiers"
+  "branch_name": "011-migrate-reads-google-ads-mcp",
+  "feature_num": "011",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/011-migrate-reads-google-ads-mcp",
+  "source_issue": 11,
+  "feature_directory": "specs/011-migrate-reads-google-ads-mcp"
 }

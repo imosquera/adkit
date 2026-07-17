@@ -45,6 +45,38 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 - If the yaml is missing, render it once: `ads.sh render-yaml` (one-time seed of the secrets: `ads.sh bootstrap-secrets`).
 - Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
 
+## Read backend (SDK vs google-ads-mcp)
+
+Read queries are being migrated toward the official
+[google-ads-mcp](https://github.com/googleads/google-ads-mcp) server. The migration is
+built as a **reversible seam**, selected by one env var:
+
+- **`ADKIT_READ_BACKEND`** — `sdk` (default) or `mcp`. Absent or unrecognized ⇒ `sdk`.
+- Every read query builder emits a structured `SearchArgs`
+  (`{ resource, fields, conditions, orderings?, limit? }`) — the shape the MCP `search`
+  tool wants — and `toGaql(SearchArgs)` derives the exact GAQL string the SDK backend
+  runs. The SDK backend (`ADKIT_READ_BACKEND=sdk`) is the tested default and behaves
+  exactly as before.
+- **MCP backend status: scaffolded, not yet wired.** Selecting `mcp` currently throws a
+  descriptive `McpNotConfiguredError` (fails loudly, never silently degrades). Wiring the
+  live transport is a deferred follow-up (see `specs/011-migrate-reads-google-ads-mcp`)
+  and requires:
+  - **Runtime**: the Python google-ads-mcp server, run via `pipx`
+    (`pipx run --spec git+https://github.com/googleads/google-ads-mcp.git google-ads-mcp`),
+    driven as an **embedded stdio MCP client** (an HTTP transport can be substituted at the
+    same seam without changing call-sites).
+  - **Auth**: reuse the existing `google-ads.yaml` via the MCP Python client's yaml option
+    where possible; the alternative is ADC (`GOOGLE_APPLICATION_CREDENTIALS`) plus
+    `GOOGLE_PROJECT_ID` and `GOOGLE_ADS_DEVELOPER_TOKEN`.
+
+### Stays on the SDK (does NOT migrate to MCP)
+
+- **All mutations** — `ads.sh update --apply` and `ads.sh create` (the MCP read tools are
+  read-only).
+- **`keyword-ideas` and `research`** — both driven by
+  `KeywordPlanIdeaService.generate_keyword_ideas`, a non-GAQL RPC the MCP server does not
+  expose. They keep using `google-ads-api` directly regardless of `ADKIT_READ_BACKEND`.
+
 ## Division of labor — the CLI is deterministic, the model is creative
 
 - **The CLI is deterministic.** Counting/validation, finding duplicates, reading Google's own `ad_strength` / `action_items`, computing the per-ad `pathToExcellent`, schema validation, and all live mutations are the executor's job (`ads.sh audit`, `ads.sh update`, `ads.sh create`). It never invents copy.

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import type { AdsClient } from "../lib/auth.js";
+import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import {
   DEFAULT_CUSTOMER,
   DEFAULT_DAYS,
@@ -286,6 +287,11 @@ describe("main (fake client, temp cwd)", () => {
         }
         return (rowsByResource[resource] ?? []) as Row[];
       },
+      // report's reads now flow through searchStructured; delegate through toGaql so
+      // the FROM/ORDER BY matching keeps working (toGaql reproduces the GAQL string).
+      async searchStructured<Row>(customerId: string, args: SearchArgs): Promise<Row[]> {
+        return this.search<Row>(customerId, toGaql(args));
+      },
       async mutate() {
         throw new Error("not used");
       },
@@ -353,6 +359,9 @@ describe("main (fake client, temp cwd)", () => {
   it("exit 1 when the query fails, with a remediation hint", async () => {
     const client: AdsClient = {
       async search() {
+        throw { failure: { errors: [{ message: "User doesn't have permission" }] } };
+      },
+      async searchStructured() {
         throw { failure: { errors: [{ message: "User doesn't have permission" }] } };
       },
       async mutate() {

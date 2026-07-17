@@ -1,25 +1,36 @@
 /**
- * Named GAQL query builders — the single home for every Google Ads Query the
+ * Named read-query builders — the single home for every Google Ads read query the
  * skill issues. Replaces inline template strings scattered across the audit,
  * apply-fixes, and report shells so the queries are reviewable in one place and
  * every id interpolation is routed through {@link gaqlId} (digits-only guard).
  *
- * Builders here are pure string functions (no SDK import); the IO shells run them.
- * The /adkit report builders historically lived in lib/report; they are
- * re-exported from there for backwards compatibility.
+ * Each builder returns a decomposed {@link SearchArgs} (`{ resource, fields,
+ * conditions, orderings?, limit? }`) rather than a GAQL string, so the same value
+ * can drive both the SDK backend (via {@link toGaql}) and the google-ads-mcp
+ * `search` tool (which wants decomposed args, not raw GAQL). Builders are pure
+ * functions (no SDK import); the IO shells run them. The /adkit report builders
+ * historically lived in lib/report; they are re-exported from there for backwards
+ * compatibility.
  */
 
 import { gaqlId } from "./escape.js";
+import type { SearchArgs } from "./search-args.js";
 
 // ===========================================================================
 // /adkit report builders (re-exported by lib/report)
 // ===========================================================================
 
-// Shared GAQL fragments — defined once, reused by every builder (DRY).
+// Shared fragments — defined once, reused by every builder (DRY).
 const _ENABLED = "campaign.status = 'ENABLED'";
-const _METRICS =
-  "metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, " +
-  "metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion";
+const _METRICS: readonly string[] = [
+  "metrics.cost_micros",
+  "metrics.impressions",
+  "metrics.clicks",
+  "metrics.ctr",
+  "metrics.average_cpc",
+  "metrics.conversions",
+  "metrics.cost_per_conversion",
+];
 
 /**
  * The last `days` COMPLETE days ending yesterday (partial current day excluded so
@@ -38,55 +49,75 @@ function isoDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function _where(start: string, end: string): string {
-  return `WHERE ${_ENABLED} AND segments.date BETWEEN '${start}' AND '${end}'`;
+/** The shared report WHERE predicates: ENABLED campaigns over the date window. */
+function _whereConds(start: string, end: string): readonly string[] {
+  return [_ENABLED, `segments.date BETWEEN '${start}' AND '${end}'`];
 }
 
-export function campaignTotalsQuery(start: string, end: string): string {
-  return (
-    `SELECT campaign.id, campaign.name, campaign.status, ${_METRICS} ` +
-    `FROM campaign ${_where(start, end)}`
-  );
+export function campaignTotalsQuery(start: string, end: string): SearchArgs {
+  return {
+    resource: "campaign",
+    fields: ["campaign.id", "campaign.name", "campaign.status", ..._METRICS],
+    conditions: _whereConds(start, end),
+  };
 }
 
-export function campaignDailyQuery(start: string, end: string): string {
-  return (
-    `SELECT campaign.id, campaign.name, segments.date, ${_METRICS} ` +
-    `FROM campaign ${_where(start, end)} ORDER BY segments.date`
-  );
+export function campaignDailyQuery(start: string, end: string): SearchArgs {
+  return {
+    resource: "campaign",
+    fields: ["campaign.id", "campaign.name", "segments.date", ..._METRICS],
+    conditions: _whereConds(start, end),
+    orderings: ["segments.date"],
+  };
 }
 
-export function adGroupQuery(start: string, end: string): string {
-  return (
-    `SELECT campaign.id, ad_group.id, ad_group.name, ${_METRICS} ` +
-    `FROM ad_group ${_where(start, end)}`
-  );
+export function adGroupQuery(start: string, end: string): SearchArgs {
+  return {
+    resource: "ad_group",
+    fields: ["campaign.id", "ad_group.id", "ad_group.name", ..._METRICS],
+    conditions: _whereConds(start, end),
+  };
 }
 
-export function adQuery(start: string, end: string): string {
+export function adQuery(start: string, end: string): SearchArgs {
   // ad_group_ad.ad.name is often blank for search ads; the report shell falls
   // back to the id so every ad has a label. ad_strength is Google's creative
   // quality grade (POOR/AVERAGE/GOOD/EXCELLENT) — a fix-the-ad signal.
-  return (
-    "SELECT campaign.id, ad_group.id, ad_group_ad.ad.id, " +
-    "ad_group_ad.ad.name, ad_group_ad.ad.type, ad_group_ad.ad_strength, " +
-    `${_METRICS} FROM ad_group_ad ${_where(start, end)}`
-  );
+  return {
+    resource: "ad_group_ad",
+    fields: [
+      "campaign.id",
+      "ad_group.id",
+      "ad_group_ad.ad.id",
+      "ad_group_ad.ad.name",
+      "ad_group_ad.ad.type",
+      "ad_group_ad.ad_strength",
+      ..._METRICS,
+    ],
+    conditions: _whereConds(start, end),
+  };
 }
 
-export function keywordQuery(start: string, end: string): string {
-  return (
-    "SELECT campaign.id, ad_group.id, ad_group_criterion.keyword.text, " +
-    `ad_group_criterion.keyword.match_type, ${_METRICS} ` +
-    `FROM keyword_view ${_where(start, end)}`
-  );
+export function keywordQuery(start: string, end: string): SearchArgs {
+  return {
+    resource: "keyword_view",
+    fields: [
+      "campaign.id",
+      "ad_group.id",
+      "ad_group_criterion.keyword.text",
+      "ad_group_criterion.keyword.match_type",
+      ..._METRICS,
+    ],
+    conditions: _whereConds(start, end),
+  };
 }
 
-export function searchTermQuery(start: string, end: string): string {
-  return (
-    "SELECT campaign.id, ad_group.id, search_term_view.search_term, " +
-    `${_METRICS} FROM search_term_view ${_where(start, end)}`
-  );
+export function searchTermQuery(start: string, end: string): SearchArgs {
+  return {
+    resource: "search_term_view",
+    fields: ["campaign.id", "ad_group.id", "search_term_view.search_term", ..._METRICS],
+    conditions: _whereConds(start, end),
+  };
 }
 
 // ===========================================================================
@@ -97,13 +128,17 @@ export function searchTermQuery(start: string, end: string): string {
  * Every campaign's ENABLED keywords in one query → caller groups by
  * {campaignId: {adGroupName: [kw]}}. Ids are guarded digits-only.
  */
-export function auditKeywordsQuery(campaignIds: ReadonlyArray<string | number>): string {
+export function auditKeywordsQuery(campaignIds: ReadonlyArray<string | number>): SearchArgs {
   const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return (
-    "SELECT campaign.id, ad_group.name, ad_group_criterion.keyword.text " +
-    `FROM ad_group_criterion WHERE campaign.id IN (${ids}) ` +
-    "AND ad_group_criterion.type = 'KEYWORD' AND ad_group_criterion.status != 'REMOVED'"
-  );
+  return {
+    resource: "ad_group_criterion",
+    fields: ["campaign.id", "ad_group.name", "ad_group_criterion.keyword.text"],
+    conditions: [
+      `campaign.id IN (${ids})`,
+      "ad_group_criterion.type = 'KEYWORD'",
+      "ad_group_criterion.status != 'REMOVED'",
+    ],
+  };
 }
 
 /**
@@ -113,14 +148,17 @@ export function auditKeywordsQuery(campaignIds: ReadonlyArray<string | number>):
 export function auditKeywordMetricsQuery(
   days: number,
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return (
-    "SELECT campaign.id, ad_group_criterion.keyword.text, metrics.average_cpc " +
-    `FROM keyword_view WHERE campaign.id IN (${ids}) ` +
-    "AND ad_group_criterion.status = 'ENABLED' " +
-    `AND segments.date DURING LAST_${Math.trunc(days)}_DAYS`
-  );
+  return {
+    resource: "keyword_view",
+    fields: ["campaign.id", "ad_group_criterion.keyword.text", "metrics.average_cpc"],
+    conditions: [
+      `campaign.id IN (${ids})`,
+      "ad_group_criterion.status = 'ENABLED'",
+      `segments.date DURING LAST_${Math.trunc(days)}_DAYS`,
+    ],
+  };
 }
 
 /**
@@ -131,36 +169,50 @@ export function auditKeywordMetricsQuery(
 export function auditSearchTermsQuery(
   days: number,
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return (
-    "SELECT campaign.id, search_term_view.search_term, " +
-    "metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.conversions " +
-    `FROM search_term_view WHERE campaign.id IN (${ids}) ` +
-    `AND segments.date DURING LAST_${Math.trunc(days)}_DAYS`
-  );
+  return {
+    resource: "search_term_view",
+    fields: [
+      "campaign.id",
+      "search_term_view.search_term",
+      "metrics.cost_micros",
+      "metrics.impressions",
+      "metrics.clicks",
+      "metrics.conversions",
+    ],
+    conditions: [`campaign.id IN (${ids})`, `segments.date DURING LAST_${Math.trunc(days)}_DAYS`],
+  };
 }
 
 /** List campaigns to audit: a single id, ENABLED-only, or all. */
 export function auditCampaignsQuery(
   onlyEnabled: boolean,
   campaignId: string | null | undefined,
-): string {
-  const where = campaignId
+): SearchArgs {
+  const conditions = campaignId
     ? [`campaign.id = ${gaqlId(campaignId)}`]
     : onlyEnabled
       ? ["campaign.status = 'ENABLED'"]
       : [];
-  const clause = where.length > 0 ? " WHERE " + where.join(" AND ") : "";
-  return `SELECT campaign.id, campaign.name, campaign.status FROM campaign${clause} ORDER BY campaign.name`;
+  return {
+    resource: "campaign",
+    fields: ["campaign.id", "campaign.name", "campaign.status"],
+    conditions,
+    orderings: ["campaign.name"],
+  };
 }
 
 /** Count campaign assets of one extension fieldType (SITELINK/CALLOUT). */
-export function auditExtCountQuery(campId: string, fieldType: string): string {
-  return (
-    `SELECT campaign.id FROM campaign_asset WHERE campaign.id = ${gaqlId(campId)} ` +
-    `AND campaign_asset.field_type = '${fieldType}'`
-  );
+export function auditExtCountQuery(campId: string, fieldType: string): SearchArgs {
+  return {
+    resource: "campaign_asset",
+    fields: ["campaign.id"],
+    conditions: [
+      `campaign.id = ${gaqlId(campId)}`,
+      `campaign_asset.field_type = '${fieldType}'`,
+    ],
+  };
 }
 
 /**
@@ -171,31 +223,49 @@ export function auditExtCountQuery(campId: string, fieldType: string): string {
  */
 export function auditQualityScoreQuery(
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return (
-    "SELECT campaign.id, ad_group_criterion.keyword.text, " +
-    "ad_group_criterion.quality_info.quality_score, " +
-    "ad_group_criterion.quality_info.search_predicted_ctr, " +
-    "ad_group_criterion.quality_info.creative_quality_score, " +
-    "ad_group_criterion.quality_info.post_click_quality_score " +
-    `FROM keyword_view WHERE campaign.id IN (${ids}) ` +
-    "AND ad_group_criterion.type = 'KEYWORD' AND ad_group_criterion.status != 'REMOVED'"
-  );
+  return {
+    resource: "keyword_view",
+    fields: [
+      "campaign.id",
+      "ad_group_criterion.keyword.text",
+      "ad_group_criterion.quality_info.quality_score",
+      "ad_group_criterion.quality_info.search_predicted_ctr",
+      "ad_group_criterion.quality_info.creative_quality_score",
+      "ad_group_criterion.quality_info.post_click_quality_score",
+    ],
+    conditions: [
+      `campaign.id IN (${ids})`,
+      "ad_group_criterion.type = 'KEYWORD'",
+      "ad_group_criterion.status != 'REMOVED'",
+    ],
+  };
 }
 
 /** All non-removed RSAs in a campaign with the fields the creative audit reads. */
-export function auditAdGroupAdQuery(campId: string): string {
-  return (
-    "SELECT ad_group.name, ad_group_ad.ad.id, ad_group_ad.ad_strength, ad_group_ad.status, " +
-    "ad_group_ad.action_items, ad_group_ad.ad.responsive_search_ad.headlines, " +
-    "ad_group_ad.ad.responsive_search_ad.descriptions, ad_group_ad.ad.final_urls " +
-    `FROM ad_group_ad WHERE campaign.id = ${gaqlId(campId)} AND ad_group_ad.status != 'REMOVED' ` +
-    // Constrain to RSAs so a non-RSA ad (call-only, display, legacy ETA) is never fetched,
-    // normalized into an empty RSA, and mis-scored as headlines_under/descriptions_under.
-    "AND ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD' " +
-    "ORDER BY ad_group.name"
-  );
+export function auditAdGroupAdQuery(campId: string): SearchArgs {
+  return {
+    resource: "ad_group_ad",
+    fields: [
+      "ad_group.name",
+      "ad_group_ad.ad.id",
+      "ad_group_ad.ad_strength",
+      "ad_group_ad.status",
+      "ad_group_ad.action_items",
+      "ad_group_ad.ad.responsive_search_ad.headlines",
+      "ad_group_ad.ad.responsive_search_ad.descriptions",
+      "ad_group_ad.ad.final_urls",
+    ],
+    conditions: [
+      `campaign.id = ${gaqlId(campId)}`,
+      "ad_group_ad.status != 'REMOVED'",
+      // Constrain to RSAs so a non-RSA ad (call-only, display, legacy ETA) is never fetched,
+      // normalized into an empty RSA, and mis-scored as headlines_under/descriptions_under.
+      "ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD'",
+    ],
+    orderings: ["ad_group.name"],
+  };
 }
 
 /**
@@ -207,16 +277,22 @@ export function auditAdGroupAdQuery(campId: string): string {
 export function auditLandingPageMobileQuery(
   days: number,
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((c) => gaqlId(c)).join(",");
-  return (
-    "SELECT campaign.id, landing_page_view.unexpanded_final_url, " +
-    "metrics.mobile_friendly_clicks_percentage, " +
-    "metrics.valid_accelerated_mobile_pages_clicks_percentage, metrics.speed_score, " +
-    "metrics.clicks, metrics.impressions, metrics.ctr " +
-    `FROM landing_page_view WHERE campaign.id IN (${ids}) ` +
-    `AND segments.date DURING LAST_${Math.trunc(days)}_DAYS`
-  );
+  return {
+    resource: "landing_page_view",
+    fields: [
+      "campaign.id",
+      "landing_page_view.unexpanded_final_url",
+      "metrics.mobile_friendly_clicks_percentage",
+      "metrics.valid_accelerated_mobile_pages_clicks_percentage",
+      "metrics.speed_score",
+      "metrics.clicks",
+      "metrics.impressions",
+      "metrics.ctr",
+    ],
+    conditions: [`campaign.id IN (${ids})`, `segments.date DURING LAST_${Math.trunc(days)}_DAYS`],
+  };
 }
 
 /**
@@ -224,13 +300,16 @@ export function auditLandingPageMobileQuery(
  * policy_topic_entries for destination/URL topics (DESTINATION_NOT_WORKING,
  * DESTINATION_MISMATCH) that the audit table maps to a concrete fix.
  */
-export function auditPolicyTopicsQuery(campId: string): string {
-  return (
-    "SELECT ad_group_ad.ad.id, ad_group_ad.ad.final_urls, " +
-    "ad_group_ad.policy_summary.policy_topic_entries " +
-    `FROM ad_group_ad WHERE campaign.id = ${gaqlId(campId)} ` +
-    "AND ad_group_ad.status = 'ENABLED'"
-  );
+export function auditPolicyTopicsQuery(campId: string): SearchArgs {
+  return {
+    resource: "ad_group_ad",
+    fields: [
+      "ad_group_ad.ad.id",
+      "ad_group_ad.ad.final_urls",
+      "ad_group_ad.policy_summary.policy_topic_entries",
+    ],
+    conditions: [`campaign.id = ${gaqlId(campId)}`, "ad_group_ad.status = 'ENABLED'"],
+  };
 }
 
 /** Impression-share / budget / rank metrics for the serving layer. */
@@ -238,19 +317,28 @@ export function auditServingQuery(
   days: number,
   onlyEnabled: boolean,
   campaignId: string | null | undefined,
-): string {
+): SearchArgs {
   const base = [`segments.date DURING LAST_${Math.trunc(days)}_DAYS`];
-  const where = campaignId
+  const conditions = campaignId
     ? [...base, `campaign.id = ${gaqlId(campaignId)}`]
     : onlyEnabled
       ? [...base, "campaign.status = 'ENABLED'"]
       : base;
-  return (
-    "SELECT campaign.id, campaign.name, campaign.bidding_strategy_type, campaign_budget.amount_micros, " +
-    "metrics.impressions, metrics.conversions, metrics.search_impression_share, " +
-    "metrics.search_budget_lost_impression_share, metrics.search_rank_lost_impression_share " +
-    `FROM campaign WHERE ${where.join(" AND ")}`
-  );
+  return {
+    resource: "campaign",
+    fields: [
+      "campaign.id",
+      "campaign.name",
+      "campaign.bidding_strategy_type",
+      "campaign_budget.amount_micros",
+      "metrics.impressions",
+      "metrics.conversions",
+      "metrics.search_impression_share",
+      "metrics.search_budget_lost_impression_share",
+      "metrics.search_rank_lost_impression_share",
+    ],
+    conditions,
+  };
 }
 
 // ===========================================================================
@@ -260,25 +348,33 @@ export function auditServingQuery(
 /** Existing campaign-level negative keywords, to dedup a fixes plan against. */
 export function applyNegativesQuery(
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return (
-    "SELECT campaign.id, campaign_criterion.keyword.text, " +
-    "campaign_criterion.keyword.match_type FROM campaign_criterion " +
-    `WHERE campaign.id IN (${ids}) AND campaign_criterion.negative = TRUE ` +
-    "AND campaign_criterion.type = KEYWORD"
-  );
+  return {
+    resource: "campaign_criterion",
+    fields: [
+      "campaign.id",
+      "campaign_criterion.keyword.text",
+      "campaign_criterion.keyword.match_type",
+    ],
+    conditions: [
+      `campaign.id IN (${ids})`,
+      "campaign_criterion.negative = TRUE",
+      "campaign_criterion.type = KEYWORD",
+    ],
+  };
 }
 
 /** Each campaign's current budget resource + amount, for the budget guardrail. */
 export function applyBudgetsQuery(
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return (
-    "SELECT campaign.id, campaign_budget.resource_name, campaign_budget.amount_micros " +
-    `FROM campaign WHERE campaign.id IN (${ids})`
-  );
+  return {
+    resource: "campaign",
+    fields: ["campaign.id", "campaign_budget.resource_name", "campaign_budget.amount_micros"],
+    conditions: [`campaign.id IN (${ids})`],
+  };
 }
 
 /**
@@ -287,12 +383,13 @@ export function applyBudgetsQuery(
  */
 export function applyCampaignStatusesQuery(
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return (
-    "SELECT campaign.id, campaign.status " +
-    `FROM campaign WHERE campaign.id IN (${ids})`
-  );
+  return {
+    resource: "campaign",
+    fields: ["campaign.id", "campaign.status"],
+    conditions: [`campaign.id IN (${ids})`],
+  };
 }
 
 /**
@@ -303,13 +400,17 @@ export function applyCampaignStatusesQuery(
  */
 export function applySearchPartnersQuery(
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return (
-    "SELECT campaign.id, campaign.network_settings.target_search_network, " +
-    "campaign.network_settings.target_google_search " +
-    `FROM campaign WHERE campaign.id IN (${ids})`
-  );
+  return {
+    resource: "campaign",
+    fields: [
+      "campaign.id",
+      "campaign.network_settings.target_search_network",
+      "campaign.network_settings.target_google_search",
+    ],
+    conditions: [`campaign.id IN (${ids})`],
+  };
 }
 
 /**
@@ -318,12 +419,13 @@ export function applySearchPartnersQuery(
  */
 export function applyAdGroupStatusesQuery(
   adGroupIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = adGroupIds.map((i) => gaqlId(i)).join(",");
-  return (
-    "SELECT ad_group.id, ad_group.status " +
-    `FROM ad_group WHERE ad_group.id IN (${ids})`
-  );
+  return {
+    resource: "ad_group",
+    fields: ["ad_group.id", "ad_group.status"],
+    conditions: [`ad_group.id IN (${ids})`],
+  };
 }
 
 /**
@@ -333,12 +435,13 @@ export function applyAdGroupStatusesQuery(
  */
 export function applyAdGroupNamesQuery(
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return (
-    "SELECT campaign.id, ad_group.name " +
-    `FROM ad_group WHERE campaign.id IN (${ids}) AND ad_group.status != 'REMOVED'`
-  );
+  return {
+    resource: "ad_group",
+    fields: ["campaign.id", "ad_group.name"],
+    conditions: [`campaign.id IN (${ids})`, "ad_group.status != 'REMOVED'"],
+  };
 }
 
 /**
@@ -348,23 +451,31 @@ export function applyAdGroupNamesQuery(
  */
 export function applyLanguagesQuery(
   campaignIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = campaignIds.map((i) => gaqlId(i)).join(",");
-  return (
-    "SELECT campaign.id, campaign_criterion.resource_name, " +
-    "campaign_criterion.language.language_constant FROM campaign_criterion " +
-    `WHERE campaign.id IN (${ids}) AND campaign_criterion.type = LANGUAGE ` +
-    "AND campaign_criterion.status != 'REMOVED'"
-  );
+  return {
+    resource: "campaign_criterion",
+    fields: [
+      "campaign.id",
+      "campaign_criterion.resource_name",
+      "campaign_criterion.language.language_constant",
+    ],
+    conditions: [
+      `campaign.id IN (${ids})`,
+      "campaign_criterion.type = LANGUAGE",
+      "campaign_criterion.status != 'REMOVED'",
+    ],
+  };
 }
 
 /** Live RSA headlines for the ads an appendHeadlines plan touches. */
-export function applyHeadlinesQuery(adIds: ReadonlyArray<string | number>): string {
+export function applyHeadlinesQuery(adIds: ReadonlyArray<string | number>): SearchArgs {
   const ids = adIds.map((i) => gaqlId(i)).join(",");
-  return (
-    "SELECT ad_group_ad.ad.id, ad_group_ad.ad.responsive_search_ad.headlines " +
-    `FROM ad_group_ad WHERE ad_group_ad.ad.id IN (${ids})`
-  );
+  return {
+    resource: "ad_group_ad",
+    fields: ["ad_group_ad.ad.id", "ad_group_ad.ad.responsive_search_ad.headlines"],
+    conditions: [`ad_group_ad.ad.id IN (${ids})`],
+  };
 }
 
 /**
@@ -375,13 +486,23 @@ export function applyHeadlinesQuery(adIds: ReadonlyArray<string | number>): stri
  */
 export function applyPositiveKeywordsQuery(
   adGroupIds: ReadonlyArray<string | number>,
-): string {
+): SearchArgs {
   const ids = adGroupIds.map((i) => gaqlId(i)).join(",");
-  return (
-    "SELECT ad_group.id, ad_group_criterion.criterion_id, ad_group_criterion.resource_name, " +
-    "ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, " +
-    "ad_group_criterion.status FROM ad_group_criterion " +
-    `WHERE ad_group.id IN (${ids}) AND ad_group_criterion.type = KEYWORD ` +
-    "AND ad_group_criterion.negative = FALSE AND ad_group_criterion.status != 'REMOVED'"
-  );
+  return {
+    resource: "ad_group_criterion",
+    fields: [
+      "ad_group.id",
+      "ad_group_criterion.criterion_id",
+      "ad_group_criterion.resource_name",
+      "ad_group_criterion.keyword.text",
+      "ad_group_criterion.keyword.match_type",
+      "ad_group_criterion.status",
+    ],
+    conditions: [
+      `ad_group.id IN (${ids})`,
+      "ad_group_criterion.type = KEYWORD",
+      "ad_group_criterion.negative = FALSE",
+      "ad_group_criterion.status != 'REMOVED'",
+    ],
+  };
 }

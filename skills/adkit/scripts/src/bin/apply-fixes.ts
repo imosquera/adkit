@@ -182,7 +182,7 @@ export async function liveNegatives(
   if (campaignIds.length === 0) {
     return new Map();
   }
-  const rows = await client.search<NegativeRow>(customerId, applyNegativesQuery(campaignIds));
+  const rows = await client.searchStructured<NegativeRow>(customerId, applyNegativesQuery(campaignIds));
   return rows.reduce((acc, r) => {
     const set = acc.get(r.campaign.id) ?? new Set<string>();
     set.add(keyStr(negKey(r.campaign_criterion.keyword.text, matchTypeName(r.campaign_criterion.keyword.match_type))));
@@ -200,7 +200,7 @@ export async function liveCampaignStatuses(
   if (campaignIds.length === 0) {
     return new Map();
   }
-  const rows = await client.search<CampaignStatusRow>(customerId, applyCampaignStatusesQuery(campaignIds));
+  const rows = await client.searchStructured<CampaignStatusRow>(customerId, applyCampaignStatusesQuery(campaignIds));
   return rows.reduce((acc, r) => acc.set(r.campaign.id, r.campaign.status), new Map<number, string>());
 }
 
@@ -213,7 +213,7 @@ export async function liveAdGroupStatuses(
   if (adGroupIds.length === 0) {
     return new Map();
   }
-  const rows = await client.search<AdGroupStatusRow>(customerId, applyAdGroupStatusesQuery(adGroupIds));
+  const rows = await client.searchStructured<AdGroupStatusRow>(customerId, applyAdGroupStatusesQuery(adGroupIds));
   return rows.reduce((acc, r) => acc.set(r.ad_group.id, r.ad_group.status), new Map<number, string>());
 }
 
@@ -234,7 +234,7 @@ export async function liveSearchPartners(
   if (campaignIds.length === 0) {
     return new Map();
   }
-  const rows = await client.search<SearchPartnersRow>(customerId, applySearchPartnersQuery(campaignIds));
+  const rows = await client.searchStructured<SearchPartnersRow>(customerId, applySearchPartnersQuery(campaignIds));
   return rows.reduce((acc, r) => {
     const ns = r.campaign.network_settings;
     if (ns?.target_search_network === undefined || ns?.target_google_search === undefined) {
@@ -254,7 +254,7 @@ export async function campaignBudgets(
   if (campaignIds.length === 0) {
     return new Map();
   }
-  const rows = await client.search<BudgetRow>(customerId, applyBudgetsQuery(campaignIds));
+  const rows = await client.searchStructured<BudgetRow>(customerId, applyBudgetsQuery(campaignIds));
   return rows.reduce(
     (acc, r) =>
       acc.set(r.campaign.id, {
@@ -278,7 +278,7 @@ export async function livePositiveKeywords(
   if (adGroupIds.length === 0) {
     return new Map();
   }
-  const rows = await client.search<PositiveKeywordRow>(customerId, applyPositiveKeywordsQuery(adGroupIds));
+  const rows = await client.searchStructured<PositiveKeywordRow>(customerId, applyPositiveKeywordsQuery(adGroupIds));
   return rows.reduce((acc, r) => {
     const inner = acc.get(r.ad_group.id) ?? new Map<string, string>();
     inner.set(
@@ -303,7 +303,7 @@ export async function liveAdGroupNames(
   if (campaignIds.length === 0) {
     return new Map();
   }
-  const rows = await client.search<AdGroupNameRow>(customerId, applyAdGroupNamesQuery(campaignIds));
+  const rows = await client.searchStructured<AdGroupNameRow>(customerId, applyAdGroupNamesQuery(campaignIds));
   return rows.reduce((acc, r) => {
     const set = acc.get(r.campaign.id) ?? new Set<string>();
     set.add(r.ad_group.name.toLowerCase());
@@ -321,7 +321,7 @@ export async function liveLanguages(
   if (campaignIds.length === 0) {
     return new Map();
   }
-  const rows = await client.search<LanguageRow>(customerId, applyLanguagesQuery(campaignIds));
+  const rows = await client.searchStructured<LanguageRow>(customerId, applyLanguagesQuery(campaignIds));
   return rows.reduce((acc, r) => {
     const inner = acc.get(r.campaign.id) ?? new Map<string, string>();
     inner.set(r.campaign_criterion.language.language_constant, r.campaign_criterion.resource_name);
@@ -339,7 +339,7 @@ export async function liveHeadlines(
   if (adIds.length === 0) {
     return new Map();
   }
-  const rows = await client.search<HeadlineRow>(customerId, applyHeadlinesQuery(adIds));
+  const rows = await client.searchStructured<HeadlineRow>(customerId, applyHeadlinesQuery(adIds));
   return rows.reduce(
     (acc, r) => acc.set(r.ad_group_ad.ad.id, r.ad_group_ad.ad.responsive_search_ad.headlines.map((h) => h.text)),
     new Map<number, string[]>(),

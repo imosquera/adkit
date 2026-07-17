@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import type { AdsClient, GaqlRow } from "../lib/auth.js";
 import { loadClient } from "../lib/auth.js";
+import type { SearchArgs } from "../gaql/search-args.js";
 import { matchTypeName } from "../ads/enums.js";
 import { normalizeId } from "../cli/args.js";
 import { sdkErrorMessage } from "../cli/output.js";
@@ -345,9 +346,9 @@ export function parseArgs(argv: string[]): ReportArgs {
   return { customer, manager, days };
 }
 
-/** Run one GAQL query and return every row (thin IO wrapper). */
-async function search<Row>(client: AdsClient, customerId: string, query: string): Promise<Row[]> {
-  return client.search<Row>(customerId, query);
+/** Run one structured read and return every row (thin IO wrapper). */
+async function search<Row>(client: AdsClient, customerId: string, args: SearchArgs): Promise<Row[]> {
+  return client.searchStructured<Row>(customerId, args);
 }
 
 /**

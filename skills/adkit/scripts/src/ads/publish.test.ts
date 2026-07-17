@@ -47,6 +47,7 @@ function makeFake(options: { throwOnCall?: number; searchRows?: unknown[] } = {}
   let n = 0;
   const client: AdsClient = {
     search: async <Row = unknown>(): Promise<Row[]> => (options.searchRows ?? []) as Row[],
+    searchStructured: async <Row = unknown>(): Promise<Row[]> => (options.searchRows ?? []) as Row[],
     mutate: async (_customerId, ops): Promise<MutateResult> => {
       n += 1;
       if (options.throwOnCall !== undefined && n === options.throwOnCall) {
@@ -124,6 +125,8 @@ describe("publishV1", () => {
         }
         return [] as Row[];
       },
+      // create/publish resolve via raw `search`; searchStructured is unused here.
+      searchStructured: async <Row = unknown>(): Promise<Row[]> => [] as Row[],
       mutate: async (_customerId, ops): Promise<MutateResult> => ({
         results: ops.map((_, i) => ({ resource_name: `rn/${i}` })),
       }),

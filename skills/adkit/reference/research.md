@@ -17,6 +17,12 @@ You run **competitive and keyword research** and hand the operator a ranked map 
 
 This skill is **read-only** — it researches and reports, it never mutates a campaign. Its natural next step is `/adkit gtm` (turn a chosen theme into keywords + ad copy) or `/adkit create`.
 
+> **Backend note:** `research` (like `keyword-ideas`) is driven by
+> `KeywordPlanIdeaService.generate_keyword_ideas`, a non-GAQL RPC the google-ads-mcp
+> server does **not** expose. It therefore stays on the `google-ads-api` SDK and is
+> unaffected by the `ADKIT_READ_BACKEND` read-backend switch — see
+> `reference/conventions.md` § "Read backend (SDK vs google-ads-mcp)".
+
 Same division of labor as the rest of adkit:
 
 - **Deterministic work is the CLI's** — fanning the Keyword Planner across every competitor domain and seed set, unioning the ideas with per-source provenance, reading Google's competition index and CPC bid range, scoring competitiveness/opportunity, rolling keywords up into themes with summed volume and a CPC band, and overlaying owned history. That is **`ads.sh research`** (`src/bin/research.ts`). It is pure and repeatable — same inputs, same numbers — so the comparison isn't hand-waved.

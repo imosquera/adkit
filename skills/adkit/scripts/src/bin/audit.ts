@@ -57,6 +57,7 @@ import {
 } from "../gaql/builders.js";
 import type { AdsClient } from "../lib/auth.js";
 import { loadClient } from "../lib/auth.js";
+import type { SearchArgs } from "../gaql/search-args.js";
 import {
   EMPTY_PROFILE,
   parseDifferentiationProfile,
@@ -424,9 +425,9 @@ interface LandingPageEntry {
 async function search<Row = Record<string, unknown>>(
   client: AdsClient,
   customerId: string,
-  query: string,
+  args: SearchArgs,
 ): Promise<Row[]> {
-  return client.search<Row>(customerId, query);
+  return client.searchStructured<Row>(customerId, args);
 }
 
 /**
