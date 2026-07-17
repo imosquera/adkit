@@ -1,7 +1,7 @@
 {
-  "branch_name": "028-simplify-consolidate-scripts",
-  "feature_num": "028",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/028-simplify-consolidate-scripts",
-  "source_issue": 28,
-  "feature_directory": "specs/028-simplify-consolidate-scripts"
+  "branch_name": "029-geo-region-report",
+  "feature_num": "029",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/029-geo-region-report",
+  "source_issue": 6,
+  "feature_directory": "specs/029-geo-region-report"
 }
