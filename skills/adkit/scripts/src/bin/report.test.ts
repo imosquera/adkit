@@ -137,6 +137,8 @@ describe("shapeRows", () => {
           metrics: metrics(),
         },
       ],
+      geo: [],
+      geoRegions: [],
     });
 
     expect(data.campaigns[0]).toMatchObject({
@@ -178,8 +180,127 @@ describe("shapeRows", () => {
       ],
       keywords: [],
       searchTerms: [],
+      geo: [],
+      geoRegions: [],
     });
     expect(data.ads[0].name).toBe("Spring Sale");
+  });
+});
+
+describe("shapeRows geo aggregation", () => {
+  const noGeo = {
+    campaigns: [],
+    campaignDaily: [],
+    adGroups: [],
+    ads: [],
+    keywords: [],
+    searchTerms: [],
+  };
+
+  it("sums additive metrics per country and recomputes rates post-aggregation", () => {
+    const data = shapeRows({
+      ...noGeo,
+      geo: [
+        {
+          campaign: { id: 11 },
+          geographic_view: { country_criterion_id: 2840 },
+          metrics: metrics({ cost_micros: 2_000_000, impressions: 100, clicks: 10, conversions: 2 }),
+        },
+        {
+          campaign: { id: 12 },
+          geographic_view: { country_criterion_id: 2840 },
+          metrics: metrics({ cost_micros: 4_000_000, impressions: 300, clicks: 30, conversions: 2 }),
+        },
+      ],
+      geoRegions: [],
+    });
+    expect(data.geo).toHaveLength(1);
+    // 2 + 4 dollars over 100 + 300 impressions, 10 + 30 clicks, 2 + 2 conversions.
+    expect(data.geo[0]).toMatchObject({
+      country_criterion_id: "2840",
+      cost: 6.0,
+      impressions: 400,
+      clicks: 40,
+      conversions: 4,
+    });
+    // ctr = 40/400, avg_cpc = 6/40, cost_per_conversion = 6/4 — recomputed, not summed.
+    expect(data.geo[0].ctr).toBeCloseTo(0.1);
+    expect(data.geo[0].avg_cpc).toBeCloseTo(0.15);
+    expect(data.geo[0].cost_per_conversion).toBeCloseTo(1.5);
+  });
+
+  it("orders countries by cost descending", () => {
+    const data = shapeRows({
+      ...noGeo,
+      geo: [
+        {
+          campaign: { id: 11 },
+          geographic_view: { country_criterion_id: 2826 },
+          metrics: metrics({ cost_micros: 1_000_000 }),
+        },
+        {
+          campaign: { id: 11 },
+          geographic_view: { country_criterion_id: 2840 },
+          metrics: metrics({ cost_micros: 9_000_000 }),
+        },
+      ],
+      geoRegions: [],
+    });
+    expect(data.geo.map((g) => g.country_criterion_id)).toEqual(["2840", "2826"]);
+  });
+
+  it("collapses a null/absent country key into one sentinel bucket (never drops the row)", () => {
+    const data = shapeRows({
+      ...noGeo,
+      geo: [
+        {
+          campaign: { id: 11 },
+          geographic_view: { country_criterion_id: null },
+          metrics: metrics({ cost_micros: 5_000_000, impressions: 10, clicks: 1 }),
+        },
+      ],
+      geoRegions: [],
+    });
+    expect(data.geo).toHaveLength(1);
+    expect(data.geo[0].country_criterion_id).toBe("(unknown)");
+    expect(data.geo[0].cost).toBe(5.0);
+  });
+
+  it("aggregates regions the same way, keyed by geo_target_region, cost-desc", () => {
+    const data = shapeRows({
+      ...noGeo,
+      geo: [],
+      geoRegions: [
+        {
+          campaign: { id: 11 },
+          segments: { geo_target_region: "geoTargetConstants/21167" },
+          metrics: metrics({ cost_micros: 1_000_000, impressions: 20, clicks: 2 }),
+        },
+        {
+          campaign: { id: 12 },
+          segments: { geo_target_region: "geoTargetConstants/21167" },
+          metrics: metrics({ cost_micros: 3_000_000, impressions: 20, clicks: 6 }),
+        },
+        {
+          campaign: { id: 11 },
+          segments: { geo_target_region: "geoTargetConstants/21137" },
+          metrics: metrics({ cost_micros: 10_000_000 }),
+        },
+      ],
+    });
+    expect(data.geo_regions.map((r) => r.region)).toEqual([
+      "geoTargetConstants/21137",
+      "geoTargetConstants/21167",
+    ]);
+    const merged = data.geo_regions.find((r) => r.region === "geoTargetConstants/21167");
+    expect(merged).toMatchObject({ cost: 4.0, impressions: 40, clicks: 8 });
+    expect(merged?.avg_cpc).toBeCloseTo(0.5); // 4 / 8
+  });
+
+  it("emits empty geo/geo_regions when there are no geographic rows", () => {
+    const data = shapeRows({ ...noGeo, geo: [], geoRegions: [] });
+    expect(data.geo).toEqual([]);
+    expect(data.geo_regions).toEqual([]);
   });
 });
 
@@ -191,6 +312,8 @@ describe("recommendations", () => {
     ads: [],
     keywords: [],
     search_terms: [],
+    geo: [],
+    geo_regions: [],
   };
 
   it("promotes a converting search term not already a keyword", () => {
@@ -248,6 +371,8 @@ describe("buildReport", () => {
     ads: [],
     keywords: [],
     search_terms: [],
+    geo: [],
+    geo_regions: [],
   };
 
   it("carries identifiers, window, and recommendations in order", () => {
@@ -308,7 +433,9 @@ describe("main (fake client, temp cwd)", () => {
    * Fake client: dispatch on the FROM clause so each query returns its rows.
    * Both `FROM campaign` queries carry `segments.date` in their WHERE clause, so
    * the daily one is told apart by its unique `ORDER BY segments.date`; its key
-   * is `campaign_daily`.
+   * is `campaign_daily`. The two `FROM geographic_view` queries share a resource,
+   * so the region one is told apart by its `segments.geo_target_region` field and
+   * keyed as `geo_regions` (the country one keeps the `geographic_view` key).
    */
   function fakeClient(rowsByResource: Record<string, unknown[]>): AdsClient {
     return {
@@ -317,6 +444,9 @@ describe("main (fake client, temp cwd)", () => {
         let resource = match ? match[1] : "";
         if (resource === "campaign" && query.includes("ORDER BY segments.date")) {
           resource = "campaign_daily";
+        }
+        if (resource === "geographic_view" && query.includes("segments.geo_target_region")) {
+          resource = "geo_regions";
         }
         return (rowsByResource[resource] ?? []) as Row[];
       },
@@ -344,6 +474,20 @@ describe("main (fake client, temp cwd)", () => {
       ad_group_ad: [],
       keyword_view: [],
       search_term_view: [],
+      geographic_view: [
+        {
+          campaign: { id: 11 },
+          geographic_view: { country_criterion_id: 2840 },
+          metrics: metrics({ cost_micros: 3_000_000, impressions: 300, clicks: 12, conversions: 4 }),
+        },
+      ],
+      geo_regions: [
+        {
+          campaign: { id: 11 },
+          segments: { geo_target_region: "geoTargetConstants/21167" },
+          metrics: metrics({ cost_micros: 3_000_000, impressions: 300, clicks: 12, conversions: 4 }),
+        },
+      ],
     });
 
     const out: string[] = [];
@@ -369,6 +513,13 @@ describe("main (fake client, temp cwd)", () => {
     expect((parsed.campaigns as unknown[])).toHaveLength(1);
     expect(parsed.recommendations).toBeDefined();
     expect((parsed.window as { days: number }).days).toBe(14);
+    // Geo breakdowns present and aggregated (one country, one region).
+    const geo = parsed.geo as Array<{ country_criterion_id: string; cost: number }>;
+    expect(geo).toHaveLength(1);
+    expect(geo[0]).toMatchObject({ country_criterion_id: "2840", cost: 3.0 });
+    const geoRegions = parsed.geo_regions as Array<{ region: string; cost: number }>;
+    expect(geoRegions).toHaveLength(1);
+    expect(geoRegions[0]).toMatchObject({ region: "geoTargetConstants/21167", cost: 3.0 });
   });
 
   it("exit 1 and writes nothing when no campaigns", async () => {

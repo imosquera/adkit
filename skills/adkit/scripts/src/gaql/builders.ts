@@ -182,6 +182,35 @@ export function searchTermQuery(start: string, end: string): SearchArgs {
   );
 }
 
+/**
+ * Geographic performance keyed by country: one `geographic_view` row per
+ * (campaign, country) over the window, tagged with Google's country geo-target
+ * constant id (`country_criterion_id`, e.g. 2840 = US). The report shell sums these
+ * across campaigns into the per-country `geo` breakdown.
+ */
+export function geoQuery(start: string, end: string): SearchArgs {
+  return reportQuery(
+    "geographic_view",
+    ["campaign.id", "geographic_view.country_criterion_id"],
+    start,
+    end,
+  );
+}
+
+/**
+ * Sub-national geographic performance keyed by region: the same `geographic_view`
+ * rows segmented by `segments.geo_target_region` (US state/metro geo-target resource
+ * names). The report shell sums these into the per-region `geo_regions` breakdown.
+ */
+export function geoRegionQuery(start: string, end: string): SearchArgs {
+  return reportQuery(
+    "geographic_view",
+    ["campaign.id", "segments.geo_target_region"],
+    start,
+    end,
+  );
+}
+
 // ===========================================================================
 // /adkit audit builders
 // ===========================================================================
