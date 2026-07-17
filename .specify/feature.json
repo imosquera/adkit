@@ -1,7 +1,7 @@
 {
-  "branch_name": "017-remove-inct-tiers",
-  "feature_num": "017",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/017-remove-inct-tiers",
-  "source_issue": 17,
-  "feature_directory": "specs/017-remove-inct-tiers"
+  "branch_name": "023-report-customer-flag",
+  "feature_num": "023",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/023-report-customer-flag",
+  "source_issue": 23,
+  "feature_directory": "specs/023-report-customer-flag"
 }

@@ -44,24 +44,118 @@ export function errorEnvelope(
   return { ok: false, message, ...fields };
 }
 
+/** Max length of the last-resort serialized error before we truncate with an ellipsis. */
+const SDK_ERROR_JSON_LIMIT = 500;
+
+/** Read a property from an errors-array element, tolerating non-object elements (null, primitives). */
+function readField(e: unknown, key: string): unknown {
+  return e !== null && typeof e === "object" ? (e as Record<string, unknown>)[key] : undefined;
+}
+
+/** Best-effort stringify of a single value that never throws and never yields "[object Object]". */
+function safeStringify(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    const s = JSON.stringify(value);
+    if (s && s !== "[object Object]") {
+      return s;
+    }
+  } catch {
+    // fall through to the typeof tag
+  }
+  return `[${typeof value}]`;
+}
+
+/** '; '-join the `.message` fields of an errors array, or "" if none are strings. */
+function joinErrorMessages(errors: unknown): string {
+  if (!Array.isArray(errors)) {
+    return "";
+  }
+  return errors
+    .map((e) => readField(e, "message"))
+    .filter((m): m is string => typeof m === "string" && m.length > 0)
+    .join("; ");
+}
+
+/** '; '-join the error-code fields of an errors array (google-ads-api uses both spellings). */
+function joinErrorCodes(errors: unknown): string {
+  if (!Array.isArray(errors)) {
+    return "";
+  }
+  return errors
+    .map((e) => readField(e, "errorCode") ?? readField(e, "error_code"))
+    .filter((c) => c !== undefined && c !== null)
+    .map((c) => safeStringify(c))
+    .join("; ");
+}
+
 /**
- * Unwrap a GoogleAdsException into a concise '; '-joined message.
+ * Last resort: a truncated JSON serialization that is *guaranteed* not to be the
+ * useless `[object Object]` string. Only reached for object inputs with no known
+ * error shape.
+ */
+function serializeUnknownError(exc: object): string {
+  let s: string;
+  try {
+    s = JSON.stringify(exc) ?? "";
+  } catch {
+    // Circular reference, BigInt field, throwing toJSON, etc.
+    s = "";
+  }
+  if (!s || s === "[object Object]") {
+    // A null-prototype object has no `constructor`, and its default toString is
+    // exactly "[object Object]" — so tag it by a constructor name when present,
+    // else a generic label that can never be the string we promise to avoid.
+    const ctor = (exc as { constructor?: { name?: string } }).constructor?.name;
+    s = ctor ? `[${ctor}]` : "[unserializable error object]";
+  }
+  return s.length > SDK_ERROR_JSON_LIMIT ? s.slice(0, SDK_ERROR_JSON_LIMIT) + "…" : s;
+}
+
+/**
+ * Unwrap an SDK error into a concise human-readable message.
  *
- * A GoogleAdsException carries the useful text under `.failure.errors[].message`;
- * anything else falls back to the error's own `message` (or its string form).
+ * A `google-ads-api` GoogleAdsException carries the useful text under
+ * `.failure.errors[].message`; other shapes expose it as top-level
+ * `errors[].message`, an `error_string`, or an `errors[].errorCode`. Anything
+ * else falls back to the error's own `message`, a primitive's string form, or a
+ * truncated JSON serialization — never the meaningless `[object Object]`.
  */
 export function sdkErrorMessage(exc: unknown): string {
   const failure = (exc as { failure?: { errors?: unknown } } | null | undefined)?.failure;
-  const errors = failure?.errors;
-  if (Array.isArray(errors)) {
-    const msgs = errors
-      .map((e) => (e as { message?: unknown }).message)
-      .filter((m): m is string => typeof m === "string")
-      .join("; ");
-    if (msgs) {
-      return msgs;
-    }
+  const topErrors = (exc as { errors?: unknown } | null | undefined)?.errors;
+
+  // 1. Message fields, from the deepest known shape outward.
+  const messages = joinErrorMessages(failure?.errors) || joinErrorMessages(topErrors);
+  if (messages) {
+    return messages;
   }
+
+  // 2. A top-level error_string (some SDK rejections carry only this).
+  const errorString = (exc as { error_string?: unknown } | null | undefined)?.error_string;
+  if (typeof errorString === "string" && errorString.length > 0) {
+    return errorString;
+  }
+
+  // 3. Error codes when there is no human message at all.
+  const codes = joinErrorCodes(failure?.errors) || joinErrorCodes(topErrors);
+  if (codes) {
+    return codes;
+  }
+
+  // 4. The error's own message (covers plain Error instances).
   const message = (exc as { message?: unknown } | null | undefined)?.message;
-  return String(typeof message === "string" ? message : exc);
+  if (typeof message === "string" && message.length > 0) {
+    return message;
+  }
+
+  // 5. Primitives and nullish coerce cleanly ("boom", "42", "null", "undefined").
+  if (exc === null || exc === undefined || typeof exc !== "object") {
+    return String(exc);
+  }
+
+  // 6. Object with no known shape: serialize instead of coercing to [object Object].
+  return serializeUnknownError(exc);
 }
