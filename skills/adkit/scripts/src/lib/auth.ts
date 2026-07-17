@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { GoogleAdsApi, type MutateOperation } from "google-ads-api";
 import { parse as parseYaml } from "yaml";
+import { type SearchArgs, toGaql } from "../gaql/search-args.js";
 
 /**
  * One atomic mutate operation. Decoupled from the SDK's heavily-generic
@@ -47,10 +48,47 @@ export interface MutateResult {
  * can supply a fake without a live account.
  */
 export interface AdsClient {
-  /** Run a GAQL query against `customerId`, returning every row. */
+  /**
+   * Run a raw GAQL query against `customerId`, returning every row. Retained for
+   * the queries that are still authored as strings (the `preflight` access probe
+   * and the inline `ads/entities.ts` resolution reads).
+   */
   search<Row = GaqlRow>(customerId: string, query: string): Promise<Row[]>;
+  /**
+   * Run a structured {@link SearchArgs} read against `customerId`, returning every
+   * row. This is the entrypoint the query builders feed and the shape the
+   * google-ads-mcp `search` tool wants; the SDK backend satisfies it by deriving
+   * GAQL via {@link toGaql} and delegating to {@link AdsClient.search}.
+   */
+  searchStructured<Row = GaqlRow>(customerId: string, args: SearchArgs): Promise<Row[]>;
   /** Apply a batch of mutate operations atomically against `customerId`. */
   mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult>;
+}
+
+/**
+ * Which backend serves structured reads. The SDK path is the default; `mcp` selects
+ * the google-ads-mcp server (whose live wiring is gated on the MCP runtime being
+ * present — see `lib/mcp-client.ts`). A closed union so an illegal value cannot flow
+ * downstream.
+ */
+export type ReadBackend = "sdk" | "mcp";
+
+/** Env var selecting the read backend (parsed once via {@link parseReadBackend}). */
+export const READ_BACKEND_ENV = "ADKIT_READ_BACKEND";
+
+/**
+ * Parse a raw backend string (typically `process.env[READ_BACKEND_ENV]`) into a
+ * {@link ReadBackend}, defaulting to `"sdk"` for anything absent or unrecognized —
+ * the conservative, reversible default. Parse-don't-validate boundary: the raw env
+ * string is narrowed to the closed union here, once, and never re-checked downstream.
+ */
+export function parseReadBackend(raw: string | undefined): ReadBackend {
+  return raw?.trim().toLowerCase() === "mcp" ? "mcp" : "sdk";
+}
+
+/** The selected read backend, read once from the environment. */
+export function readBackend(): ReadBackend {
+  return parseReadBackend(process.env[READ_BACKEND_ENV]);
 }
 
 export const DEFAULT_CREDENTIALS_PATH = join(homedir(), ".config", "google-ads", "google-ads.yaml");
@@ -140,6 +178,9 @@ export function loadClient(
   return {
     async search<Row = GaqlRow>(customerId: string, query: string): Promise<Row[]> {
       return (await customerFor(customerId).query(query)) as Row[];
+    },
+    async searchStructured<Row = GaqlRow>(customerId: string, args: SearchArgs): Promise<Row[]> {
+      return (await customerFor(customerId).query(toGaql(args))) as Row[];
     },
     async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
       const response = await customerFor(customerId).mutateResources(

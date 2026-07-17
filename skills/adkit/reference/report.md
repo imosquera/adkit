@@ -1,6 +1,6 @@
 ---
 description: "Download last N days of ENABLED-campaign Google Ads metrics (down to keyword/search-term), then write a markdown analysis + a Chart.js HTML dashboard to ads/output/reports/."
-argument-hint: "[<customer>] [--manager <id>] [--days 14]  (defaults: 891-192-5499 via 419-315-8021, 14 days)"
+argument-hint: "--customer <id> [--manager <id>] [--days 14]  (a bare positional <customer> also works; defaults: 891-192-5499 via 419-315-8021, 14 days)"
 user-invocable: true
 disable-model-invocation: false
 ---

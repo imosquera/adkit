@@ -56,8 +56,13 @@ export {
   DEFAULT_CREDENTIALS_PATH,
   KEEP_YAML_LOGIN,
   loadClient,
+  parseReadBackend,
+  READ_BACKEND_ENV,
+  readBackend,
 } from "./lib/auth.js";
-export type { AdsClient, AdsMutateOperation, GaqlRow, GaqlValue, MutateResult } from "./lib/auth.js";
+export type { AdsClient, AdsMutateOperation, GaqlRow, GaqlValue, MutateResult, ReadBackend } from "./lib/auth.js";
+export { createMcpReadClient, loadReadClient, McpNotConfiguredError, toMcpSearchParams } from "./lib/mcp-client.js";
+export type { McpAdsClient, McpSearchParams } from "./lib/mcp-client.js";
 
 // --- Publish path ---
 export { makeExecResults, makeRunOutcome, publishV1 } from "./ads/publish.js";
@@ -97,6 +102,8 @@ export type { Negative, Proposal, SplitRecommendation } from "./lib/cluster.js";
 // --- Report metrics + GAQL builders (pure) ---
 export { metricDict, microsToCurrency, remediationHint, safeRatio } from "./lib/report.js";
 export * from "./gaql/builders.js";
+export { toGaql } from "./gaql/search-args.js";
+export type { SearchArgs } from "./gaql/search-args.js";
 export { gaqlId, gaqlString } from "./gaql/escape.js";
 
 // --- Keyword merge + display formatting (pure) ---

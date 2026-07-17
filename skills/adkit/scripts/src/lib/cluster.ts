@@ -16,6 +16,8 @@
  * fetch the rows and render the results.
  */
 
+import { comparisonKey } from "./merge.js";
+
 /** A loosely-typed performance row, as fetched from the SDK layer. */
 export type Row = Record<string, unknown>;
 
@@ -75,11 +77,6 @@ function roundHalfEven(x: number, digits: number): number {
   return rounded / factor;
 }
 
-/** Case/space-fold a term so duplicates across ad groups collapse to one. */
-function norm(text: string): string {
-  return text.toLowerCase().split(/\s+/).filter((w) => w.length > 0).join(" ");
-}
-
 interface Agg {
   text: string;
   clicks: number;
@@ -92,7 +89,7 @@ interface Agg {
  * summed into its (normalized) term, first-seen original-case text preserved. */
 function foldTerm(agg: Record<string, Agg>, row: Row): Record<string, Agg> {
   const raw = String(row.search_term ?? "").trim();
-  const key = norm(raw);
+  const key = comparisonKey(raw);
   if (!key) {
     return agg;
   }
@@ -134,7 +131,7 @@ export function keywordsToPromote(
 ): Proposal[] {
   const { minClicks = 3, minConversions = 1.0, limit = 25 } = options;
   const existing = new Set(
-    [...existingKeywords].map((k) => norm(String(k.text ?? ""))),
+    [...existingKeywords].map((k) => comparisonKey(String(k.text ?? ""))),
   );
   const kept = Object.entries(aggregate(searchTerms))
     .filter(

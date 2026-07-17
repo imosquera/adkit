@@ -1,7 +1,7 @@
 {
-  "branch_name": "017-remove-inct-tiers",
-  "feature_num": "017",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/017-remove-inct-tiers",
-  "source_issue": 17,
-  "feature_directory": "specs/017-remove-inct-tiers"
+  "branch_name": "028-simplify-consolidate-scripts",
+  "feature_num": "028",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/028-simplify-consolidate-scripts",
+  "source_issue": 28,
+  "feature_directory": "specs/028-simplify-consolidate-scripts"
 }

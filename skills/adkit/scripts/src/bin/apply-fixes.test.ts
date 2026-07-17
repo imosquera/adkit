@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
+import type { SearchArgs } from "../gaql/search-args.js";
 
 // The shell resolves its client via loadClient; the test swaps in a fake (mirrors the
 // Python monkeypatch of `af.load_client`). `currentClient` is what loadClient returns.
@@ -74,6 +75,9 @@ function statusClient(live: Record<number, string>): {
   const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
   const client: AdsClient = {
     async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
+      return rows as Row[];
+    },
+    async searchStructured<Row = unknown>(_customerId: string, _args: SearchArgs): Promise<Row[]> {
       return rows as Row[];
     },
     async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
@@ -146,6 +150,9 @@ function searchPartnersClient(
   const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
   const client: AdsClient = {
     async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
+      return rows as Row[];
+    },
+    async searchStructured<Row = unknown>(_customerId: string, _args: SearchArgs): Promise<Row[]> {
       return rows as Row[];
     },
     async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
@@ -380,6 +387,9 @@ function rowsClient(rows: unknown[]): AdsClient {
     async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
       return rows as Row[];
     },
+    async searchStructured<Row = unknown>(_customerId: string, _args: SearchArgs): Promise<Row[]> {
+      return rows as Row[];
+    },
     async mutate(_customerId: string, _operations: AdsMutateOperation[]): Promise<MutateResult> {
       return { results: [] };
     },
@@ -461,6 +471,9 @@ function adGroupNamesClient(liveNames: Record<number, string[]>): {
   const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
   const client: AdsClient = {
     async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
+      return rows as Row[];
+    },
+    async searchStructured<Row = unknown>(_customerId: string, _args: SearchArgs): Promise<Row[]> {
       return rows as Row[];
     },
     async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
@@ -582,6 +595,9 @@ function languagesClient(live: Record<number, string[]>): {
   const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
   const client: AdsClient = {
     async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
+      return rows as Row[];
+    },
+    async searchStructured<Row = unknown>(_customerId: string, _args: SearchArgs): Promise<Row[]> {
       return rows as Row[];
     },
     async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {

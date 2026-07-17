@@ -8,7 +8,9 @@
  * pure row->report shaping is factored into exported helpers (see buildReport /
  * shapeRows / recommendations) so it can be unit-tested with canned rows.
  *
- * Usage: adkit-report [<customer>] [--manager <id>] [--days 14]
+ * Usage: adkit-report --customer <id> [--manager <id>] [--days 14]
+ *        (a bare positional <customer> is still accepted for back-compat; the
+ *         --customer flag wins when both are given)
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -16,10 +18,12 @@ import { isMainModule } from "../cli/entry.js";
 import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import type { AdsClient, GaqlRow } from "../lib/auth.js";
-import { loadClient } from "../lib/auth.js";
+import { loadReadClient } from "../lib/mcp-client.js";
+import type { SearchArgs } from "../gaql/search-args.js";
 import { matchTypeName } from "../ads/enums.js";
 import { normalizeId } from "../cli/args.js";
 import { sdkErrorMessage } from "../cli/output.js";
+import { isManagerMetricsError, managerMetricsHint } from "./audit.js";
 import {
   clusterSplitRecommendation,
   keywordsToPromote,
@@ -35,11 +39,9 @@ import {
   campaignTotalsQuery,
   dateWindow,
   keywordQuery,
-  metricDict,
-  type MetricDict,
-  remediationHint,
   searchTermQuery,
-} from "../lib/report.js";
+} from "../gaql/builders.js";
+import { metricDict, type MetricDict, remediationHint } from "../lib/report.js";
 
 /** The account/manager we report on by default (overridable via args). */
 export const DEFAULT_CUSTOMER = "8911925499"; // 891-192-5499
@@ -325,6 +327,7 @@ export function parseArgs(argv: string[]): ReportArgs {
   let manager = DEFAULT_MANAGER;
   let days = DEFAULT_DAYS;
   let sawPositional = false;
+  let customerFromFlag = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--manager") {
@@ -333,11 +336,21 @@ export function parseArgs(argv: string[]): ReportArgs {
     } else if (arg === "--days") {
       days = Number.parseInt(argv[i + 1] ?? "", 10);
       i += 1;
+    } else if (arg === "--customer") {
+      // Mirror --manager/--days: consume the next token; a valueless trailing
+      // flag keeps the default rather than swallowing an unrelated token.
+      customer = argv[i + 1] ?? customer;
+      customerFromFlag = true;
+      i += 1;
     } else if (arg.startsWith("--manager=")) {
       manager = arg.slice("--manager=".length);
     } else if (arg.startsWith("--days=")) {
       days = Number.parseInt(arg.slice("--days=".length), 10);
-    } else if (!sawPositional) {
+    } else if (arg.startsWith("--customer=")) {
+      customer = arg.slice("--customer=".length);
+      customerFromFlag = true;
+    } else if (!sawPositional && !customerFromFlag) {
+      // Back-compat positional customer, but the explicit --customer flag wins.
       customer = arg;
       sawPositional = true;
     }
@@ -345,9 +358,9 @@ export function parseArgs(argv: string[]): ReportArgs {
   return { customer, manager, days };
 }
 
-/** Run one GAQL query and return every row (thin IO wrapper). */
-async function search<Row>(client: AdsClient, customerId: string, query: string): Promise<Row[]> {
-  return client.search<Row>(customerId, query);
+/** Run one structured read and return every row (thin IO wrapper). */
+async function search<Row>(client: AdsClient, customerId: string, args: SearchArgs): Promise<Row[]> {
+  return client.searchStructured<Row>(customerId, args);
 }
 
 /**
@@ -383,11 +396,11 @@ export function reportPath(cwd: string, generatedAt: string, customer: string): 
  * ads/output/reports/, and prints the path. Returns a process exit code.
  *
  * `clientFactory` is injectable so tests can supply a fake AdsClient; production
- * calls default to {@link loadClient}.
+ * calls default to {@link loadReadClient} (SDK by default; MCP when ADKIT_READ_BACKEND=mcp).
  */
 export async function main(
   argv: string[],
-  clientFactory: (manager: string) => AdsClient = loadClient,
+  clientFactory: (manager: string) => AdsClient = loadReadClient,
 ): Promise<number> {
   const args = parseArgs(argv);
   const customer = normalizeId(args.customer);
@@ -414,8 +427,12 @@ export async function main(
   try {
     data = await pull(client, customer, start, end, dailyEnd);
   } catch (exc) {
-    const msgs = sdkErrorMessage(exc);
-    const hint = remediationHint(msgs, customer, manager);
+    // A report necessarily queries metrics, so it can hit the same "metrics on a
+    // manager account" rejection (query_error 59) that audit detects. Reuse
+    // audit's detection + guidance instead of duplicating it.
+    const isManagerMetrics = isManagerMetricsError(exc);
+    const msgs = isManagerMetrics ? managerMetricsHint() : sdkErrorMessage(exc);
+    const hint = isManagerMetrics ? "" : remediationHint(msgs, customer, manager);
     process.stderr.write(
       `error: Google Ads query failed for customer ${customer} via manager ${manager}: ` +
         `${msgs}${hint ? ". " + hint : ""}\n`,

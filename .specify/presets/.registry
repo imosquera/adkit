@@ -17,7 +17,7 @@
         "speckit-clarify",
         "speckit-checklist"
       ],
-      "installed_at": "2026-07-15T14:00:57.398812+00:00"
+      "installed_at": "2026-07-17T14:46:49.671593+00:00"
     },
     "constitution-audit": {
       "version": "1.0.0",
@@ -35,7 +35,7 @@
         "speckit-plan",
         "speckit-implement"
       ],
-      "installed_at": "2026-07-15T14:00:57.839587+00:00"
+      "installed_at": "2026-07-17T14:46:50.120276+00:00"
     },
     "explicit-task-dependencies": {
       "version": "1.1.0",
@@ -53,7 +53,7 @@
         "speckit-tasks",
         "speckit-implement"
       ],
-      "installed_at": "2026-07-15T14:00:58.318771+00:00"
+      "installed_at": "2026-07-17T14:46:50.614409+00:00"
     },
     "functional-constitution": {
       "version": "1.0.0",
@@ -69,7 +69,7 @@
       "registered_skills": [
         "speckit-constitution"
       ],
-      "installed_at": "2026-07-15T14:00:58.725778+00:00"
+      "installed_at": "2026-07-17T14:46:51.032566+00:00"
     },
     "graphify-on-implement": {
       "version": "1.0.0",
@@ -85,7 +85,7 @@
       "registered_skills": [
         "speckit-implement"
       ],
-      "installed_at": "2026-07-15T14:00:59.122546+00:00"
+      "installed_at": "2026-07-17T14:46:51.433573+00:00"
     },
     "implement-prelude-skills": {
       "version": "1.0.0",
@@ -101,7 +101,7 @@
       "registered_skills": [
         "speckit-implement"
       ],
-      "installed_at": "2026-07-15T14:00:59.509137+00:00"
+      "installed_at": "2026-07-17T14:46:51.831552+00:00"
     },
     "parse-dont-validate": {
       "version": "1.0.0",
@@ -121,7 +121,7 @@
         "speckit-plan",
         "speckit-implement"
       ],
-      "installed_at": "2026-07-15T14:00:59.936557+00:00"
+      "installed_at": "2026-07-17T14:46:52.302332+00:00"
     },
     "portfolio-audit": {
       "version": "1.0.0",
@@ -137,7 +137,7 @@
       "registered_skills": [
         "speckit-analyze"
       ],
-      "installed_at": "2026-07-15T14:01:00.401362+00:00"
+      "installed_at": "2026-07-17T14:46:52.778867+00:00"
     },
     "progress-report": {
       "version": "1.0.0",
@@ -161,7 +161,7 @@
         "speckit-implement",
         "speckit-review-run"
       ],
-      "installed_at": "2026-07-15T14:01:00.918813+00:00"
+      "installed_at": "2026-07-17T14:46:53.311354+00:00"
     },
     "spec-minimal": {
       "version": "1.0.0",
@@ -179,7 +179,7 @@
         "speckit-specify",
         "speckit-plan"
       ],
-      "installed_at": "2026-07-15T14:01:01.498615+00:00"
+      "installed_at": "2026-07-17T14:46:53.897457+00:00"
     },
     "worktree-isolation": {
       "version": "1.2.0",
@@ -195,7 +195,7 @@
       "registered_skills": [
         "speckit-implement"
       ],
-      "installed_at": "2026-07-15T14:01:01.946686+00:00"
+      "installed_at": "2026-07-17T14:46:54.372779+00:00"
     }
   }
 }
