@@ -25,6 +25,8 @@ function makeFake(): { client: AdsClient; calls: Array<{ customerId: string; ops
   const calls: Array<{ customerId: string; ops: AdsMutateOperation[] }> = [];
   const client: AdsClient = {
     search: async () => [],
+    // entities.ts resolves via raw `search`; searchStructured is unused here.
+    searchStructured: async () => [],
     mutate: async (customerId, ops): Promise<MutateResult> => {
       calls.push({ customerId, ops });
       return { results: ops.map((_, i) => ({ resource_name: `rn/${i}` })) };

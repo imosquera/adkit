@@ -12,6 +12,7 @@ import {
   safeRatio,
   searchTermQuery,
 } from "./report.js";
+import { toGaql } from "../gaql/search-args.js";
 
 describe("dateWindow", () => {
   it("excludes partial today", () => {
@@ -35,34 +36,38 @@ describe("report queries", () => {
       searchTermQuery,
     ];
     for (const build of builders) {
-      const q = build("2026-06-08", "2026-06-21");
+      const q = toGaql(build("2026-06-08", "2026-06-21"));
       expect(q).toContain("campaign.status = 'ENABLED'");
       expect(q).toContain("segments.date BETWEEN '2026-06-08' AND '2026-06-21'");
     }
   });
 
   it("use correct FROM resources", () => {
-    expect(campaignTotalsQuery("a", "b")).toContain("FROM campaign ");
-    expect(adGroupQuery("a", "b")).toContain("FROM ad_group ");
-    expect(adQuery("a", "b")).toContain("FROM ad_group_ad ");
-    expect(keywordQuery("a", "b")).toContain("FROM keyword_view");
-    expect(searchTermQuery("a", "b")).toContain("FROM search_term_view");
+    expect(toGaql(campaignTotalsQuery("a", "b"))).toContain("FROM campaign ");
+    expect(toGaql(adGroupQuery("a", "b"))).toContain("FROM ad_group ");
+    expect(toGaql(adQuery("a", "b"))).toContain("FROM ad_group_ad ");
+    expect(toGaql(keywordQuery("a", "b"))).toContain("FROM keyword_view");
+    expect(toGaql(searchTermQuery("a", "b"))).toContain("FROM search_term_view");
+    // The builders also expose the decomposed resource directly.
+    expect(campaignTotalsQuery("a", "b").resource).toBe("campaign");
+    expect(searchTermQuery("a", "b").resource).toBe("search_term_view");
   });
 
   it("ad query selects ad_strength", () => {
-    expect(adQuery("2026-06-08", "2026-06-21")).toContain("ad_group_ad.ad_strength");
+    expect(adQuery("2026-06-08", "2026-06-21").fields).toContain("ad_group_ad.ad_strength");
   });
 
   it("campaign daily is date-segmented and ordered", () => {
     const q = campaignDailyQuery("a", "b");
-    expect(q).toContain("segments.date");
-    expect(q).toContain("ORDER BY segments.date");
+    expect(q.fields).toContain("segments.date");
+    expect(q.orderings).toEqual(["segments.date"]);
+    expect(toGaql(q)).toContain("ORDER BY segments.date");
   });
 
   it("campaign daily carries full metric schema", () => {
     const q = campaignDailyQuery("a", "b");
     for (const field of ["metrics.ctr", "metrics.average_cpc", "metrics.cost_per_conversion"]) {
-      expect(q).toContain(field);
+      expect(q.fields).toContain(field);
     }
   });
 });
