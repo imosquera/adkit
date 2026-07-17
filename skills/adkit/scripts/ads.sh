@@ -2,7 +2,7 @@
 # Thin launcher: ensures node deps exist, then runs one of the src/bin/* entry
 # points directly from TypeScript via tsx (no build step, no dist/).
 # Usage: ads.sh <subcommand> [args...]
-#   subcommands: preflight | create | keyword-ideas | report | audit | update | render-yaml | bootstrap-secrets
+#   subcommands: preflight | create | keyword-ideas | research | report | audit | update | render-yaml | bootstrap-secrets
 #   (apply-fixes is a deprecated alias for update)
 set -euo pipefail
 
@@ -13,14 +13,14 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd -P )"
 
 if [ "$#" -lt 1 ]; then
-  echo "usage: ads.sh <preflight|create|keyword-ideas|report|audit|update|render-yaml|bootstrap-secrets> [args...]" >&2
+  echo "usage: ads.sh <preflight|create|keyword-ideas|research|report|audit|update|render-yaml|bootstrap-secrets> [args...]" >&2
   exit 1
 fi
 
 cmd="$1"; shift
 case "$cmd" in
   update|apply-fixes) mod="apply-fixes" ;;  # apply-fixes is a deprecated alias for update
-  preflight|create|keyword-ideas|report|audit|render-yaml|bootstrap-secrets) mod="$cmd" ;;
+  preflight|create|keyword-ideas|research|report|audit|render-yaml|bootstrap-secrets) mod="$cmd" ;;
   *) echo "unknown subcommand: $cmd" >&2; exit 1 ;;
 esac
 
