@@ -69,354 +69,49 @@ import {
   negativesToAdd,
 } from "../lib/cluster.js";
 import { microsToCurrency } from "../lib/report.js";
-
-// ---------------------------------------------------------------------------
-// Row interfaces — the narrow shapes of the google-ads-api query results this
-// module reads. Enum fields arrive as their STRING name already (no `.name`).
-// ---------------------------------------------------------------------------
-
-interface TextAsset {
-  text: string;
-  /** ServedAssetFieldType enum name, or "UNSPECIFIED"/undefined when unpinned. */
-  pinned_field?: string;
-}
-
-interface CampaignRow {
-  campaign: { id: number; name: string; status: string };
-}
-
-interface KeywordRow {
-  campaign: { id: number };
-  ad_group: { name: string };
-  ad_group_criterion: { keyword: { text: string } };
-}
-
-interface AdGroupAdRow {
-  ad_group: { name: string };
-  ad_group_ad: {
-    ad: {
-      id: number;
-      final_urls?: string[];
-      responsive_search_ad: { headlines: TextAsset[]; descriptions: TextAsset[] };
-    };
-    ad_strength: string;
-    status: string;
-    action_items?: string[];
-  };
-}
-
-interface ServingRow {
-  campaign: { id: number; name: string; bidding_strategy_type: string };
-  campaign_budget: { amount_micros: number };
-  metrics: {
-    impressions: number;
-    conversions: number;
-    search_impression_share: number;
-    search_budget_lost_impression_share: number;
-    search_rank_lost_impression_share: number;
-  };
-}
-
-interface KeywordMetricsRow {
-  campaign: { id: number };
-  ad_group_criterion: { keyword: { text: string } };
-  metrics: { average_cpc: number };
-}
-
-interface SearchTermRow {
-  campaign: { id: number };
-  search_term_view: { search_term: string };
-  metrics: { clicks: number; conversions: number; cost_micros: number; impressions: number };
-}
-
-interface QualityScoreRow {
-  campaign: { id: number };
-  ad_group_criterion: {
-    keyword: { text: string };
-    quality_info: {
-      quality_score: number;
-      post_click_quality_score: string;
-      creative_quality_score: string;
-      search_predicted_ctr: string;
-    };
-  };
-}
-
-interface LandingPageMobileRow {
-  campaign: { id: number };
-  landing_page_view: { unexpanded_final_url: string };
-  metrics: {
-    mobile_friendly_clicks_percentage: number | null;
-    valid_accelerated_mobile_pages_clicks_percentage: number | null;
-    speed_score: number;
-    clicks: number;
-    impressions: number;
-    ctr: number;
-  };
-}
-
-interface PolicyTopicRow {
-  ad_group_ad: {
-    ad: { final_urls?: string[] };
-    policy_summary: { policy_topic_entries: Array<{ topic: string }> };
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Raw row shapes + boundary normalizers (parse, don't validate).
-//
-// The `*Row` types above are the PROOFS downstream scoring relies on — every
-// nested message and metric present. But the google-ads-api `search` returns the
-// wire shape, where the API OMITS empty nested messages and zero-valued metric
-// fields entirely: a keyword with no spend has no `metrics`, a criterion with no
-// Quality Score yet has no `quality_info`, a non-RSA ad has no `responsive_search_ad`.
-// The `Raw*Row` types below are that honest, loose shape; each `normalize*` parses
-// one raw row into its strong `*Row` — zero-filling metrics, defaulting empty
-// messages — exactly once, at the fetch boundary. Downstream code then never
-// re-checks presence. Add a field to a `Raw*Row` and the compiler forces the
-// matching `normalize*` to account for it.
-// ---------------------------------------------------------------------------
-
-/** Coalesce an omitted (zero-valued) numeric metric field back to 0. */
-const num = (x: number | null | undefined): number => x ?? 0;
-
-interface RawAdGroupAdRow {
-  ad_group: { name: string };
-  ad_group_ad: {
-    ad: {
-      id: number;
-      final_urls?: string[];
-      responsive_search_ad?: { headlines?: TextAsset[]; descriptions?: TextAsset[] };
-    };
-    ad_strength: string;
-    status: string;
-    action_items?: string[];
-  };
-}
-
-function normalizeAdGroupAdRow(r: RawAdGroupAdRow): AdGroupAdRow {
-  const rsa = r.ad_group_ad.ad.responsive_search_ad;
-  return {
-    ...r,
-    ad_group_ad: {
-      ...r.ad_group_ad,
-      ad: {
-        ...r.ad_group_ad.ad,
-        responsive_search_ad: {
-          headlines: rsa?.headlines ?? [],
-          descriptions: rsa?.descriptions ?? [],
-        },
-      },
-    },
-  };
-}
-
-interface RawServingRow {
-  campaign: { id: number; name: string; bidding_strategy_type: string };
-  campaign_budget?: { amount_micros?: number };
-  metrics?: Partial<ServingRow["metrics"]>;
-}
-
-function normalizeServingRow(r: RawServingRow): ServingRow {
-  return {
-    campaign: r.campaign,
-    campaign_budget: { amount_micros: num(r.campaign_budget?.amount_micros) },
-    metrics: {
-      impressions: num(r.metrics?.impressions),
-      conversions: num(r.metrics?.conversions),
-      search_impression_share: num(r.metrics?.search_impression_share),
-      search_budget_lost_impression_share: num(r.metrics?.search_budget_lost_impression_share),
-      search_rank_lost_impression_share: num(r.metrics?.search_rank_lost_impression_share),
-    },
-  };
-}
-
-interface RawKeywordMetricsRow {
-  campaign: { id: number };
-  ad_group_criterion: { keyword: { text: string } };
-  metrics?: { average_cpc?: number };
-}
-
-function normalizeKeywordMetricsRow(r: RawKeywordMetricsRow): KeywordMetricsRow {
-  return { ...r, metrics: { average_cpc: num(r.metrics?.average_cpc) } };
-}
-
-interface RawSearchTermRow {
-  campaign: { id: number };
-  search_term_view: { search_term: string };
-  metrics?: Partial<SearchTermRow["metrics"]>;
-}
-
-function normalizeSearchTermRow(r: RawSearchTermRow): SearchTermRow {
-  return {
-    ...r,
-    metrics: {
-      clicks: num(r.metrics?.clicks),
-      conversions: num(r.metrics?.conversions),
-      cost_micros: num(r.metrics?.cost_micros),
-      impressions: num(r.metrics?.impressions),
-    },
-  };
-}
-
-interface RawQualityScoreRow {
-  campaign: { id: number };
-  ad_group_criterion: {
-    keyword: { text: string };
-    quality_info?: Partial<QualityScoreRow["ad_group_criterion"]["quality_info"]>;
-  };
-}
-
-function normalizeQualityScoreRow(r: RawQualityScoreRow): QualityScoreRow {
-  const qi = r.ad_group_criterion.quality_info;
-  return {
-    ...r,
-    ad_group_criterion: {
-      ...r.ad_group_criterion,
-      quality_info: {
-        quality_score: num(qi?.quality_score),
-        post_click_quality_score: qi?.post_click_quality_score ?? "",
-        creative_quality_score: qi?.creative_quality_score ?? "",
-        search_predicted_ctr: qi?.search_predicted_ctr ?? "",
-      },
-    },
-  };
-}
-
-interface RawLandingPageMobileRow {
-  campaign: { id: number };
-  landing_page_view: { unexpanded_final_url: string };
-  metrics?: Partial<LandingPageMobileRow["metrics"]>;
-}
-
-function normalizeLandingPageMobileRow(r: RawLandingPageMobileRow): LandingPageMobileRow {
-  const m = r.metrics;
-  return {
-    ...r,
-    metrics: {
-      // The percentage fields are meaningfully null ("no data"); mobileFindings
-      // already skips null, so preserve it rather than zero-filling.
-      mobile_friendly_clicks_percentage: m?.mobile_friendly_clicks_percentage ?? null,
-      valid_accelerated_mobile_pages_clicks_percentage:
-        m?.valid_accelerated_mobile_pages_clicks_percentage ?? null,
-      speed_score: num(m?.speed_score),
-      clicks: num(m?.clicks),
-      impressions: num(m?.impressions),
-      ctr: num(m?.ctr),
-    },
-  };
-}
-
-interface RawPolicyTopicRow {
-  ad_group_ad: {
-    ad: { final_urls?: string[] };
-    policy_summary?: { policy_topic_entries?: Array<{ topic: string }> };
-  };
-}
-
-function normalizePolicyTopicRow(r: RawPolicyTopicRow): PolicyTopicRow {
-  return {
-    ...r,
-    ad_group_ad: {
-      ...r.ad_group_ad,
-      policy_summary: {
-        policy_topic_entries: r.ad_group_ad.policy_summary?.policy_topic_entries ?? [],
-      },
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Output-shape types (the scored dicts the Python builds).
-// ---------------------------------------------------------------------------
-
-type AdIssue = Record<string, unknown>;
-
-interface ScoredAd {
-  adId: number;
-  adGroup: string;
-  strength: string;
-  status: string;
-  headlines: string[];
-  descriptions: string[];
-  finalUrl: string | null;
-  actionItems: string[];
-  issues: AdIssue[];
-  keywords: string[];
-  pathToExcellent: string[];
-}
-
-interface CampaignFinding {
-  level: string;
-  issue: string;
-  detail: string;
-  need?: number;
-  items?: Record<string, string[]>;
-}
-
-interface CampaignReport {
-  campaignId: number;
-  campaignName: string;
-  status: string;
-  keywords: number;
-  sitelinks: number;
-  callouts: number;
-  campaignFindings: CampaignFinding[];
-  ads: ScoredAd[];
-}
-
-interface ScoredServing {
-  campaignId: number;
-  campaignName: string;
-  bidStrategy: string;
-  budgetMicros: number;
-  impressions: number;
-  conversions: number;
-  searchImpressionShare: number;
-  lostISBudget: number;
-  lostISRank: number;
-  flags: string[];
-  impressionShareRecs: string[];
-}
-
-interface KeywordCpc {
-  text: string;
-  avg_cpc: number;
-  avg_cpc_micros: number;
-  // These rows feed the generic (Record-consuming) cluster helpers.
-  [key: string]: unknown;
-}
-
-interface ClusterSplit {
-  campaignId: number;
-  campaignName: string;
-  [key: string]: unknown;
-}
-
-interface SearchTermAgg {
-  search_term: string;
-  clicks: number;
-  conversions: number;
-  cost: number;
-  impressions: number;
-  // These rows feed the generic (Record-consuming) cluster helpers.
-  [key: string]: unknown;
-}
-
-interface QualityScoreEntry {
-  keyword: string;
-  qualityScore: number;
-  landingPageExp: string;
-  adRelevance: string;
-  expectedCtr: string;
-}
-
-interface LandingPageEntry {
-  url: string | null;
-  issue: string;
-  detail: string;
-  [key: string]: unknown;
-}
+import {
+  normalizeAdGroupAdRow,
+  normalizeKeywordMetricsRow,
+  normalizeLandingPageMobileRow,
+  normalizePolicyTopicRow,
+  normalizeQualityScoreRow,
+  normalizeSearchTermRow,
+  normalizeServingRow,
+  type AdGroupAdRow,
+  type CampaignRow,
+  type KeywordRow,
+  type LandingPageMobileRow,
+  type RawAdGroupAdRow,
+  type RawKeywordMetricsRow,
+  type RawLandingPageMobileRow,
+  type RawPolicyTopicRow,
+  type RawQualityScoreRow,
+  type RawSearchTermRow,
+  type RawServingRow,
+  type ServingRow,
+} from "../audit/rows.js";
+import type {
+  AdIssue,
+  CampaignFinding,
+  CampaignReport,
+  ClusterSplit,
+  KeywordCpc,
+  LandingPageEntry,
+  QualityScoreEntry,
+  ScoredAd,
+  ScoredServing,
+  SearchTermAgg,
+} from "../audit/types.js";
+import {
+  emitLines,
+  pct,
+  renderCreativeSummary,
+  renderImpressionShare,
+  renderKeywordCpc,
+  renderLandingPageHealth,
+  renderQualityScoreSection,
+  renderSearchTermCandidates,
+} from "../audit/render.js";
 
 // ---------------------------------------------------------------------------
 // Small functional primitives.
@@ -696,11 +391,6 @@ export async function auditCampaign(
 // axis from ad strength: an EXCELLENT ad can still hold tiny IS). Reports lost IS to
 // budget vs Ad Rank, the cold-start throttle, and self-competition between campaigns.
 // ---------------------------------------------------------------------------
-
-/** Format a fraction as a whole-percent string, matching Python `f"{x*100:.0f}%"`. */
-function pct(x: number): string {
-  return `${Math.round(x * 100)}%`;
-}
 
 /** Pure: one serving-query row -> its scored campaign dict (flags/recs). */
 function scoreServing(r: ServingRow): ScoredServing {
@@ -1075,197 +765,6 @@ function mergeLists<V>(
 ): Record<number, V[]> {
   const keys = [...new Set([...Object.keys(a), ...Object.keys(b)].map(Number))];
   return Object.fromEntries(keys.map((k) => [k, [...(a[k] ?? []), ...(b[k] ?? [])]]));
-}
-
-// ---------------------------------------------------------------------------
-// stderr rendering — every render* function is a pure data -> string[] transform;
-// main() is the only place that actually prints (via emitLines).
-// ---------------------------------------------------------------------------
-
-function emitLines(lines: string[]): void {
-  for (const line of lines) {
-    process.stderr.write(line + "\n");
-  }
-}
-
-/** Left-pad/truncate-free right-fill, matching Python `f"{s:<width}"`. */
-function ljust(s: string, width: number): string {
-  return s.length >= width ? s : s + " ".repeat(width - s.length);
-}
-
-/** Right-justify, matching Python `f"{s:>width}"`. */
-function rjust(s: string, width: number): string {
-  return s.length >= width ? s : " ".repeat(width - s.length) + s;
-}
-
-function renderCreativeSummary(report: CampaignReport[]): string[] {
-  function campaignLines(c: CampaignReport): [string[], number] {
-    const badAds = c.ads.filter((a) => a.issues.length > 0);
-    const header = [
-      `\n${c.campaignName} (${c.campaignId}) [${c.status}] ` +
-        `keywords=${c.keywords} sitelinks=${c.sitelinks} callouts=${c.callouts}`,
-    ];
-    const findingLines = c.campaignFindings.map((f) => `  ! ${f.issue}: ${f.detail}`);
-    const adLines = c.ads.flatMap((a) => [
-      `    [${ljust(a.strength, 9)}] ${ljust(a.adGroup, 34)} ${a.headlines.length}H/${a.descriptions.length}D  ` +
-        `${a.issues.map((i) => i.issue).join(", ") || "ok"}`,
-      ...(a.strength !== "EXCELLENT"
-        ? a.pathToExcellent.map((step) => `        -> ${step}`)
-        : []),
-    ]);
-    return [
-      [...header, ...findingLines, ...adLines],
-      c.campaignFindings.length + badAds.length,
-    ];
-  }
-
-  const perCampaign = report.map(campaignLines);
-  const lines = perCampaign.flatMap(([cl]) => cl);
-  const total = perCampaign.reduce((sum, [, count]) => sum + count, 0);
-  return [...lines, `\n${total} creative findings across ${report.length} campaigns`];
-}
-
-function renderImpressionShare(
-  serving: ScoredServing[],
-  cannib: CannibalizationPair[],
-  days: number,
-): string[] {
-  function row(c: ScoredServing): string[] {
-    const tag = c.flags.join(", ") || "serving";
-    const isPct = c.impressions ? pct(c.searchImpressionShare) : "  -";
-    const lb = pct(c.lostISBudget);
-    const lr = pct(c.lostISRank);
-    return [
-      `    ${ljust(c.campaignName, 34)} impr=${rjust(String(c.impressions), 6)} IS=${rjust(isPct, 4)} ` +
-        `lostBudget=${rjust(lb, 4)} lostRank=${rjust(lr, 4)} conv=${c.conversions.toFixed(0)} [${tag}]`,
-      ...c.impressionShareRecs.map((rec) => `        -> ${rec}`),
-    ];
-  }
-
-  return [
-    `\n=== IMPRESSION SHARE (last ${days} days) ===`,
-    ...serving.flatMap(row),
-    ...cannib.map(
-      (p) =>
-        `  ~ cannibalization: ${p.a} <> ${p.b} share ${JSON.stringify(p.shared)} (starved: ${p.starvedLikely})`,
-    ),
-  ];
-}
-
-function renderKeywordCpc(
-  serving: ScoredServing[],
-  keywordCpcMap: Record<number, KeywordCpc[]>,
-  splits: ClusterSplit[],
-  days: number,
-): string[] {
-  function row(c: ScoredServing): string[] {
-    const kws = keywordCpcMap[c.campaignId] ?? [];
-    if (kws.length === 0) {
-      return [];
-    }
-    const top = kws
-      .slice(0, 3)
-      .map((k) => `${k.text} $${k.avg_cpc.toFixed(2)}`)
-      .join(", ");
-    return [`    ${ljust(c.campaignName, 34)} top CPC: ${top}`];
-  }
-
-  return [
-    `\n=== KEYWORD CPC (last ${days} days) ===`,
-    ...serving.flatMap(row),
-    ...splits.map((s) => `  ! cluster split: ${s.campaignName} — ${s.reason as string}`),
-  ];
-}
-
-function renderSearchTermCandidates(
-  addNegatives: Record<number, ReturnType<typeof negativesToAdd>>,
-  promoteKeywords: Record<number, ReturnType<typeof keywordsToPromote>>,
-  names: Record<number, string>,
-  days: number,
-): string[] {
-  function negativesRow(cid: number, negs: ReturnType<typeof negativesToAdd>): string {
-    const top = negs
-      .slice(0, 5)
-      .map((n) => `${n.text} ($${n.cost.toFixed(2)})`)
-      .join(", ");
-    const wasted = negs.reduce((sum, n) => sum + n.cost, 0);
-    return `    ${ljust(names[cid] ?? String(cid), 34)} $${wasted.toFixed(2)} wasted / ${negs.length} terms: ${top}`;
-  }
-
-  function promoteRow(cid: number, proms: ReturnType<typeof keywordsToPromote>): string {
-    const top = proms
-      .slice(0, 5)
-      .map((p) => `${p.text} (${p.conversions.toFixed(0)} conv)`)
-      .join(", ");
-    return `    ${ljust(names[cid] ?? String(cid), 34)} ${proms.length} terms: ${top}`;
-  }
-
-  const negativesSection =
-    Object.keys(addNegatives).length > 0
-      ? [
-          `\n=== SEARCH-TERM WASTE → NEGATIVE CANDIDATES (last ${days} days) ===`,
-          ...Object.entries(addNegatives).map(([cid, negs]) => negativesRow(Number(cid), negs)),
-        ]
-      : [];
-  const promoteSection =
-    Object.keys(promoteKeywords).length > 0
-      ? [
-          `\n=== CONVERTING SEARCH TERMS → PROMOTE CANDIDATES (last ${days} days) ===`,
-          ...Object.entries(promoteKeywords).map(([cid, proms]) => promoteRow(Number(cid), proms)),
-        ]
-      : [];
-  return [...negativesSection, ...promoteSection];
-}
-
-function renderQualityScoreSection(
-  title: string,
-  component: "landingPageExp" | "adRelevance" | "expectedCtr",
-  qualityScoreMap: Record<number, QualityScoreEntry[]>,
-  campNames: Record<number, string>,
-): string[] {
-  const bad: Record<number, QualityScoreEntry[]> = Object.fromEntries(
-    Object.entries(qualityScoreMap)
-      .map(([cid, kws]): [number, QualityScoreEntry[]] => [
-        Number(cid),
-        kws.filter((k) => k[component] === "BELOW_AVERAGE"),
-      ])
-      .filter(([, kws]) => kws.length > 0),
-  );
-  if (Object.keys(bad).length === 0) {
-    return [];
-  }
-
-  function row(cid: number, kws: QualityScoreEntry[]): string {
-    const top = kws
-      .slice(0, 5)
-      .map((k) => `${k.keyword} (QS ${k.qualityScore})`)
-      .join(", ");
-    return `    ${ljust(campNames[cid] ?? String(cid), 34)} ${kws.length} keywords: ${top}`;
-  }
-
-  return [
-    `\n=== ${title} ===`,
-    ...Object.entries(bad).map(([cid, kws]) => row(Number(cid), kws)),
-  ];
-}
-
-function renderLandingPageHealth(
-  landingPageHealth: Record<number, LandingPageEntry[]>,
-  campNames: Record<number, string>,
-): string[] {
-  if (Object.keys(landingPageHealth).length === 0) {
-    return [];
-  }
-  return [
-    `\n=== LANDING PAGE HEALTH ===`,
-    ...Object.entries(landingPageHealth).flatMap(([cidStr, items]) => {
-      const cid = Number(cidStr);
-      return [
-        `    ${ljust(campNames[cid] ?? String(cid), 34)} ${items.length} issue(s):`,
-        ...items.map((it) => `        -> [${it.issue}] ${it.url}: ${it.detail}`),
-      ];
-    }),
-  ];
 }
 
 // ---------------------------------------------------------------------------
