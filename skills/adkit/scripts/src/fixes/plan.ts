@@ -287,6 +287,42 @@ export function adStatusPlan(
   return statusPlan(blocks, liveStatuses, "adId");
 }
 
+/** Live ad -> parent ad-group map: {adId -> adGroupId}. */
+type LiveAdParentMap = Map<number, number> | Record<number, number>;
+
+function hasAdParent(map: LiveAdParentMap, id: number | null): boolean {
+  if (id === null) {
+    return false;
+  }
+  return map instanceof Map ? map.has(id) : Object.prototype.hasOwnProperty.call(map, id);
+}
+
+/**
+ * Reject an adStatus block whose ad has no live parent ad group — the ad is stale,
+ * removed, or not visible to this customer. An ad_group_ad status update needs the
+ * real parent id to build the resource name; without it apply would emit
+ * `adGroupAds/undefined~<adId>` and fail server-side AFTER a dry-run reported "ok".
+ * Only run when the live parent map is provided (the apply path fetches it for
+ * exactly the plan's adStatus ids); a non-numeric adId is left to the schema check.
+ */
+function adStatusParentErrors(
+  blocks: Array<Record<string, unknown>>,
+  liveParents: LiveAdParentMap | null | undefined,
+): string[] {
+  if (liveParents === null || liveParents === undefined) {
+    return [];
+  }
+  return blocks.flatMap((b) => {
+    const id = asInt(b.adId);
+    if (id === null) {
+      return [];
+    }
+    return hasAdParent(liveParents, id)
+      ? []
+      : [`adStatus ad ${pyStr(b.adId)}: ad not found on this account (no live ad group) — cannot change status`];
+  });
+}
+
 /** A searchPartners-change plan entry carrying the target and current (live) boolean. */
 export interface SearchPartnersPlanEntry {
   campaignId: unknown;
@@ -372,6 +408,16 @@ function rewritesErrors(rewrites: Array<Record<string, unknown>>): string[] {
     // A rewrite must do something: replace copy, repoint the URL, or both.
     if (!hasH && !hasD && !hasUrl) {
       return [`ad ${adId}: rewrite has no headlines, descriptions, or finalUrl`];
+    }
+    // A copy rewrite is a FULL replace: both headlines AND descriptions, or neither
+    // (a URL-only repoint). Half a rewrite passes null for the missing side in apply,
+    // updating only one asset array and leaving the other's old copy live while the
+    // dry-run reports "valid".
+    if (hasH !== hasD) {
+      return [
+        `ad ${adId}: copy rewrite must replace both headlines and descriptions ` +
+          `(or neither, for a URL-only repoint)`,
+      ];
     }
     // finalUrl-only repoint is valid (copy left untouched); the 15/4 rules apply
     // only to the asset arrays that are actually present.
@@ -753,6 +799,7 @@ export function validate(
   budgets: ValidateLiveState["budgets"],
   livePositive: LiveKeywordMap | null | undefined = undefined,
   liveSearchPartnersGoogleSearch: LiveBoolMap | null | undefined = undefined,
+  liveAdParents: LiveAdParentMap | null | undefined = undefined,
 ): string[] {
   const arr = (key: string): Array<Record<string, unknown>> =>
     Array.isArray(plan[key]) ? (plan[key] as Array<Record<string, unknown>>) : [];
@@ -767,6 +814,7 @@ export function validate(
     ...statusChangeErrors(arr("campaignStatus"), CampaignStatusChangeSchema, "campaignStatus", "campaign", "campaignId"),
     ...statusChangeErrors(arr("adGroupStatus"), AdGroupStatusChangeSchema, "adGroupStatus", "adGroup", "adGroupId"),
     ...statusChangeErrors(arr("adStatus"), AdStatusChangeSchema, "adStatus", "ad", "adId"),
+    ...adStatusParentErrors(arr("adStatus"), liveAdParents),
     ...searchPartnersErrors(arr("searchPartners")),
     ...searchPartnersPreconditionErrors(arr("searchPartners"), liveSearchPartnersGoogleSearch ?? new Map()),
     ...adGroupsErrors(arr("adGroups")),

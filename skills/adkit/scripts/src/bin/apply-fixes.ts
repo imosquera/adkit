@@ -521,7 +521,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const liveSpEnabled = new Map([...liveSp].map(([id, v]) => [id, v.enabled]));
   const liveSpGoogleSearch = new Map([...liveSp].map(([id, v]) => [id, v.googleSearchEnabled]));
 
-  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch);
+  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch, liveAdSt.adGroup);
   if (errs.length > 0) {
     console.log("VALIDATION FAILED:");
     for (const e of errs) {

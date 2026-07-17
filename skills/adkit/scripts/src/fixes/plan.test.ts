@@ -70,6 +70,17 @@ describe("rewrites", () => {
     const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), finalUrl: "https://x.io/p" }] };
     expect(validate(plan, {}, {})).toEqual([]);
   });
+
+  it("headlines-only rewrite flagged (must carry both copy arrays)", () => {
+    const errs = validate({ rewrites: [{ adId: 1, headlines: h(15) }] }, {}, {});
+    expect(errs.some((e) => e.includes("must replace both headlines and descriptions"))).toBe(true);
+  });
+
+  it("descriptions-only rewrite flagged even with a finalUrl", () => {
+    const plan = { rewrites: [{ adId: 1, descriptions: d(4), finalUrl: "https://x.io/p" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("must replace both headlines and descriptions"))).toBe(true);
+  });
 });
 
 // ---------- appendHeadlines ----------
@@ -458,6 +469,19 @@ describe("adStatus", () => {
     const errs = validate(plan, {}, {});
     expect(errs.some((e) => e.includes("nope"))).toBe(true);
     expect(errs.some((e) => e.includes("status"))).toBe(true);
+  });
+
+  it("rejects an ad with no live parent ad group (stale/removed id)", () => {
+    const plan = { adStatus: [{ adId: "999", status: "ENABLED" }] };
+    // live parent map provided but empty -> ad 999 has no parent
+    const errs = validate(plan, {}, {}, undefined, undefined, {});
+    expect(errs.some((e) => e.includes("999") && e.includes("no live ad group"))).toBe(true);
+  });
+
+  it("passes when the ad's live parent ad group is known", () => {
+    const plan = { adStatus: [{ adId: "999", status: "ENABLED" }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, { 999: 42 });
+    expect(errs).toEqual([]);
   });
 });
 
