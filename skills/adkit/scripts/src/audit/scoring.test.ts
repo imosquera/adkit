@@ -304,6 +304,20 @@ describe("keywordAlignment", () => {
     ).toBeNull(); // slug carries "chatbot"; scheme-less URL still parses
   });
 
+  it("aligns on the landing page via substring (plural slug covers singular theme)", () => {
+    // "chatbots" in the slug must cover the "chatbot" theme, same as it would in a headline
+    expect(
+      keywordAlignment("Ai Chatbot", ["ai chatbot"], alignedHs, alignedDs, "https://acme.com/ai-chatbots-tool"),
+    ).toBeNull();
+  });
+
+  it("does not flag headlines when an under-filled ad group carries the theme in all it has", () => {
+    // only 2 headlines, both on-theme: target is capped at 2, so headlines align (the
+    // count shortfall is `headlines_under`'s job, not a message-match miss)
+    const f = keywordAlignment("Ai Chatbot", ["ai chatbot"], ["ai chatbot", "best chatbot"], alignedDs, alignedUrl);
+    expect(f).toBeNull();
+  });
+
   it("reports every misaligned level at once", () => {
     const f = keywordAlignment("Generic Bundle", ["ai chatbot"], ["a", "b", "c"], ["d"], "https://acme.com/pricing");
     expect(f).not.toBeNull();

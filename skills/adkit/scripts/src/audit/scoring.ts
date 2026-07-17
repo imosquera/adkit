@@ -37,17 +37,21 @@ export const IS_OPPORTUNITY = 0.65;
 /** losing >10% IS to a cause => flag that cause */
 export const LOST_HI = 0.1;
 
+/** Lowercased >2-char word tokens of a blob (commas treated as spaces). Order-preserving. */
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/,/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+}
+
 /**
  * Words a winning headline should contain. Prefer the ad group's actual keywords;
  * fall back to the ad group's own name when there are none.
  */
 export function conceptWords(agName: string, keywords: readonly string[]): string[] {
-  const src = keywords.length > 0 ? keywords.join(" ") : agName;
-  return src
-    .toLowerCase()
-    .replace(/,/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2);
+  return tokenize(keywords.length > 0 ? keywords.join(" ") : agName);
 }
 
 /**
@@ -186,16 +190,7 @@ export function keywordAlignment(
   descriptions: readonly string[],
   finalUrl: string | null,
 ): AlignmentGap | null {
-  const themeWords = [
-    ...new Set(
-      keywords
-        .join(" ")
-        .toLowerCase()
-        .replace(/,/g, " ")
-        .split(/\s+/)
-        .filter((w) => w.length > 2),
-    ),
-  ];
+  const themeWords = [...new Set(tokenize(keywords.join(" ")))];
   if (themeWords.length === 0) {
     return null;
   }
@@ -206,15 +201,19 @@ export function keywordAlignment(
   const headlinesWithKeyword = headlines.filter(containsTheme).length;
   const descriptionsWithKeyword = descriptions.filter(containsTheme).length;
   // Landing-page verbiage proxy: the final URL's words (domain labels + path slug), the
-  // only landing-page text the Ads API returns. Absent URL => no evidence => not judged.
+  // only landing-page text the Ads API returns. Substring-matched (join then containsTheme)
+  // so it agrees with the copy levels — "chatbots" in a slug still covers theme "chatbot".
+  // Absent URL => no evidence => not judged.
   const landingWords = urlWords(finalUrl);
-  const landingPageAligned =
-    landingWords === null ? null : themeWords.some((w) => landingWords.includes(w));
+  const landingPageAligned = landingWords === null ? null : containsTheme(landingWords.join(" "));
 
+  // An under-filled ad group can't carry the theme in 3 headlines it doesn't have — cap
+  // the target at the headlines present so this doesn't just restate `headlines_under`.
+  const headlineTarget = Math.min(headlines.length, MIN_KEYWORD_HEADLINES);
   const misaligned: string[] = [
     ...(!nameAligned ? ["ad group name"] : []),
-    ...(headlinesWithKeyword < MIN_KEYWORD_HEADLINES ? ["headlines"] : []),
-    ...(descriptionsWithKeyword < 1 ? ["descriptions"] : []),
+    ...(headlinesWithKeyword < headlineTarget ? ["headlines"] : []),
+    ...(descriptions.length > 0 && descriptionsWithKeyword < 1 ? ["descriptions"] : []),
     ...(landingPageAligned === false ? ["landing page"] : []),
   ];
   if (misaligned.length === 0) {
