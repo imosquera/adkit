@@ -260,12 +260,15 @@ function urlWords(finalUrl: string | null): string[] | null {
     return null;
   }
   const hostLabels = parsed.hostname.split(".").slice(0, -1); // drop the TLD
-  // Drop scheme/file noise AND the second-level labels of common multi-part public
-  // suffixes (com.br, co.uk, com.au, …) so a suffix component like "com" isn't mistaken
-  // for keyword theme copy. Not a full Public Suffix List — a pragmatic label set.
+  // Drop scheme/file noise AND the second-level labels of multi-part public suffixes
+  // (com.br, co.uk, com.au, gob.mx, web.za, govt.nz, …) so a suffix component like "com"
+  // isn't mistaken for keyword theme copy. Deliberately NOT the full Public Suffix List —
+  // that's a heavy dependency for a slug-proxy heuristic; this covers the common labels
+  // (the ≤2-char ones like co/ac/or/ne are already dropped by the >2-char filter below).
   const structural = new Set([
     "www", "http", "https", "html", "htm", "php", "aspx",
     "com", "net", "org", "gov", "edu", "mil", "int", "biz", "info",
+    "gob", "web", "govt", "gouv", "ltd", "plc", "asn", "nom", "sch",
   ]);
   const words = [...hostLabels, ...parsed.pathname.split(/[^a-z0-9]+/i)]
     .map((w) => w.toLowerCase())
