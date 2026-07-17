@@ -46,6 +46,11 @@ function tokenize(text: string): string[] {
     .filter((w) => w.length > 2);
 }
 
+/** Escape a string for literal use inside a RegExp. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Words a winning headline should contain. Prefer the ad group's actual keywords;
  * fall back to the ad group's own name when there are none.
@@ -194,16 +199,19 @@ export function keywordAlignment(
   if (themeWords.length === 0) {
     return null;
   }
-  const containsTheme = (text: string): boolean =>
-    themeWords.some((w) => text.toLowerCase().includes(w));
+  // Left word-boundary match: a theme word must BEGIN a word, so "app" doesn't count
+  // "happy" as aligned — but any suffix is allowed, so inflections still match ("chatbot"
+  // covers "chatbots"). A trailing boundary would break that inflection handling.
+  const themeRes = themeWords.map((w) => new RegExp(`\\b${escapeRegExp(w)}`, "i"));
+  const containsTheme = (text: string): boolean => themeRes.some((re) => re.test(text));
 
   const nameAligned = containsTheme(agName);
   const headlinesWithKeyword = headlines.filter(containsTheme).length;
   const descriptionsWithKeyword = descriptions.filter(containsTheme).length;
   // Landing-page verbiage proxy: the final URL's words (domain labels + path slug), the
-  // only landing-page text the Ads API returns. Substring-matched (join then containsTheme)
-  // so it agrees with the copy levels — "chatbots" in a slug still covers theme "chatbot".
-  // Absent URL => no evidence => not judged.
+  // only landing-page text the Ads API returns. Word-boundary matched (join then
+  // containsTheme) so it agrees with the copy levels — "chatbots" in a slug still covers
+  // theme "chatbot". Absent URL => no evidence => not judged.
   const landingWords = urlWords(finalUrl);
   const landingPageAligned = landingWords === null ? null : containsTheme(landingWords.join(" "));
 
@@ -236,8 +244,9 @@ export function keywordAlignment(
 
 /**
  * Lowercased >2-char word tokens of a URL — domain labels + path slug, minus the TLD and
- * common structural noise (www, http, html). Returns null for an absent/blank/unparseable
- * URL so the caller can treat "no landing-page evidence" as not-judged rather than a miss.
+ * common structural noise (www, http, html) and public-suffix labels. Returns null for an
+ * absent/blank/unparseable URL so the caller can treat "no landing-page evidence" as
+ * not-judged rather than a miss.
  */
 function urlWords(finalUrl: string | null): string[] | null {
   if (finalUrl === null || finalUrl.trim() === "") {
@@ -251,7 +260,13 @@ function urlWords(finalUrl: string | null): string[] | null {
     return null;
   }
   const hostLabels = parsed.hostname.split(".").slice(0, -1); // drop the TLD
-  const structural = new Set(["www", "http", "https", "html", "htm", "php", "aspx"]);
+  // Drop scheme/file noise AND the second-level labels of common multi-part public
+  // suffixes (com.br, co.uk, com.au, …) so a suffix component like "com" isn't mistaken
+  // for keyword theme copy. Not a full Public Suffix List — a pragmatic label set.
+  const structural = new Set([
+    "www", "http", "https", "html", "htm", "php", "aspx",
+    "com", "net", "org", "gov", "edu", "mil", "int", "biz", "info",
+  ]);
   const words = [...hostLabels, ...parsed.pathname.split(/[^a-z0-9]+/i)]
     .map((w) => w.toLowerCase())
     .filter((w) => w.length > 2 && !structural.has(w));

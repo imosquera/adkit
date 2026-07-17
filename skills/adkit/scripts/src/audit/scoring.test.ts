@@ -318,6 +318,45 @@ describe("keywordAlignment", () => {
     expect(f).toBeNull();
   });
 
+  it("matches on word boundaries, not mid-word substrings (app != happy)", () => {
+    // "app" appears only inside "happy"/"apply" — no level actually mentions the keyword,
+    // so all four must be flagged rather than silently passing on the substring.
+    const f = keywordAlignment(
+      "Happy Customers",
+      ["app"],
+      ["be happy", "stay happy", "get happy"],
+      ["your happiness matters"],
+      "https://acme.com/happiness",
+    );
+    expect(f).not.toBeNull();
+    expect(f!.misaligned).toEqual(["ad group name", "headlines", "descriptions", "landing page"]);
+  });
+
+  it("still matches inflections at a word boundary (chatbot -> chatbots)", () => {
+    const f = keywordAlignment(
+      "Chatbots",
+      ["chatbot"],
+      ["our chatbots", "best chatbots", "fast chatbots"],
+      ["the chatbots your team loves"],
+      "https://acme.com/chatbots",
+    );
+    expect(f).toBeNull();
+  });
+
+  it("does not treat a multi-label public suffix as landing-page copy (com.br)", () => {
+    // keyword theme "com" (Portuguese "with") must NOT be satisfied by the ".com.br" suffix
+    const f = keywordAlignment(
+      "Com Desconto",
+      ["com desconto"],
+      ["desconto agora", "melhor desconto", "desconto real"],
+      ["compre com desconto hoje"],
+      "https://loja.com.br/promocoes", // slug has no "desconto" and "com" is suffix noise
+    );
+    expect(f).not.toBeNull();
+    expect(f!.misaligned).toEqual(["landing page"]);
+    expect(f!.landingPageAligned).toBe(false);
+  });
+
   it("reports every misaligned level at once", () => {
     const f = keywordAlignment("Generic Bundle", ["ai chatbot"], ["a", "b", "c"], ["d"], "https://acme.com/pricing");
     expect(f).not.toBeNull();
