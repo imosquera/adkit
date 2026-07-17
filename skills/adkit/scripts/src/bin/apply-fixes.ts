@@ -72,6 +72,7 @@ import {
   ENGLISH_LANGUAGE_CONSTANT,
 } from "../ads/entities.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
+import { pyRepr, pyStr } from "../cli/py-format.js";
 import {
   addAdGroupsPlan,
   adGroupStatusPlan,
@@ -528,51 +529,51 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   };
 
   const actions: string[] = [
-    ...section(plan, "rewrites").map((r) => `rewrite ad ${strOf(r.adId)} -> 15H/4D`),
+    ...section(plan, "rewrites").map((r) => `rewrite ad ${pyStr(r.adId)} -> 15H/4D`),
     ...section(plan, "appendHeadlines").map((a) => {
       const cur = live.get(asId(a.adId)) ?? [];
       const add = Array.isArray(a.add) ? (a.add as string[]) : [];
-      return `append ${add.filter((h) => !cur.includes(h)).length} headlines to ad ${strOf(a.adId)}`;
+      return `append ${add.filter((h) => !cur.includes(h)).length} headlines to ad ${pyStr(a.adId)}`;
     }),
-    ...section(plan, "sitelinks").map((s) => `+${lenOf(s.add)} sitelinks on campaign ${strOf(s.campaignId)}`),
-    ...section(plan, "callouts").map((c) => `+${lenOf(c.add)} callouts on campaign ${strOf(c.campaignId)}`),
+    ...section(plan, "sitelinks").map((s) => `+${lenOf(s.add)} sitelinks on campaign ${pyStr(s.campaignId)}`),
+    ...section(plan, "callouts").map((c) => `+${lenOf(c.add)} callouts on campaign ${pyStr(c.campaignId)}`),
     ...section(plan, "negatives").map((n) => {
       const fresh = newNegatives(n, liveNeg).length;
       return (
-        `+${fresh} negative keywords on campaign ${strOf(n.campaignId)}` +
+        `+${fresh} negative keywords on campaign ${pyStr(n.campaignId)}` +
         ` (${lenOf(n.add) - fresh} already present)`
       );
     }),
     ...section(plan, "keywords").map((k) => {
       const fresh = newPositiveKeywords(k, livePos).length;
       return (
-        `keywords adGroup ${strOf(k.adGroupId)}: +${fresh} add` +
+        `keywords adGroup ${pyStr(k.adGroupId)}: +${fresh} add` +
         ` (${lenOf(k.add) - fresh} already present),` +
         ` -${lenOf(k.remove)} remove, ~${lenOf(k.pause)} pause`
       );
     }),
     ...section(plan, "budgets").map((b) => {
       const cur = budgets.get(asId(b.campaignId))!.amountMicros;
-      return `budget campaign ${strOf(b.campaignId)}: ${dollars(cur)} -> ${dollars(b.dailyMicros as number)}/day`;
+      return `budget campaign ${pyStr(b.campaignId)}: ${dollars(cur)} -> ${dollars(b.dailyMicros as number)}/day`;
     }),
-    ...statusChanges.map((c) => `campaign ${strOf(c.campaignId)}: status ${strOf(c.current)} -> ${strOf(c.status)}`),
-    ...statusSkips.map((c) => `campaign ${strOf(c.campaignId)}: status already ${strOf(c.status)}, skipped`),
-    ...agStatusChanges.map((g) => `adGroup ${strOf(g.adGroupId)}: status ${strOf(g.current)} -> ${strOf(g.status)}`),
-    ...agStatusSkips.map((g) => `adGroup ${strOf(g.adGroupId)}: status already ${strOf(g.status)}, skipped`),
+    ...statusChanges.map((c) => `campaign ${pyStr(c.campaignId)}: status ${pyStr(c.current)} -> ${pyStr(c.status)}`),
+    ...statusSkips.map((c) => `campaign ${pyStr(c.campaignId)}: status already ${pyStr(c.status)}, skipped`),
+    ...agStatusChanges.map((g) => `adGroup ${pyStr(g.adGroupId)}: status ${pyStr(g.current)} -> ${pyStr(g.status)}`),
+    ...agStatusSkips.map((g) => `adGroup ${pyStr(g.adGroupId)}: status already ${pyStr(g.status)}, skipped`),
     ...spChanges.map(
-      (c) => `campaign ${strOf(c.campaignId)}: search partners ${strOf(c.current)} -> ${strOf(c.enabled)}`,
+      (c) => `campaign ${pyStr(c.campaignId)}: search partners ${pyStr(c.current)} -> ${pyStr(c.enabled)}`,
     ),
-    ...spSkips.map((c) => `campaign ${strOf(c.campaignId)}: search partners already ${strOf(c.enabled)}, skipped`),
+    ...spSkips.map((c) => `campaign ${pyStr(c.campaignId)}: search partners already ${pyStr(c.enabled)}, skipped`),
     ...agCreates.map(
       (g) =>
-        `+ ad group ${pyRepr(g.name)} -> campaign ${strOf(g.campaignId)} ` +
+        `+ ad group ${pyRepr(g.name)} -> campaign ${pyStr(g.campaignId)} ` +
         `(RSA 15H/4D + ${g.adGroup.keywords.length} keywords, ad PAUSED)`,
     ),
-    ...agCreateSkips.map((g) => `ad group ${pyRepr(g.name)} already in campaign ${strOf(g.campaignId)}, skipped`),
+    ...agCreateSkips.map((g) => `ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`),
     ...languageActions.map((l) =>
       l.addEnglish || l.remove.length > 0
-        ? `languages campaign ${strOf(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`
-        : `languages campaign ${strOf(l.campaignId)}: already English only, skipped`,
+        ? `languages campaign ${pyStr(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`
+        : `languages campaign ${pyStr(l.campaignId)}: already English only, skipped`,
     ),
   ];
   console.log("validation ok. planned actions:");
@@ -648,13 +649,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         entity: "campaign_asset",
         operation: "create",
         resource: {
-          campaign: `customers/${customer}/campaigns/${strOf(sl.campaignId)}`,
+          campaign: `customers/${customer}/campaigns/${pyStr(sl.campaignId)}`,
           asset: arn,
           field_type: enums.AssetFieldType.SITELINK,
         },
       };
       await client.mutate(customer, [linkOp]);
-      console.log(`  sitelink ${pyRepr(s.text)} -> campaign ${strOf(sl.campaignId)}`);
+      console.log(`  sitelink ${pyRepr(s.text)} -> campaign ${pyStr(sl.campaignId)}`);
     }
   }
 
@@ -672,13 +673,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         entity: "campaign_asset",
         operation: "create",
         resource: {
-          campaign: `customers/${customer}/campaigns/${strOf(co.campaignId)}`,
+          campaign: `customers/${customer}/campaigns/${pyStr(co.campaignId)}`,
           asset: arn,
           field_type: enums.AssetFieldType.CALLOUT,
         },
       };
       await client.mutate(customer, [linkOp]);
-      console.log(`  callout ${pyRepr(text)} -> campaign ${strOf(co.campaignId)}`);
+      console.log(`  callout ${pyRepr(text)} -> campaign ${pyStr(co.campaignId)}`);
     }
   }
 
@@ -687,13 +688,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     const cid = ng.campaignId;
     const kws = newNegatives(ng, liveNeg);
     if (kws.length === 0) {
-      console.log(`  negatives campaign ${strOf(cid)}: all ${lenOf(ng.add)} already present, skipped`);
+      console.log(`  negatives campaign ${pyStr(cid)}: all ${lenOf(ng.add)} already present, skipped`);
       continue;
     }
-    const ops = buildNegativeKeywordOps(`customers/${customer}/campaigns/${strOf(cid)}`, kws);
+    const ops = buildNegativeKeywordOps(`customers/${customer}/campaigns/${pyStr(cid)}`, kws);
     await client.mutate(customer, ops);
     console.log(
-      `  +${kws.length} negative keywords -> campaign ${strOf(cid)}: ` +
+      `  +${kws.length} negative keywords -> campaign ${pyStr(cid)}: ` +
         kws.map((k) => `${k.text}[${k.matchType[0]}]`).join(", "),
     );
   }
@@ -709,14 +710,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     };
     const removeRns = (Array.isArray(kb.remove) ? kb.remove : []).map(rn);
     const pauseRns = (Array.isArray(kb.pause) ? kb.pause : []).map(rn);
-    const ops = buildKeywordOps(`customers/${customer}/adGroups/${strOf(agid)}`, adds, removeRns, pauseRns);
+    const ops = buildKeywordOps(`customers/${customer}/adGroups/${pyStr(agid)}`, adds, removeRns, pauseRns);
     if (ops.length === 0) {
-      console.log(`  keywords adGroup ${strOf(agid)}: nothing to do (all adds already present)`);
+      console.log(`  keywords adGroup ${pyStr(agid)}: nothing to do (all adds already present)`);
       continue;
     }
     await client.mutate(customer, ops);
     console.log(
-      `  keywords adGroup ${strOf(agid)}: +${adds.length} add, -${removeRns.length} remove, ~${pauseRns.length} pause`,
+      `  keywords adGroup ${pyStr(agid)}: +${adds.length} add, -${removeRns.length} remove, ~${pauseRns.length} pause`,
     );
   }
 
@@ -732,49 +733,49 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       },
     };
     await client.mutate(customer, [op]);
-    console.log(`  budget campaign ${strOf(cid)} -> ${dollars(b.dailyMicros as number)}/day`);
+    console.log(`  budget campaign ${pyStr(cid)} -> ${dollars(b.dailyMicros as number)}/day`);
   }
 
   // 6) campaign on/off. No-op flips were already filtered into statusSkips and never
   // reach the mutate (idempotent). PAUSE is always safe; ENABLE was surfaced loudly.
   for (const c of statusChanges) {
     await setCampaignStatus(client, customer, String(c.campaignId), c.status as "ENABLED" | "PAUSED");
-    console.log(`  campaign ${strOf(c.campaignId)}: status ${strOf(c.current)} -> ${strOf(c.status)}`);
+    console.log(`  campaign ${pyStr(c.campaignId)}: status ${pyStr(c.current)} -> ${pyStr(c.status)}`);
   }
   for (const c of statusSkips) {
-    console.log(`  campaign ${strOf(c.campaignId)}: status already ${strOf(c.status)}, skipped`);
+    console.log(`  campaign ${pyStr(c.campaignId)}: status already ${pyStr(c.status)}, skipped`);
   }
 
   // 7) ad group on/off. Same idempotent + loud-ENABLE contract, one level down.
   for (const g of agStatusChanges) {
     await setAdGroupStatus(client, customer, String(g.adGroupId), g.status as "ENABLED" | "PAUSED");
-    console.log(`  adGroup ${strOf(g.adGroupId)}: status ${strOf(g.current)} -> ${strOf(g.status)}`);
+    console.log(`  adGroup ${pyStr(g.adGroupId)}: status ${pyStr(g.current)} -> ${pyStr(g.status)}`);
   }
   for (const g of agStatusSkips) {
-    console.log(`  adGroup ${strOf(g.adGroupId)}: status already ${strOf(g.status)}, skipped`);
+    console.log(`  adGroup ${pyStr(g.adGroupId)}: status already ${pyStr(g.status)}, skipped`);
   }
 
   // 8) search partners on/off. No-op flips were already filtered into spSkips and
   // never reach the mutate (idempotent). OFF is always safe; ON was surfaced loudly.
   for (const c of spChanges) {
     await setSearchPartners(client, customer, String(c.campaignId), c.enabled as boolean);
-    console.log(`  campaign ${strOf(c.campaignId)}: search partners ${strOf(c.current)} -> ${strOf(c.enabled)}`);
+    console.log(`  campaign ${pyStr(c.campaignId)}: search partners ${pyStr(c.current)} -> ${pyStr(c.enabled)}`);
   }
   for (const c of spSkips) {
-    console.log(`  campaign ${strOf(c.campaignId)}: search partners already ${strOf(c.enabled)}, skipped`);
+    console.log(`  campaign ${pyStr(c.campaignId)}: search partners already ${pyStr(c.enabled)}, skipped`);
   }
 
   // 8c) language targeting: make each listed campaign English-only. Idempotent — an
   // already-English campaign yields no ops and is reported skipped.
   for (const l of languageActions) {
-    const ops = buildLanguageOps(`customers/${customer}/campaigns/${strOf(l.campaignId)}`, l.addEnglish, l.remove);
+    const ops = buildLanguageOps(`customers/${customer}/campaigns/${pyStr(l.campaignId)}`, l.addEnglish, l.remove);
     if (ops.length === 0) {
-      console.log(`  languages campaign ${strOf(l.campaignId)}: already English only, skipped`);
+      console.log(`  languages campaign ${pyStr(l.campaignId)}: already English only, skipped`);
       continue;
     }
     await client.mutate(customer, ops);
     console.log(
-      `  languages campaign ${strOf(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`,
+      `  languages campaign ${pyStr(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`,
     );
   }
 
@@ -784,17 +785,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // (PAUSED) -> keywords (ENABLED). The PAUSED ad means the group cannot serve until
   // its ad is enabled, so adding a group to a live campaign starts no spend on its own.
   for (const g of agCreates) {
-    const campaignRn = `customers/${customer}/campaigns/${strOf(g.campaignId)}`;
+    const campaignRn = `customers/${customer}/campaigns/${pyStr(g.campaignId)}`;
     const agRn = await createAdGroup(client, customer, g.adGroup, campaignRn);
     await createResponsiveSearchAd(client, customer, g.adGroup, agRn);
     const kwRns = await createKeywords(client, customer, g.adGroup, agRn);
     console.log(
-      `  + ad group ${pyRepr(g.name)} -> campaign ${strOf(g.campaignId)}: ` +
+      `  + ad group ${pyRepr(g.name)} -> campaign ${pyStr(g.campaignId)}: ` +
         `RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,
     );
   }
   for (const g of agCreateSkips) {
-    console.log(`  ad group ${pyRepr(g.name)} already in campaign ${strOf(g.campaignId)}, skipped`);
+    console.log(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
   }
   emitStatusEnvelope(true);
   return 0;
@@ -803,14 +804,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 // ---------------------------------------------------------------------------
 // Small formatting/coercion helpers (kept local — pure, no IO).
 // ---------------------------------------------------------------------------
-
-/** Render an id/value for a `{x}` (str) slot; None for null/undefined. */
-function strOf(value: unknown): string {
-  if (value === undefined || value === null) {
-    return "None";
-  }
-  return String(value);
-}
 
 /** Length of a value that may not be an array (0 when absent). */
 function lenOf(value: unknown): number {
@@ -823,14 +816,6 @@ function asId(value: unknown): number {
     return value;
   }
   return Number.parseInt(String(value), 10);
-}
-
-/** Python `repr` for a string value used in a print line (single-quoted). */
-function pyRepr(value: unknown): string {
-  if (typeof value === "string") {
-    return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
-  }
-  return String(value);
 }
 
 /**
@@ -855,7 +840,7 @@ function rsaUpdateOp(
     entity: "ad",
     operation: "update",
     resource: {
-      resource_name: `customers/${customerId}/ads/${strOf(adId)}`,
+      resource_name: `customers/${customerId}/ads/${pyStr(adId)}`,
       responsive_search_ad: rsa,
     },
   };
