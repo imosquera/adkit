@@ -13,7 +13,7 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-07-15T14:00:55.180111+00:00"
+      "installed_at": "2026-07-17T14:46:47.437860+00:00"
     },
     "autopilot": {
       "version": "0.1.0",
@@ -28,7 +28,7 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-07-15T14:00:55.545010+00:00"
+      "installed_at": "2026-07-17T14:46:47.817083+00:00"
     },
     "git": {
       "version": "1.0.0",
@@ -46,7 +46,7 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-07-15T14:00:55.910844+00:00"
+      "installed_at": "2026-07-17T14:46:48.177608+00:00"
     },
     "progress": {
       "version": "1.0.0",
@@ -61,7 +61,7 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-07-15T14:00:56.289079+00:00"
+      "installed_at": "2026-07-17T14:46:48.546912+00:00"
     },
     "review": {
       "version": "1.2.0",
@@ -82,7 +82,7 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-07-15T14:00:56.657106+00:00"
+      "installed_at": "2026-07-17T14:46:48.918914+00:00"
     },
     "stale-tasks-guard": {
       "version": "1.0.0",
@@ -96,7 +96,7 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-07-15T14:00:57.016248+00:00"
+      "installed_at": "2026-07-17T14:46:49.285194+00:00"
     }
   }
 }

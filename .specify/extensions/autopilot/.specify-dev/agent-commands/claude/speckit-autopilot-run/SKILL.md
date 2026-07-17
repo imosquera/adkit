@@ -50,6 +50,16 @@ independently.
   for with a legible record.
 - **Stop only on a hard blocker** (see [Stop conditions](#stop-conditions)). A
   wrong-but-recoverable guess is acceptable; a wrong *irreversible* action is not.
+- **Tracking pipeline stages with the harness task tools?** `TaskCreate` /
+  `TaskUpdate` / `TaskList` are **deferred** — their schemas aren't loaded, so
+  calling one cold fails with `InputValidationError` (typed params get sent as
+  strings). Before the first call, load them once:
+  `ToolSearch` with query `select:TaskCreate,TaskUpdate,TaskList,TaskGet`. And
+  `TaskCreate` creates **exactly one** task per call — pass `subject` and
+  `description` as top-level strings; there is no `tasks`/`todos` array parameter,
+  so loop and call once per stage rather than batching. Prefer prose progress /
+  issue comments over a task list if in doubt — the pipeline order here is already
+  fixed (Steps 1–9), so a todo list is optional scaffolding, not required.
 
 ## Preflight (fail fast, before touching anything)
 
