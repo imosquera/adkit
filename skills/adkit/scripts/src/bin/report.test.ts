@@ -249,7 +249,7 @@ describe("shapeRows geo aggregation", () => {
     expect(data.geo.map((g) => g.country_criterion_id)).toEqual(["2840", "2826"]);
   });
 
-  it("collapses a null/absent country key into one sentinel bucket (never drops the row)", () => {
+  it("collapses null / undefined / empty country keys into ONE sentinel bucket (never drops rows)", () => {
     const data = shapeRows({
       ...noGeo,
       geo: [
@@ -258,12 +258,41 @@ describe("shapeRows geo aggregation", () => {
           geographic_view: { country_criterion_id: null },
           metrics: metrics({ cost_micros: 5_000_000, impressions: 10, clicks: 1 }),
         },
+        {
+          campaign: { id: 12 },
+          geographic_view: { country_criterion_id: undefined },
+          metrics: metrics({ cost_micros: 2_000_000, impressions: 4, clicks: 1 }),
+        },
+        {
+          campaign: { id: 13 },
+          geographic_view: { country_criterion_id: "" },
+          metrics: metrics({ cost_micros: 1_000_000, impressions: 6, clicks: 0 }),
+        },
       ],
       geoRegions: [],
     });
+    // All three unknown-keyed rows merge into a single bucket, summed.
     expect(data.geo).toHaveLength(1);
     expect(data.geo[0].country_criterion_id).toBe("(unknown)");
-    expect(data.geo[0].cost).toBe(5.0);
+    expect(data.geo[0].cost).toBe(8.0);
+    expect(data.geo[0].impressions).toBe(20);
+    expect(data.geo[0].clicks).toBe(2);
+  });
+
+  it("resolves derived rates to 0 for a zero-denominator bucket (no NaN/Infinity)", () => {
+    const data = shapeRows({
+      ...noGeo,
+      geo: [
+        {
+          campaign: { id: 11 },
+          geographic_view: { country_criterion_id: 2840 },
+          // cost but zero clicks/impressions/conversions -> every rate divides by zero.
+          metrics: metrics({ cost_micros: 4_000_000, impressions: 0, clicks: 0, conversions: 0 }),
+        },
+      ],
+      geoRegions: [],
+    });
+    expect(data.geo[0]).toMatchObject({ ctr: 0, avg_cpc: 0, cost_per_conversion: 0, cost: 4.0 });
   });
 
   it("aggregates regions the same way, keyed by geo_target_region, cost-desc", () => {

@@ -209,40 +209,45 @@ function geoKey(value: number | string | null | undefined): string {
   return value === null || value === undefined || value === "" ? GEO_UNKNOWN : String(value);
 }
 
+/** The only metrics that can be summed across geo buckets (derived rates cannot). */
+interface GeoTotals {
+  cost: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+}
+
 /**
  * Roll per-campaign geo rows up per key: sum the additive metrics (cost,
- * impressions, clicks, conversions) then recompute every derived rate (ctr,
- * avg_cpc, cost_per_conversion) from the summed totals — a per-unit rate summed
- * across buckets is meaningless. Ordered by cost descending. Pure: no input
- * mutation (reduce into a Map, then map/sort), mirroring `byCampaign` below.
+ * impressions, clicks, conversions) into a {@link GeoTotals}, then recompute every
+ * derived rate (ctr, avg_cpc, cost_per_conversion) from those summed totals — a
+ * per-unit rate summed across buckets is meaningless. Ordered by cost descending.
+ * Pure: no input mutation (reduce into a Map, then map/sort). Output field order
+ * matches {@link MetricDict} so the geo YAML lines up with the other collections.
  */
-function rollupGeo(rows: ReadonlyArray<{ key: string; metrics: MetricDict }>): Array<{ key: string } & MetricDict> {
+function rollupGeo(
+  rows: ReadonlyArray<{ key: string; metrics: MetricDict }>,
+): Array<{ key: string } & MetricDict> {
   const summed = rows.reduce((acc, { key, metrics: m }) => {
-    const prev = acc.get(key);
-    acc.set(
-      key,
-      prev
-        ? {
-            cost: prev.cost + m.cost,
-            impressions: prev.impressions + m.impressions,
-            clicks: prev.clicks + m.clicks,
-            conversions: prev.conversions + m.conversions,
-            // Derived rates are recomputed after the fold; interim values unused.
-            ctr: 0,
-            avg_cpc: 0,
-            cost_per_conversion: 0,
-          }
-        : { ...m },
-    );
+    const prev = acc.get(key) ?? { cost: 0, impressions: 0, clicks: 0, conversions: 0 };
+    acc.set(key, {
+      cost: prev.cost + m.cost,
+      impressions: prev.impressions + m.impressions,
+      clicks: prev.clicks + m.clicks,
+      conversions: prev.conversions + m.conversions,
+    });
     return acc;
-  }, new Map<string, MetricDict>());
+  }, new Map<string, GeoTotals>());
   return [...summed.entries()]
-    .map(([key, m]) => ({
+    .map(([key, t]) => ({
       key,
-      ...m,
-      ctr: safeRatio(m.clicks, m.impressions),
-      avg_cpc: safeRatio(m.cost, m.clicks),
-      cost_per_conversion: safeRatio(m.cost, m.conversions),
+      cost: t.cost,
+      impressions: t.impressions,
+      clicks: t.clicks,
+      ctr: safeRatio(t.clicks, t.impressions),
+      avg_cpc: safeRatio(t.cost, t.clicks),
+      conversions: t.conversions,
+      cost_per_conversion: safeRatio(t.cost, t.conversions),
     }))
     .sort((a, b) => b.cost - a.cost);
 }
