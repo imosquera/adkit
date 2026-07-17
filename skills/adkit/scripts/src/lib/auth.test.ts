@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { parseReadBackend, toSdkMutateOperations } from "./auth.js";
-import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 
 describe("toSdkMutateOperations", () => {
   it("unwraps a remove op's resource to the bare resource-name string", () => {
@@ -43,30 +42,11 @@ describe("parseReadBackend", () => {
   });
 });
 
-describe("SDK client structured read parity", () => {
-  // The SDK backend must serve searchStructured(args) exactly as search(toGaql(args)):
-  // a stub Customer records the GAQL string it is handed by each path.
-  function stubClient() {
-    const seen: string[] = [];
-    const customer = { query: async (q: string) => (seen.push(q), []) };
-    // Mirror loadClient's two read entrypoints over the same Customer.query.
-    const client = {
-      search: async (_cid: string, q: string) => customer.query(q),
-      searchStructured: async (_cid: string, args: SearchArgs) => customer.query(toGaql(args)),
-    };
-    return { client, seen };
-  }
-
-  it("searchStructured(args) runs the same GAQL as search(toGaql(args))", async () => {
-    const args: SearchArgs = {
-      resource: "campaign",
-      fields: ["campaign.id", "campaign.status"],
-      conditions: ["campaign.id IN (1,2)"],
-    };
-    const { client, seen } = stubClient();
-    await client.searchStructured("123", args);
-    await client.search("123", toGaql(args));
-    expect(seen[0]).toBe(seen[1]);
-    expect(seen[0]).toBe("SELECT campaign.id, campaign.status FROM campaign WHERE campaign.id IN (1,2)");
-  });
-});
+// NOTE: the SDK client's `searchStructured(args) === search(toGaql(args))` guarantee
+// is established structurally in loadClient (both delegate to Customer.query, the
+// structured path via toGaql). Exercising the real loadClient needs live credentials,
+// so the migration is instead protected end-to-end by the exhaustive golden-string
+// parity suite in gaql/builders-parity.test.ts (every builder's toGaql output pinned
+// to the exact pre-refactor GAQL) plus the loadReadClient dispatch tests in
+// lib/mcp-client.test.ts. A hand-rolled stub mirroring loadClient would only assert
+// toGaql === toGaql, so it is intentionally omitted.

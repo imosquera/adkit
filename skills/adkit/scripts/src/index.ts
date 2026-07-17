@@ -61,7 +61,7 @@ export {
   readBackend,
 } from "./lib/auth.js";
 export type { AdsClient, AdsMutateOperation, GaqlRow, GaqlValue, MutateResult, ReadBackend } from "./lib/auth.js";
-export { createMcpReadClient, McpNotConfiguredError, toMcpSearchParams } from "./lib/mcp-client.js";
+export { createMcpReadClient, loadReadClient, McpNotConfiguredError, toMcpSearchParams } from "./lib/mcp-client.js";
 export type { McpAdsClient, McpSearchParams } from "./lib/mcp-client.js";
 
 // --- Publish path ---

@@ -16,7 +16,7 @@ import { isMainModule } from "../cli/entry.js";
 import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import type { AdsClient, GaqlRow } from "../lib/auth.js";
-import { loadClient } from "../lib/auth.js";
+import { loadReadClient } from "../lib/mcp-client.js";
 import type { SearchArgs } from "../gaql/search-args.js";
 import { matchTypeName } from "../ads/enums.js";
 import { normalizeId } from "../cli/args.js";
@@ -384,11 +384,11 @@ export function reportPath(cwd: string, generatedAt: string, customer: string): 
  * ads/output/reports/, and prints the path. Returns a process exit code.
  *
  * `clientFactory` is injectable so tests can supply a fake AdsClient; production
- * calls default to {@link loadClient}.
+ * calls default to {@link loadReadClient} (SDK by default; MCP when ADKIT_READ_BACKEND=mcp).
  */
 export async function main(
   argv: string[],
-  clientFactory: (manager: string) => AdsClient = loadClient,
+  clientFactory: (manager: string) => AdsClient = loadReadClient,
 ): Promise<number> {
   const args = parseArgs(argv);
   const customer = normalizeId(args.customer);

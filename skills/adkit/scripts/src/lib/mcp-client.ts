@@ -15,10 +15,12 @@
  * server + credentials, none of which are available offline. {@link createMcpReadClient}
  * therefore returns a client whose reads throw a descriptive "not configured" error
  * until the transport is wired, so selecting the MCP backend fails loudly rather than
- * silently, and the default SDK path is never affected.
+ * silently, and the default SDK path is never affected. The read entrypoints
+ * (`report`, `audit`) obtain their client through {@link loadReadClient}, the one
+ * dispatch seam that observes the `ADKIT_READ_BACKEND` selector at runtime.
  */
 
-import type { AdsClient, GaqlRow } from "./auth.js";
+import { type AdsClient, type AdsMutateOperation, type GaqlRow, KEEP_YAML_LOGIN, loadClient, type MutateResult, readBackend } from "./auth.js";
 import type { SearchArgs } from "../gaql/search-args.js";
 
 /** The `search` tool's parameter object, per the google-ads-mcp tool signature. */
@@ -57,11 +59,12 @@ export class McpNotConfiguredError extends Error {
 }
 
 /**
- * The read surface of the google-ads-mcp backend: only the structured read path
- * maps to the MCP `search` tool. Raw-GAQL `search` and `mutate` are intentionally
- * absent — mutations and the raw probe stay on the SDK (issue #11).
+ * The read surface of the google-ads-mcp backend. Structured reads map to the MCP
+ * `search` tool; the raw-GAQL `search` probe and `mutate` intentionally stay on the
+ * SDK (issue #11) and, if reached under the MCP backend, fail loudly rather than
+ * silently falling back.
  */
-export type McpAdsClient = Pick<AdsClient, "searchStructured">;
+export type McpAdsClient = AdsClient;
 
 const NOT_WIRED =
   "google-ads-mcp read backend selected (ADKIT_READ_BACKEND=mcp) but its transport " +
@@ -69,17 +72,41 @@ const NOT_WIRED =
   "credentials) is a deferred follow-up; see specs/011-migrate-reads-google-ads-mcp. " +
   "Unset ADKIT_READ_BACKEND (or set it to 'sdk') to use the SDK read backend.";
 
+const MUTATIONS_ON_SDK =
+  "google-ads-mcp is read-only; mutations must run on the SDK backend. This client " +
+  "is only produced when ADKIT_READ_BACKEND=mcp — a mutating command should keep " +
+  "using loadClient() directly.";
+
 /**
  * Build the MCP read client. Until the live transport is wired, its reads throw
  * {@link McpNotConfiguredError} — so selecting the MCP backend fails loudly and the
- * default SDK path is never silently degraded. The pure {@link toMcpSearchParams}
- * mapping the live client will use is exported and tested independently above.
+ * default SDK path is never silently degraded. `mutate` throws because MCP is
+ * read-only. The pure {@link toMcpSearchParams} mapping the live client will use is
+ * exported and tested independently above.
  */
-export function createMcpReadClient(): McpAdsClient {
+export function createMcpReadClient(): AdsClient {
   return {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    async search<Row = GaqlRow>(_customerId: string, _query: string): Promise<Row[]> {
+      throw new McpNotConfiguredError(NOT_WIRED);
+    },
     async searchStructured<Row = GaqlRow>(_customerId: string, _args: SearchArgs): Promise<Row[]> {
       throw new McpNotConfiguredError(NOT_WIRED);
     },
+    async mutate(_customerId: string, _operations: AdsMutateOperation[]): Promise<MutateResult> {
+      throw new McpNotConfiguredError(MUTATIONS_ON_SDK);
+    },
   };
+}
+
+/**
+ * Resolve the read client per the {@link readBackend} selector: the SDK client by
+ * default (and for `ADKIT_READ_BACKEND=sdk`), or the {@link createMcpReadClient MCP
+ * client} when `mcp` is selected. This is the one dispatch seam the read entrypoints
+ * (`report`, `audit`) call so the backend flag is actually observed at runtime —
+ * selecting `mcp` today produces a client whose reads throw {@link McpNotConfiguredError}.
+ */
+export function loadReadClient(
+  loginCustomerId: Parameters<typeof loadClient>[0] = KEEP_YAML_LOGIN,
+): AdsClient {
+  return readBackend() === "mcp" ? createMcpReadClient() : loadClient(loginCustomerId);
 }
