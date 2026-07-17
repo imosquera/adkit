@@ -64,6 +64,39 @@ describe("parseArgs", () => {
       days: 30,
     });
   });
+
+  it("accepts --customer <id> like the other subcommands", () => {
+    expect(parseArgs(["--customer", "1234567890"])).toEqual({
+      customer: "1234567890",
+      manager: DEFAULT_MANAGER,
+      days: DEFAULT_DAYS,
+    });
+  });
+
+  it("accepts the --customer=<id> equals form", () => {
+    expect(parseArgs(["--customer=1234567890"])).toEqual({
+      customer: "1234567890",
+      manager: DEFAULT_MANAGER,
+      days: DEFAULT_DAYS,
+    });
+  });
+
+  it("still accepts the positional customer (back-compat)", () => {
+    expect(parseArgs(["1234567890"]).customer).toBe("1234567890");
+  });
+
+  it("lets the --customer flag win over a positional id", () => {
+    expect(parseArgs(["999", "--customer", "1234567890"]).customer).toBe("1234567890");
+    expect(parseArgs(["--customer", "1234567890", "999"]).customer).toBe("1234567890");
+  });
+
+  it("keeps the default when --customer is given with no value", () => {
+    expect(parseArgs(["--customer"]).customer).toBe(DEFAULT_CUSTOMER);
+  });
+
+  it("takes an empty --customer= value literally (surfaces as a readable error downstream)", () => {
+    expect(parseArgs(["--customer="]).customer).toBe("");
+  });
 });
 
 describe("shapeRows", () => {
@@ -384,6 +417,44 @@ describe("main (fake client, temp cwd)", () => {
     const text = err.join("");
     expect(text).toContain("Google Ads query failed");
     expect(text).toContain("permission");
+  });
+
+  it("surfaces the manager-metrics hint when metrics are queried on an MCC", async () => {
+    const mccError = {
+      errors: [
+        {
+          error_code: { query_error: 59 },
+          message: "Metrics cannot be requested for a manager account.",
+        },
+      ],
+    };
+    const client: AdsClient = {
+      async search() {
+        throw mccError;
+      },
+      async searchStructured() {
+        throw mccError;
+      },
+      async mutate() {
+        throw new Error("not used");
+      },
+    };
+    const err: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string) => {
+      err.push(String(s));
+      return true;
+    }) as typeof process.stderr.write;
+    let code: number;
+    try {
+      code = await main([], () => client);
+    } finally {
+      process.stderr.write = origErr;
+    }
+    expect(code).toBe(1);
+    const text = err.join("");
+    expect(text).toContain("manager (MCC) account");
+    expect(text).not.toContain("[object Object]");
   });
 
   it("exit 1 when credentials fail to load", async () => {
