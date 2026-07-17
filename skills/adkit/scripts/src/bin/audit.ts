@@ -56,7 +56,8 @@ import {
   auditServingQuery,
 } from "../gaql/builders.js";
 import type { AdsClient } from "../lib/auth.js";
-import { loadClient } from "../lib/auth.js";
+import { loadReadClient } from "../lib/mcp-client.js";
+import type { SearchArgs } from "../gaql/search-args.js";
 import {
   EMPTY_PROFILE,
   parseDifferentiationProfile,
@@ -424,9 +425,9 @@ interface LandingPageEntry {
 async function search<Row = Record<string, unknown>>(
   client: AdsClient,
   customerId: string,
-  query: string,
+  args: SearchArgs,
 ): Promise<Row[]> {
-  return client.search<Row>(customerId, query);
+  return client.searchStructured<Row>(customerId, args);
 }
 
 /**
@@ -1391,7 +1392,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
   }
   requireDigits("customer", customer);
   requireDigits("login-customer-id", args.loginCustomerId);
-  const client = loadClient(args.loginCustomerId);
+  const client = loadReadClient(args.loginCustomerId);
 
   // --campaign accepts an id (digits) or a name substring; resolve the name to an id once.
   let campaignId = args.campaign;

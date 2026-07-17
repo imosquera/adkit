@@ -15,6 +15,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
+import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import { parseDifferentiationProfile } from "../lib/brand.js";
 import { MIN_KEYWORDS, requireDigits } from "../audit/scoring.js";
 import {
@@ -30,12 +31,21 @@ import {
   searchTerms,
 } from "./audit.js";
 
-/** Build a fake AdsClient whose `search` picks canned rows by GAQL substring. */
+/** Build a fake AdsClient whose reads pick canned rows by GAQL substring. */
 function fakeClient(pick: (query: string) => unknown[], onSearch?: () => void): AdsClient {
   return {
     async search<Row = Record<string, unknown>>(_customerId: string, query: string): Promise<Row[]> {
       onSearch?.();
       return pick(query) as Row[];
+    },
+    // audit's reads now flow through searchStructured; delegate through toGaql so the
+    // canned-row picks keep matching on the exact GAQL string (toGaql reproduces it).
+    async searchStructured<Row = Record<string, unknown>>(
+      _customerId: string,
+      args: SearchArgs,
+    ): Promise<Row[]> {
+      onSearch?.();
+      return pick(toGaql(args)) as Row[];
     },
     async mutate(_customerId: string, _operations: AdsMutateOperation[]): Promise<MutateResult> {
       throw new Error("audit must be read-only — no mutate calls");

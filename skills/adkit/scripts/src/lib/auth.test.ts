@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toSdkMutateOperations } from "./auth.js";
+import { parseReadBackend, toSdkMutateOperations } from "./auth.js";
 
 describe("toSdkMutateOperations", () => {
   it("unwraps a remove op's resource to the bare resource-name string", () => {
@@ -25,3 +25,28 @@ describe("toSdkMutateOperations", () => {
     expect(op!.resource).toBe("");
   });
 });
+
+describe("parseReadBackend", () => {
+  it("defaults to sdk when the flag is absent", () => {
+    expect(parseReadBackend(undefined)).toBe("sdk");
+  });
+
+  it("defaults to sdk for an unrecognized value", () => {
+    expect(parseReadBackend("grpc")).toBe("sdk");
+    expect(parseReadBackend("")).toBe("sdk");
+  });
+
+  it("selects mcp only when explicitly requested (case/space-insensitive)", () => {
+    expect(parseReadBackend("mcp")).toBe("mcp");
+    expect(parseReadBackend("  MCP ")).toBe("mcp");
+  });
+});
+
+// NOTE: the SDK client's `searchStructured(args) === search(toGaql(args))` guarantee
+// is established structurally in loadClient (both delegate to Customer.query, the
+// structured path via toGaql). Exercising the real loadClient needs live credentials,
+// so the migration is instead protected end-to-end by the exhaustive golden-string
+// parity suite in gaql/builders-parity.test.ts (every builder's toGaql output pinned
+// to the exact pre-refactor GAQL) plus the loadReadClient dispatch tests in
+// lib/mcp-client.test.ts. A hand-rolled stub mirroring loadClient would only assert
+// toGaql === toGaql, so it is intentionally omitted.
