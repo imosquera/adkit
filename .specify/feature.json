@@ -1,7 +1,7 @@
 {
-  "branch_name": "028-simplify-consolidate-scripts",
-  "feature_num": "028",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/028-simplify-consolidate-scripts",
-  "source_issue": 28,
-  "feature_directory": "specs/028-simplify-consolidate-scripts"
+  "branch_name": "030-adkit-audit-ids-enabled-psi",
+  "feature_num": "030",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/030-adkit-audit-ids-enabled-psi",
+  "source_issue": 22,
+  "feature_directory": "specs/030-adkit-audit-ids-enabled-psi"
 }
