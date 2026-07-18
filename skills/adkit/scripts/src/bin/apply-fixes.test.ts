@@ -726,10 +726,10 @@ describe("rewrites display path", () => {
     expect(recordedRsa(mutations).path1).toBe("demo");
   });
 
-  it("sets both path1 and path2 when provided", async () => {
+  it("sets both path1 and path2 when provided (both lowercased)", async () => {
     const { client, mutations } = rewritesClient();
     currentClient = client;
-    const plan = writeRewritesPlan([rewrite({ path1: "demo", path2: "trial" })]);
+    const plan = writeRewritesPlan([rewrite({ path1: "Demo", path2: "Trial" })]);
 
     captureStdout();
     expect(await main([plan, "--apply"])).toBe(0);
