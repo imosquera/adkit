@@ -58,6 +58,11 @@ export interface KeywordCpc {
   text: string;
   avg_cpc: number;
   avg_cpc_micros: number;
+  // adGroupId + matchType let a keyword pause/update plan be authored straight
+  // from the audit JSON (no /adkit report round-trip). matchType is null when a
+  // criterion has no populated match type. (issue #22)
+  adGroupId: number;
+  matchType: string | null;
   // These rows feed the generic (Record-consuming) cluster helpers.
   [key: string]: unknown;
 }

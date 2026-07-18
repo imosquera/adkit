@@ -103,7 +103,7 @@ export function renderKeywordCpc(
     }
     const top = kws
       .slice(0, 3)
-      .map((k) => `${k.text} $${k.avg_cpc.toFixed(2)}`)
+      .map((k) => `${k.text}${k.matchType ? ` [${k.matchType}]` : ""} $${k.avg_cpc.toFixed(2)}`)
       .join(", ");
     return [`    ${ljust(c.campaignName, 34)} top CPC: ${top}`];
   }

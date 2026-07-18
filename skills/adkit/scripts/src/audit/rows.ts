@@ -64,7 +64,8 @@ export interface ServingRow {
 
 export interface KeywordMetricsRow {
   campaign: { id: number };
-  ad_group_criterion: { keyword: { text: string } };
+  ad_group?: { id: number };
+  ad_group_criterion: { keyword: { text: string; match_type?: string } };
   metrics: { average_cpc: number };
 }
 
@@ -181,7 +182,8 @@ export function normalizeServingRow(r: RawServingRow): ServingRow {
 
 export interface RawKeywordMetricsRow {
   campaign: { id: number };
-  ad_group_criterion: { keyword: { text: string } };
+  ad_group?: { id: number };
+  ad_group_criterion: { keyword: { text: string; match_type?: string } };
   metrics?: { average_cpc?: number };
 }
 

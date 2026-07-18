@@ -210,7 +210,16 @@ export function auditKeywordMetricsQuery(
 ): SearchArgs {
   return inListQuery(
     "keyword_view",
-    ["campaign.id", "ad_group_criterion.keyword.text", "metrics.average_cpc"],
+    [
+      "campaign.id",
+      // ad_group.id + match_type ride the same row as average_cpc so a keyword
+      // pause/update plan ({adGroupId, pause:[{text, matchType}]}) is authorable
+      // from one audit run, with no /adkit report round-trip (issue #22).
+      "ad_group.id",
+      "ad_group_criterion.keyword.text",
+      "ad_group_criterion.keyword.match_type",
+      "metrics.average_cpc",
+    ],
     "campaign.id",
     campaignIds,
     ["ad_group_criterion.status = 'ENABLED'", lastNDays(days)],
