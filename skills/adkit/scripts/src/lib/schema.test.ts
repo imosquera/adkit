@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AD_GROUP_MAX_KEYWORDS, MAX_AD_GROUPS, parseBrief } from "./schema.js";
+import { AD_GROUP_MAX_KEYWORDS, MAX_AD_GROUPS, displayPathPairErrors, parseBrief } from "./schema.js";
 
 const adGroup = (name = "Waitlist Core", root = "vontevo") => ({
   name,
@@ -123,6 +123,29 @@ describe("display paths", () => {
     const raw = validBrief();
     Object.assign(raw.adGroups[0].responsiveSearchAd, { path1: "TODO-keyword" });
     expect(() => parseBrief(raw)).toThrow();
+  });
+});
+
+describe("displayPathPairErrors (shared create/update rules)", () => {
+  it("accepts an absent pair", () => {
+    expect(displayPathPairErrors(undefined, undefined)).toEqual([]);
+  });
+
+  it("accepts a valid pair", () => {
+    expect(displayPathPairErrors("demo", "trial")).toEqual([]);
+  });
+
+  it("rejects a non-string segment", () => {
+    expect(displayPathPairErrors(42, undefined).some((m) => m.includes("path1 must be a string"))).toBe(true);
+  });
+
+  it("prefixes each message", () => {
+    const errs = displayPathPairErrors("free trial", undefined, "ad 9: ");
+    expect(errs.every((m) => m.startsWith("ad 9: "))).toBe(true);
+  });
+
+  it("rejects path2 without path1", () => {
+    expect(displayPathPairErrors(undefined, "trial").some((m) => m.includes("path2 requires path1"))).toBe(true);
   });
 });
 

@@ -1,7 +1,7 @@
 {
-  "branch_name": "029-geo-region-report",
-  "feature_num": "029",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/029-geo-region-report",
-  "source_issue": 6,
-  "feature_directory": "specs/029-geo-region-report"
+  "branch_name": "014-adkit-launch-fixes",
+  "feature_num": "014",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/014-adkit-launch-fixes",
+  "source_issue": 14,
+  "feature_directory": "specs/014-adkit-launch-fixes"
 }
