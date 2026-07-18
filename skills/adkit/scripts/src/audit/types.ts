@@ -91,6 +91,31 @@ export interface QualityScoreEntry {
   expectedCtr: string;
 }
 
+/** One PageSpeed Insights opportunity row (render-blocking / unused-JS). */
+export interface PsiOpportunity {
+  title: string;
+  savingsMs: number | null;
+}
+
+/** A successful PageSpeed Insights (mobile) diagnosis for one final URL. */
+export interface PsiDiagnosis {
+  ok: true;
+  url: string;
+  lcpMs: number | null;
+  renderBlocking: PsiOpportunity[];
+  unusedJs: PsiOpportunity[];
+}
+
+/** PSI could not be obtained for this URL (network / parse / rate-limit). */
+export interface PsiFailure {
+  ok: false;
+  url: string;
+  error: string;
+}
+
+/** Tagged on `ok` so renderers/JSON handle success vs failure without a null soup. */
+export type PsiResult = PsiDiagnosis | PsiFailure;
+
 export interface LandingPageEntry {
   url: string | null;
   issue: string;

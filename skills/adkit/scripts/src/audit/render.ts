@@ -11,6 +11,7 @@ import type {
   ClusterSplit,
   KeywordCpc,
   LandingPageEntry,
+  PsiResult,
   QualityScoreEntry,
   ScoredServing,
 } from "./types.js";
@@ -184,6 +185,24 @@ export function renderQualityScoreSection(
   return [
     `\n=== ${title} ===`,
     ...Object.entries(bad).map(([cid, kws]) => row(Number(cid), kws)),
+  ];
+}
+
+export function renderPsi(psi: { skipped: string | null; results: PsiResult[] }): string[] {
+  if (psi.skipped) {
+    return [`\n=== PAGESPEED INSIGHTS (mobile) ===`, `    skipped: ${psi.skipped}`];
+  }
+  if (psi.results.length === 0) {
+    return [];
+  }
+  return [
+    `\n=== PAGESPEED INSIGHTS (mobile) ===`,
+    ...psi.results.map((r) =>
+      r.ok
+        ? `    ${r.url}: LCP ${r.lcpMs === null ? "n/a" : `${Math.round(r.lcpMs)}ms`}, ` +
+          `${r.renderBlocking.length} render-blocking, ${r.unusedJs.length} unused-JS`
+        : `    ${r.url}: unavailable — ${r.error}`,
+    ),
   ];
 }
 
