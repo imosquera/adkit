@@ -514,7 +514,7 @@ export async function keywordCpc(
         text: r.ad_group_criterion.keyword.text,
         avg_cpc: microsToCurrency(r.metrics.average_cpc),
         avg_cpc_micros: Math.trunc(r.metrics.average_cpc || 0),
-        adGroupId: r.ad_group?.id ?? 0,
+        adGroupId: r.ad_group?.id ?? null,
         matchType: r.ad_group_criterion.keyword.match_type ?? null,
       },
     ]),

@@ -23,8 +23,8 @@ import type {
   QualityScoreEntry,
 } from "../audit/types.js";
 
-/** Google's public PageSpeed Insights v5 endpoint. */
-export const PSI_ENDPOINT = "https://pagespeedonline.googleapis.com/pagespeedapi/v5/runPagespeed";
+/** Google's public PageSpeed Insights v5 REST endpoint (path is `pagespeedonline/v5`). */
+export const PSI_ENDPOINT = "https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed";
 
 /** Google's below-average landing-page-experience bucket (the issue's "≤ 2"). */
 export const BELOW_AVERAGE = "BELOW_AVERAGE";
@@ -98,24 +98,28 @@ export function parsePsiResponse(url: string, raw: unknown): PsiResult {
 }
 
 /**
- * Pure selection: the distinct, non-null final URLs to diagnose. PSI runs only
- * when at least one keyword shows a below-average landing-page experience; in
- * that case every distinct final URL present in the ad reports is diagnosed
- * (quality-score rows carry no URL, so the audit diagnoses the ads' final URLs —
- * matching the issue's "auto-run PSI on each ad's final URL"). Deduped so a URL
- * shared across ad groups is hit at most once. Returns `[]` when nothing qualifies.
+ * Pure selection: the distinct, non-null final URLs to diagnose. Scoped to the
+ * campaigns that actually have a below-average landing-page keyword — quality-score
+ * rows carry no URL, so within an affected campaign the audit diagnoses that
+ * campaign's ads' final URLs (matching the issue's "auto-run PSI on each ad's
+ * final URL"), but a healthy campaign's URLs are never dragged in by an unrelated
+ * campaign's flag. Deduped so a URL shared across ad groups is hit at most once.
+ * Returns `[]` when no campaign qualifies or none of its ads have a final URL.
  */
 export function belowAverageFinalUrls(
   qualityScoreMap: Record<number, QualityScoreEntry[]>,
   report: CampaignReport[],
 ): string[] {
-  const anyBelowAverage = Object.values(qualityScoreMap)
-    .flat()
-    .some((k) => k.landingPageExp === BELOW_AVERAGE);
-  if (!anyBelowAverage) {
+  const affected = new Set(
+    Object.entries(qualityScoreMap)
+      .filter(([, kws]) => kws.some((k) => k.landingPageExp === BELOW_AVERAGE))
+      .map(([cid]) => Number(cid)),
+  );
+  if (affected.size === 0) {
     return [];
   }
   const urls = report
+    .filter((c) => affected.has(c.campaignId))
     .flatMap((c) => c.ads)
     .map((a) => a.finalUrl)
     .filter((u): u is string => u !== null && u.length > 0);

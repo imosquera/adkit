@@ -64,6 +64,10 @@ export interface ServingRow {
 
 export interface KeywordMetricsRow {
   campaign: { id: number };
+  // Optional to match this module's boundary convention (consumers absorb
+  // API-omitted nested fields rather than throw). ad_group.id is always selected
+  // by auditKeywordMetricsQuery, so in practice it is present; the consumer maps a
+  // (shouldn't-happen) omission to null — an honest "unknown", not a bogus id 0.
   ad_group?: { id: number };
   ad_group_criterion: { keyword: { text: string; match_type?: string } };
   metrics: { average_cpc: number };

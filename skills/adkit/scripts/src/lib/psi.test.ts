@@ -18,10 +18,10 @@ function ad(finalUrl: string | null): ScoredAd {
   };
 }
 
-function campaign(ads: ScoredAd[]): CampaignReport {
+function campaign(ads: ScoredAd[], campaignId = 1): CampaignReport {
   return {
-    campaignId: 1,
-    campaignName: "c",
+    campaignId,
+    campaignName: `c${campaignId}`,
     status: "ENABLED",
     keywords: 0,
     sitelinks: 0,
@@ -43,7 +43,7 @@ const avg: QualityScoreEntry = { ...belowAvg, landingPageExp: "AVERAGE" };
 describe("buildPsiRequestUrl", () => {
   it("targets the runPagespeed endpoint with mobile strategy and the key", () => {
     const url = buildPsiRequestUrl("https://example.com/lp", "SECRET");
-    expect(url).toContain("pagespeedapi/v5/runPagespeed");
+    expect(url).toContain("pagespeedonline/v5/runPagespeed");
     expect(url).toContain("strategy=mobile");
     expect(url).toContain("key=SECRET");
     expect(url).toContain("url=https%3A%2F%2Fexample.com%2Flp");
@@ -64,6 +64,14 @@ describe("belowAverageFinalUrls", () => {
       campaign([ad("https://a.com"), ad("https://a.com"), ad("https://b.com")]),
     ]);
     expect(urls.sort()).toEqual(["https://a.com", "https://b.com"]);
+  });
+
+  it("scopes to the affected campaign — a healthy campaign's URLs are not dragged in", () => {
+    const urls = belowAverageFinalUrls({ 1: [belowAvg], 2: [avg] }, [
+      campaign([ad("https://flagged.com")], 1),
+      campaign([ad("https://healthy.com")], 2),
+    ]);
+    expect(urls).toEqual(["https://flagged.com"]);
   });
 });
 

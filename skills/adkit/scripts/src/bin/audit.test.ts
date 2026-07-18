@@ -277,6 +277,9 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
     expect(result[1]).toHaveLength(1);
     expect(result[1][0].avg_cpc).toBe(0);
     expect(result[1][0].avg_cpc_micros).toBe(0);
+    // API-omitted ad_group / match_type degrade to an honest null, never a bogus id 0.
+    expect(result[1][0].adGroupId).toBeNull();
+    expect(result[1][0].matchType).toBeNull();
   });
 
   it("searchTerms: a term with no metrics reads all-zero aggregates, no throw", async () => {
