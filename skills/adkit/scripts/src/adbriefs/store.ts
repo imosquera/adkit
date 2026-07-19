@@ -14,13 +14,25 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { parse as yamlParse, stringify as yamlStringify, YAMLParseError } from "yaml";
+import { parse as yamlParse, stringify as yamlStringify, YAMLParseError, type ToStringOptions } from "yaml";
 import { z } from "zod";
 
 import { parseBrief, type Brief } from "../lib/schema.js";
 
 /** Directory (relative to the repo root) holding one `<slug>.yaml` per campaign. */
 export const ADBRIEFS_DIR = "adbriefs";
+
+/**
+ * YAML stringify options shared by {@link serializeBrief} and the `create` scaffold
+ * writer. Double-quoting every string keeps a colon-space value from breaking a later
+ * hand-edit; `lineWidth: 0` disables folding. Load-bearing: `diffBriefs` relies on two
+ * equal briefs serializing byte-identically, so both writers MUST use these options.
+ */
+export const BRIEF_YAML_STRINGIFY_OPTS: ToStringOptions = {
+  defaultStringType: "QUOTE_DOUBLE",
+  defaultKeyType: "PLAIN",
+  lineWidth: 0,
+};
 
 /**
  * A brief-store operation that cannot proceed — a filename collision with a
@@ -62,7 +74,7 @@ export function briefPathForCampaign(root: string, brief: Brief): string {
  * which is what makes {@link diffBriefs} clean.
  */
 export function serializeBrief(brief: Brief): string {
-  return yamlStringify(brief, { defaultStringType: "QUOTE_DOUBLE", defaultKeyType: "PLAIN", lineWidth: 0 });
+  return yamlStringify(brief, BRIEF_YAML_STRINGIFY_OPTS);
 }
 
 /**
@@ -101,22 +113,34 @@ export function loadBriefIfExists(root: string, brief: Brief): Brief | null {
 }
 
 /**
+ * If `brief`'s slug path is already occupied by a **different** campaign's brief,
+ * throw {@link AdbriefsError} naming the collision; otherwise no-op. Shared by the
+ * `create` command (so a dry-run surfaces the collision the review is supposed to
+ * catch, not just the real publish) and {@link writeBrief} (defense in depth) — a
+ * slug collision must never silently clobber another campaign's source of truth (FR-008).
+ */
+export function assertNoForeignBrief(root: string, brief: Brief): void {
+  const path = briefPathForCampaign(root, brief);
+  if (!existsSync(path)) {
+    return;
+  }
+  const existing = readBriefFile(path);
+  if (existing.campaign.name !== brief.campaign.name) {
+    throw new AdbriefsError(
+      `adbriefs collision: ${path} already describes campaign "${existing.campaign.name}", ` +
+        `refusing to overwrite it with "${brief.campaign.name}". Rename one campaign or move the brief.`,
+    );
+  }
+}
+
+/**
  * Persist `brief` to its `adbriefs/<slug>.yaml`, creating the directory as needed.
- * Refuses (throws {@link AdbriefsError}) if a brief already exists at that path for a
- * *different* campaign — a slug collision must never silently clobber another
- * campaign's source of truth (FR-008). Returns the path written.
+ * Refuses (via {@link assertNoForeignBrief}) to overwrite a *different* campaign's
+ * brief at the same slug (FR-008). Returns the path written.
  */
 export function writeBrief(root: string, brief: Brief): string {
+  assertNoForeignBrief(root, brief);
   const path = briefPathForCampaign(root, brief);
-  if (existsSync(path)) {
-    const existing = readBriefFile(path);
-    if (existing.campaign.name !== brief.campaign.name) {
-      throw new AdbriefsError(
-        `adbriefs collision: ${path} already describes campaign "${existing.campaign.name}", ` +
-          `refusing to overwrite it with "${brief.campaign.name}". Rename one campaign or move the brief.`,
-      );
-    }
-  }
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, serializeBrief(brief));
   return path;

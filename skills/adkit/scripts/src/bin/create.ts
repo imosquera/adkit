@@ -26,7 +26,14 @@ import { parse as yamlParse, stringify as yamlStringify, YAMLParseError } from "
 import { z } from "zod";
 
 import { publishV1 } from "../ads/publish.js";
-import { AdbriefsError, briefPathForCampaign, loadBriefIfExists, writeBrief } from "../adbriefs/store.js";
+import {
+  AdbriefsError,
+  BRIEF_YAML_STRINGIFY_OPTS,
+  assertNoForeignBrief,
+  briefPathForCampaign,
+  loadBriefIfExists,
+  writeBrief,
+} from "../adbriefs/store.js";
 import { diffBriefs } from "../adbriefs/diff.js";
 import { resolveCustomer } from "../cli/args.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
@@ -228,11 +235,9 @@ function scaffoldBriefFromProcessed(mdPath: string, briefPath: string, maxPerThe
   // operator editing a headline/description/sitelink in place can type a ": "
   // (colon-space) without producing invalid YAML — the #1 hand-edit break.
   // lineWidth: 0 disables folding so long values stay on one quoted line.
-  writeFileSync(
-    briefPath,
-    yamlStringify(skeleton, { defaultStringType: "QUOTE_DOUBLE", defaultKeyType: "PLAIN", lineWidth: 0 }) +
-      COMMENTED_OPTIONAL_ASSETS,
-  );
+  // Same stringify options as serializeBrief (shared const) so a scaffolded brief and
+  // a persisted adbriefs/ brief serialize identically — keeps later diffs clean.
+  writeFileSync(briefPath, yamlStringify(skeleton, BRIEF_YAML_STRINGIFY_OPTS) + COMMENTED_OPTIONAL_ASSETS);
   const themesPretty = themes.map(([theme, kws]) => `${theme} (${kws.length} kw)`).join("\n  - ");
   const totalKeywords = themes.reduce((n, [, kws]) => n + kws.length, 0);
   const kwWarning = keywordCountWarning(totalKeywords);
@@ -399,6 +404,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     // root the skill runs from) so a test can redirect it.
     const adbriefsRoot = process.cwd();
     const adbriefsPath = briefPathForCampaign(adbriefsRoot, brief);
+    // Surface a slug collision with a *different* campaign here — in dry-run too — so the
+    // review-the-change gate catches it, not just the real publish (FR-008). Otherwise the
+    // diff below would compare two unrelated campaigns and read as nonsense.
+    try {
+      assertNoForeignBrief(adbriefsRoot, brief);
+    } catch (exc) {
+      if (exc instanceof AdbriefsError) {
+        die(exc.message);
+      }
+      throw exc;
+    }
     const existingBrief = loadBriefIfExists(adbriefsRoot, brief);
     const briefDiff = diffBriefs(existingBrief, brief);
     if (briefDiff.changed) {

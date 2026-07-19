@@ -390,4 +390,29 @@ describe("create wires the adbriefs/ persist + diff gate (main)", () => {
     cap.text();
     expect(code).toBe(1); // die() on AdbriefsError
   });
+
+  it("surfaces the collision even in --dry-run (the gate must catch it, not the publish)", async () => {
+    mkdirSync(join(root, "adbriefs"), { recursive: true });
+    const other = validBriefYaml()
+      .replace("name: widget-launch\n", "name: other-campaign\n")
+      .replace("  name: widget-launch-search", "  name: A Different Campaign");
+    writeFileSync(join(root, ...SLUG_PATH), other);
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--dry-run", "--skip-url-check"]);
+    cap.text();
+    expect(code).toBe(1); // dry-run dies on the collision rather than printing a bogus diff
+  });
+
+  it("on a publish failure, exits 1 with briefSynced:false but leaves the brief persisted (FR-010)", async () => {
+    hoisted.outcome = { results: [], failure: { step: "create-search-campaign", message: "boom" } };
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--skip-url-check"]);
+    const out = JSON.parse(cap.text()) as { ok: boolean; status: string; briefSynced: boolean };
+    expect(code).toBe(1);
+    expect(out.ok).toBe(false);
+    expect(out.status).toBe("failed");
+    expect(out.briefSynced).toBe(false);
+    // The brief was written before publish, so it stays on disk as the intended state.
+    expect(existsSync(join(root, ...SLUG_PATH))).toBe(true);
+  });
 });
