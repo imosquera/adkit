@@ -1,7 +1,7 @@
 {
-  "branch_name": "028-simplify-consolidate-scripts",
-  "feature_num": "028",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/028-simplify-consolidate-scripts",
-  "source_issue": 28,
-  "feature_directory": "specs/028-simplify-consolidate-scripts"
+  "branch_name": "026-adbriefs-stage-diff",
+  "feature_num": "026",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/026-adbriefs-stage-diff",
+  "source_issue": 26,
+  "feature_directory": "specs/026-adbriefs-stage-diff"
 }
