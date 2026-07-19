@@ -77,6 +77,18 @@ built as a **reversible seam**, selected by one env var:
   `KeywordPlanIdeaService.generate_keyword_ideas`, a non-GAQL RPC the MCP server does not
   expose. They keep using `google-ads-api` directly regardless of `ADKIT_READ_BACKEND`.
 
+## `adbriefs/` — the local source of truth + diff-before-apply gate
+
+Every campaign has one persisted brief under `adbriefs/<slug>.yaml` at the repo root — the local **source of truth** for that campaign's full state (campaign settings, ad groups, keywords, RSAs, negatives, budget). `<slug>` is a deterministic kebab-case slug of `campaign.name`, so the same campaign always maps to the same file. The brief file **is** the `/adkit create` brief format (the zod `Brief` schema in `src/lib/schema.ts`) — nothing new to learn.
+
+The flow both mutating skills follow is **write-brief → diff → apply**:
+
+1. **Stage** the proposed change into the campaign's brief (a new brief for `create`; the audit-driven edits for `update`).
+2. **Diff** the proposed brief against the existing `adbriefs/<slug>.yaml` and surface it — an all-added diff the first time, an empty diff (nothing to apply) for a no-op. This is the review-the-change gate.
+3. **Apply** to the live account only after the diff has been shown and confirmed. **Dry-run is the default; a live mutation requires the explicit flag** (`--apply` for `update`; a non-`--dry-run` run for `create`). After a *successful* apply the brief is (re)written so it reflects the applied state; a slug collision with a *different* campaign is **refused**, never silently overwritten.
+
+`/adkit create` implements this end-to-end today (persist → diff → publish → sync). The shared machinery lives in `src/adbriefs/` (`store.ts` slug/path/load/write, `diff.ts` pure brief diff) so `/adkit update` reuses the identical format and gate. On a partial/failed apply the brief is **not** left asserting a fully-applied state — the envelope's failure (`briefSynced: false`) is the brief↔live divergence signal.
+
 ## Division of labor — the CLI is deterministic, the model is creative
 
 - **The CLI is deterministic.** Counting/validation, finding duplicates, reading Google's own `ad_strength` / `action_items`, computing the per-ad `pathToExcellent`, schema validation, and all live mutations are the executor's job (`ads.sh audit`, `ads.sh update`, `ads.sh create`). It never invents copy.

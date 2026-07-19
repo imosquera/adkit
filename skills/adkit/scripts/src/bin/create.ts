@@ -1,10 +1,12 @@
 /**
- * IO entry: scaffold a brief from a processed idea -> validate -> publish to
- * Google Ads.
+ * IO entry: scaffold a brief from a processed idea -> validate -> persist to
+ * adbriefs/ -> publish to Google Ads.
  *
- * Publishes are not persisted to disk: the live account + Google's change history
- * are the record (read live state with /adkit audit; revise live ads with
- * ads.sh apply-fixes). The scaffolded brief is a throwaway in the system temp dir.
+ * The filled brief is persisted to `adbriefs/<slug>.yaml` (the local source of
+ * truth) BEFORE publishing, and its diff against any existing brief is shown first —
+ * the review-the-change gate. The scaffolding step still uses a throwaway temp file
+ * for *filling in* the brief; the completed brief lands in adbriefs/. Read live state
+ * with /adkit audit; revise live ads with ads.sh update.
  *
  * Run: ads.sh create <idea-slug|brief-path.yaml> [--dry-run] [--top-n N]
  *
@@ -24,6 +26,8 @@ import { parse as yamlParse, stringify as yamlStringify, YAMLParseError } from "
 import { z } from "zod";
 
 import { publishV1 } from "../ads/publish.js";
+import { AdbriefsError, briefPathForCampaign, loadBriefIfExists, writeBrief } from "../adbriefs/store.js";
+import { diffBriefs } from "../adbriefs/diff.js";
 import { resolveCustomer } from "../cli/args.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
 import {
@@ -389,6 +393,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
     const keywordCount = brief.adGroups.reduce((n, ag) => n + ag.keywords.length, 0);
 
+    // Stage the brief against its adbriefs/ source of truth and surface the diff
+    // BEFORE any publish — the review-the-change gate (dry-run shows it, --apply
+    // via a non-dry-run run confirms it). Resolved from the live cwd (the repo/worktree
+    // root the skill runs from) so a test can redirect it.
+    const adbriefsRoot = process.cwd();
+    const adbriefsPath = briefPathForCampaign(adbriefsRoot, brief);
+    const existingBrief = loadBriefIfExists(adbriefsRoot, brief);
+    const briefDiff = diffBriefs(existingBrief, brief);
+    if (briefDiff.changed) {
+      process.stderr.write(
+        `${existingBrief === null ? "new" : "changed"} adbriefs brief ${adbriefsPath} ` +
+          `(+${briefDiff.added}/-${briefDiff.removed}):\n${briefDiff.render}\n`,
+      );
+    } else {
+      process.stderr.write(`adbriefs brief ${adbriefsPath} unchanged\n`);
+    }
+
     if (dryRun) {
       emitJson({
         ok: true,
@@ -400,12 +421,27 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         keywordWarning: keywordCountWarning(keywordCount),
         sitelinkCount: brief.campaign.sitelinks.length,
         calloutCount: brief.campaign.callouts.length,
+        briefPath: adbriefsPath,
+        briefDiff: { changed: briefDiff.changed, added: briefDiff.added, removed: briefDiff.removed },
+        willWriteBrief: adbriefsPath,
         willPublish:
           `budget → campaign(PAUSED) → ${brief.campaign.sitelinks.length} sitelinks → ` +
           `${brief.campaign.callouts.length} callouts → ${agNames.length}x ` +
           `(ad-group → RSA(PAUSED) → keywords). Existing campaign of the same name is reused.`,
       });
       return 0;
+    }
+
+    // Persist the brief to adbriefs/ as the local source of truth BEFORE publishing
+    // (FR-001). A slug collision with a different campaign is refused here, not silently
+    // overwritten (FR-008).
+    try {
+      writeBrief(adbriefsRoot, brief);
+    } catch (exc) {
+      if (exc instanceof AdbriefsError) {
+        die(exc.message);
+      }
+      throw exc;
     }
 
     const client = loadClient();
@@ -417,7 +453,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       customerIdUsed: customerId,
       created: outcome.results,
       failure: outcome.failure,
-      note: "Campaign + RSAs created PAUSED. Not persisted locally — manage via the Ads UI / /adkit audit.",
+      briefPath: adbriefsPath,
+      // The brief was written before publish, so it reflects the intended state; on a
+      // failure the envelope's `failure` is the brief↔live divergence signal (FR-010).
+      briefSynced: outcome.failure === null,
+      note: `Campaign + RSAs created PAUSED. Brief persisted at ${adbriefsPath} (local source of truth; manage live via the Ads UI / /adkit audit).`,
     });
     return outcome.failure === null ? 0 : 1;
   } catch (exc) {
