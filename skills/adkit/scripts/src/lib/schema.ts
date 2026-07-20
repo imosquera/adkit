@@ -384,6 +384,18 @@ export const AdGroupStatusChangeSchema = z
   .strict();
 export type AdGroupStatusChange = z.infer<typeof AdGroupStatusChangeSchema>;
 
+// An adStatus block flips a single ad (ad_group_ad) on/off — the lever for the
+// PAUSED ad a freshly-created ad group ships with. Keyed by adId alone; the ad's
+// parent adGroupId is resolved from live state (an ad_group_ad resource name needs
+// both, but the operator only knows the adId from the audit).
+export const AdStatusChangeSchema = z
+  .object({
+    adId: z.coerce.string().regex(/^[0-9]+$/),
+    status: z.enum(["ENABLED", "PAUSED"]),
+  })
+  .strict();
+export type AdStatusChange = z.infer<typeof AdStatusChangeSchema>;
+
 /** A searchPartners fixes-plan block: toggle campaign.network_settings.target_search_network. */
 export const SearchPartnersChangeSchema = z
   .object({
