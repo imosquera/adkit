@@ -98,6 +98,7 @@ import type {
   ClusterSplit,
   KeywordCpc,
   LandingPageEntry,
+  PsiResult,
   QualityScoreEntry,
   ScoredAd,
   ScoredServing,
@@ -110,9 +111,11 @@ import {
   renderImpressionShare,
   renderKeywordCpc,
   renderLandingPageHealth,
+  renderPsi,
   renderQualityScoreSection,
   renderSearchTermCandidates,
 } from "../audit/render.js";
+import { belowAverageFinalUrls, buildPsiRequestUrl, parsePsiResponse } from "../lib/psi.js";
 
 // ---------------------------------------------------------------------------
 // Small functional primitives.
@@ -484,8 +487,10 @@ export async function campaignServing(
 // ---------------------------------------------------------------------------
 
 /**
- * {campaignId: [{text, avg_cpc(dollars), avg_cpc_micros}]} for ENABLED keywords,
- * highest CPC first. avg_cpc is the currency value the cluster detector reads.
+ * {campaignId: [{text, matchType, adGroupId, avg_cpc(dollars), avg_cpc_micros,
+ * impressions, ctr}]} for ENABLED keywords, highest CPC first. avg_cpc is the
+ * currency value the cluster detector reads; impressions + ctr add demand/
+ * relevance context; adGroupId + matchType make the row pause-plan-ready.
  */
 export async function keywordCpc(
   client: AdsClient,
@@ -510,6 +515,10 @@ export async function keywordCpc(
         text: r.ad_group_criterion.keyword.text,
         avg_cpc: microsToCurrency(r.metrics.average_cpc),
         avg_cpc_micros: Math.trunc(r.metrics.average_cpc || 0),
+        impressions: r.metrics.impressions,
+        ctr: r.metrics.ctr,
+        adGroupId: r.ad_group?.id ?? null,
+        matchType: r.ad_group_criterion.keyword.match_type ?? null,
       },
     ]),
   );
@@ -652,6 +661,56 @@ export async function qualityScore(
 }
 
 // ---------------------------------------------------------------------------
+// PageSpeed Insights diagnosis (issue #22, US3). IO edge — the pure request
+// shaping / response parsing / URL selection live in lib/psi.ts.
+// ---------------------------------------------------------------------------
+
+export interface PsiRun {
+  /** Non-null when PSI was intentionally not run (reason for the report). */
+  skipped: string | null;
+  results: PsiResult[];
+}
+
+/** One PSI HTTP call, parsed at the boundary. A failure degrades to a per-URL
+ * error result, never a throw — one bad URL must not abort the audit. */
+async function fetchPsi(url: string, apiKey: string): Promise<PsiResult> {
+  try {
+    const resp = await fetch(buildPsiRequestUrl(url, apiKey));
+    if (!resp.ok) {
+      return { ok: false, url, error: `PSI HTTP ${resp.status}` };
+    }
+    return parsePsiResponse(url, await resp.json());
+  } catch (e) {
+    return { ok: false, url, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Run PSI (mobile) on the distinct final URLs that qualify (below-average
+ * landing-page experience present). No qualifying URL → no calls, no note. A
+ * qualifying URL but no operator-supplied key → skip with an explicit reason
+ * (graceful degrade, FR-007). Otherwise diagnose each distinct URL once.
+ */
+export async function runPsi(
+  qualityScoreMap: Record<number, QualityScoreEntry[]>,
+  report: CampaignReport[],
+  apiKey: string | null,
+): Promise<PsiRun> {
+  const urls = belowAverageFinalUrls(qualityScoreMap, report);
+  if (urls.length === 0) {
+    return { skipped: null, results: [] };
+  }
+  if (!apiKey) {
+    return {
+      skipped: "no credential — set PAGESPEED_API_KEY or pass --psi-key to diagnose low landing-page scores",
+      results: [],
+    };
+  }
+  const results = await Promise.all(urls.map((u) => fetchPsi(u, apiKey)));
+  return { skipped: null, results };
+}
+
+// ---------------------------------------------------------------------------
 // Landing page health.
 // ---------------------------------------------------------------------------
 
@@ -787,6 +846,8 @@ interface ParsedArgs {
   days: number;
   noServing: boolean;
   profile: DifferentiationProfile;
+  /** Operator-supplied PageSpeed Insights API key (--psi-key overrides env). */
+  psiKey: string | null;
 }
 
 /** Only 7/14/30 are valid windows, mirroring argparse `choices=[7, 14, 30]`. */
@@ -808,6 +869,7 @@ function parseAudarArgs(argv: string[]): ParsedArgs {
       days: { type: "string", default: "7" },
       "no-serving": { type: "boolean", default: false },
       "differentiation-profile": { type: "string" },
+      "psi-key": { type: "string" },
     },
     allowPositionals: false,
   });
@@ -831,6 +893,7 @@ function parseAudarArgs(argv: string[]): ParsedArgs {
     days,
     noServing: values["no-serving"] ?? false,
     profile,
+    psiKey: values["psi-key"] ?? process.env.PAGESPEED_API_KEY ?? null,
   };
 }
 
@@ -982,6 +1045,12 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
   );
   emitLines(renderLandingPageHealth(landingPageHealth, campNames));
 
+  // PSI (mobile) diagnosis on below-average landing pages — closes the loop from
+  // "your LP score is low" to "here's the exact fix" (issue #22). Runs only when
+  // a below-average score exists AND an operator key is set; degrades gracefully.
+  const psi = await runPsi(qualityScoreMap, report, args.psiKey);
+  emitLines(renderPsi(psi));
+
   const stringKeyed = <V>(m: Record<number, V>): Record<string, V> =>
     Object.fromEntries(Object.entries(m).map(([k, v]) => [String(k), v]));
 
@@ -997,6 +1066,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
       promoteKeywords: stringKeyed(promoteKeywords),
       qualityScore: stringKeyed(qualityScoreMap),
       landingPageHealth: stringKeyed(landingPageHealth),
+      psi: { skipped: psi.skipped, results: psi.results },
     }),
   );
   return 0;

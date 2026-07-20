@@ -16,6 +16,16 @@ describe("auditKeywordMetricsQuery", () => {
     expect(q.conditions).toContain("ad_group_criterion.status = 'ENABLED'");
     expect(q.conditions).toContain("segments.date DURING LAST_30_DAYS");
   });
+
+  it("selects ad_group.id and match_type so a keyword pause plan needs no report round-trip (#22)", () => {
+    const q = auditKeywordMetricsQuery(30, ["12345"]);
+    expect(q.fields).toContain("ad_group.id");
+    expect(q.fields).toContain("ad_group_criterion.keyword.match_type");
+    expect(q.fields).toContain("ad_group_criterion.keyword.text");
+    expect(q.fields).toContain("metrics.average_cpc");
+    expect(q.fields).toContain("metrics.impressions");
+    expect(q.fields).toContain("metrics.ctr");
+  });
 });
 
 describe("auditSearchTermsQuery", () => {
