@@ -81,6 +81,35 @@ describe("rewrites", () => {
     const errs = validate(plan, {}, {});
     expect(errs.some((e) => e.includes("must replace both headlines and descriptions"))).toBe(true);
   });
+
+  it("valid display path passes (bug 5a)", () => {
+    const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), path1: "demo", path2: "trial" }] };
+    expect(validate(plan, {}, {})).toEqual([]);
+  });
+
+  it("path2 without path1 flagged", () => {
+    const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), path2: "trial" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("path2 requires path1"))).toBe(true);
+  });
+
+  it("path with a space or slash flagged", () => {
+    const plan = { rewrites: [{ adId: 7, headlines: h(15), descriptions: d(4), path1: "free trial" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("ad 7: path1 may not contain spaces or '/'"))).toBe(true);
+  });
+
+  it("path over 15 chars flagged", () => {
+    const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), path1: "waytoolongsegment" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("path1 >15"))).toBe(true);
+  });
+
+  it("leftover TODO placeholder path flagged", () => {
+    const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), path1: "TODO-slug" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("scaffold placeholder"))).toBe(true);
+  });
 });
 
 // ---------- appendHeadlines ----------
