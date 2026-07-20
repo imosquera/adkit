@@ -4,6 +4,8 @@ import {
   auditAdGroupAdQuery,
   auditKeywordMetricsQuery,
   auditSearchTermsQuery,
+  geoQuery,
+  geoRegionQuery,
 } from "./builders.js";
 import { toGaql } from "./search-args.js";
 
@@ -71,6 +73,27 @@ describe("auditAdGroupAdQuery", () => {
         "FROM ad_group_ad WHERE campaign.id = 12345 AND ad_group_ad.status != 'REMOVED' " +
         "AND ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD' ORDER BY ad_group.name",
     );
+  });
+});
+
+describe("geoQuery", () => {
+  it("reads geographic_view keyed by country over the ENABLED window", () => {
+    const q = geoQuery("2026-06-08", "2026-06-21");
+    expect(q.resource).toBe("geographic_view");
+    expect(q.fields).toContain("geographic_view.country_criterion_id");
+    expect(q.fields).toContain("metrics.cost_micros");
+    expect(q.conditions).toContain("campaign.status = 'ENABLED'");
+    expect(q.conditions).toContain("segments.date BETWEEN '2026-06-08' AND '2026-06-21'");
+  });
+});
+
+describe("geoRegionQuery", () => {
+  it("reads geographic_view segmented by geo_target_region over the ENABLED window", () => {
+    const q = geoRegionQuery("2026-06-08", "2026-06-21");
+    expect(q.resource).toBe("geographic_view");
+    expect(q.fields).toContain("segments.geo_target_region");
+    expect(q.fields).not.toContain("geographic_view.country_criterion_id");
+    expect(q.conditions).toContain("segments.date BETWEEN '2026-06-08' AND '2026-06-21'");
   });
 });
 

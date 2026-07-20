@@ -13,9 +13,11 @@ import type { ZodIssue } from "zod";
 import {
   AdGroupSchema,
   AdGroupStatusChangeSchema,
+  AdStatusChangeSchema,
   CampaignStatusChangeSchema,
   KeywordSchema,
   SearchPartnersChangeSchema,
+  displayPathPairErrors,
   type AdGroup,
   type Keyword,
 } from "../lib/schema.js";
@@ -228,6 +230,7 @@ export interface StatusPlanEntry {
   current: unknown;
   campaignId?: unknown;
   adGroupId?: unknown;
+  adId?: unknown;
 }
 
 /** Live status maps: {id -> statusName}. */
@@ -253,7 +256,7 @@ function liveStatusFor(map: LiveStatusMap, id: number | null): string | undefine
 function statusPlan(
   blocks: Array<Record<string, unknown>>,
   liveStatuses: LiveStatusMap,
-  idKey: "campaignId" | "adGroupId",
+  idKey: "campaignId" | "adGroupId" | "adId",
 ): [StatusPlanEntry[], StatusPlanEntry[]] {
   const entries: StatusPlanEntry[] = blocks.map((b) => {
     const current = liveStatusFor(liveStatuses, asInt(b[idKey]));
@@ -276,6 +279,49 @@ export function adGroupStatusPlan(
   liveStatuses: LiveStatusMap,
 ): [StatusPlanEntry[], StatusPlanEntry[]] {
   return statusPlan(blocks, liveStatuses, "adGroupId");
+}
+
+export function adStatusPlan(
+  blocks: Array<Record<string, unknown>>,
+  liveStatuses: LiveStatusMap,
+): [StatusPlanEntry[], StatusPlanEntry[]] {
+  return statusPlan(blocks, liveStatuses, "adId");
+}
+
+/** Live ad -> parent ad-group map: {adId -> adGroupId}. */
+type LiveAdParentMap = Map<number, number> | Record<number, number>;
+
+function hasAdParent(map: LiveAdParentMap, id: number | null): boolean {
+  if (id === null) {
+    return false;
+  }
+  return map instanceof Map ? map.has(id) : Object.prototype.hasOwnProperty.call(map, id);
+}
+
+/**
+ * Reject an adStatus block whose ad has no live parent ad group — the ad is stale,
+ * removed, or not visible to this customer. An ad_group_ad status update needs the
+ * real parent id to build the resource name; without it apply would emit
+ * `adGroupAds/undefined~<adId>` and fail server-side AFTER a dry-run reported "ok".
+ * Only run when the live parent map is provided (the apply path fetches it for
+ * exactly the plan's adStatus ids); a non-numeric adId is left to the schema check.
+ */
+function adStatusParentErrors(
+  blocks: Array<Record<string, unknown>>,
+  liveParents: LiveAdParentMap | null | undefined,
+): string[] {
+  if (liveParents === null || liveParents === undefined) {
+    return [];
+  }
+  return blocks.flatMap((b) => {
+    const id = asInt(b.adId);
+    if (id === null) {
+      return [];
+    }
+    return hasAdParent(liveParents, id)
+      ? []
+      : [`adStatus ad ${pyStr(b.adId)}: ad not found on this account (no live ad group) — cannot change status`];
+  });
 }
 
 /** A searchPartners-change plan entry carrying the target and current (live) boolean. */
@@ -356,16 +402,43 @@ function languagesErrors(languageBlocks: Array<Record<string, unknown>>): string
 
 function rewritesErrors(rewrites: Array<Record<string, unknown>>): string[] {
   const one = (rw: Record<string, unknown>): string[] => {
-    const hs = Array.isArray(rw.headlines) ? (rw.headlines as string[]) : [];
-    const ds = Array.isArray(rw.descriptions) ? (rw.descriptions as string[]) : [];
     const adId = pyStr(rw.adId);
+    const hasH = Array.isArray(rw.headlines);
+    const hasD = Array.isArray(rw.descriptions);
+    const hasUrl = rw.finalUrl != null;
+    // A rewrite must do something: replace copy, repoint the URL, or both.
+    if (!hasH && !hasD && !hasUrl) {
+      return [`ad ${adId}: rewrite has no headlines, descriptions, or finalUrl`];
+    }
+    // A copy rewrite is a FULL replace: both headlines AND descriptions, or neither
+    // (a URL-only repoint). Half a rewrite passes null for the missing side in apply,
+    // updating only one asset array and leaving the other's old copy live while the
+    // dry-run reports "valid".
+    if (hasH !== hasD) {
+      return [
+        `ad ${adId}: copy rewrite must replace both headlines and descriptions ` +
+          `(or neither, for a URL-only repoint)`,
+      ];
+    }
+    // finalUrl-only repoint is valid (copy left untouched); the 15/4 rules apply
+    // only to the asset arrays that are actually present.
+    const hs = hasH ? (rw.headlines as string[]) : [];
+    const ds = hasD ? (rw.descriptions as string[]) : [];
+    const urlErr =
+      hasUrl && !(typeof rw.finalUrl === "string" && /^https:\/\//i.test(rw.finalUrl))
+        ? [`ad ${adId}: finalUrl must be an https:// URL`]
+        : [];
     return [
-      ...(hs.length !== H_TARGET ? [`ad ${adId}: ${hs.length} headlines (need ${H_TARGET})`] : []),
-      ...(ds.length !== D_TARGET ? [`ad ${adId}: ${ds.length} descriptions (need ${D_TARGET})`] : []),
+      ...urlErr,
+      ...(hasH && hs.length !== H_TARGET ? [`ad ${adId}: ${hs.length} headlines (need ${H_TARGET})`] : []),
+      ...(hasD && ds.length !== D_TARGET ? [`ad ${adId}: ${ds.length} descriptions (need ${D_TARGET})`] : []),
       ...(new Set(hs).size !== hs.length ? [`ad ${adId}: duplicate headline`] : []),
       ...(new Set(ds).size !== ds.length ? [`ad ${adId}: duplicate description`] : []),
       ...hs.filter((h) => h.length > H_MAX).map((h) => `ad ${adId}: headline >${H_MAX} (${h.length}) ${pyRepr(h)}`),
       ...ds.filter((d) => d.length > D_MAX).map((d) => `ad ${adId}: description >${D_MAX} (${d.length}) ${pyRepr(d)}`),
+      // Optional display-path rewrite (path1/path2): same rules as /adkit create,
+      // via the shared displayPathPairErrors parser. Omitted paths add nothing.
+      ...displayPathPairErrors(rw.path1, rw.path2, `ad ${adId}: `),
     ];
   };
   return rewrites.flatMap(one);
@@ -502,7 +575,10 @@ function keywordsErrors(
   return keywordBlocks.flatMap(one);
 }
 
-type StatusSchema = typeof CampaignStatusChangeSchema | typeof AdGroupStatusChangeSchema;
+type StatusSchema =
+  | typeof CampaignStatusChangeSchema
+  | typeof AdGroupStatusChangeSchema
+  | typeof AdStatusChangeSchema;
 
 /**
  * Shared shape for campaignStatus/adGroupStatus: each block must parse against the
@@ -727,6 +803,7 @@ export function validate(
   budgets: ValidateLiveState["budgets"],
   livePositive: LiveKeywordMap | null | undefined = undefined,
   liveSearchPartnersGoogleSearch: LiveBoolMap | null | undefined = undefined,
+  liveAdParents: LiveAdParentMap | null | undefined = undefined,
 ): string[] {
   const arr = (key: string): Array<Record<string, unknown>> =>
     Array.isArray(plan[key]) ? (plan[key] as Array<Record<string, unknown>>) : [];
@@ -740,6 +817,8 @@ export function validate(
     ...keywordsErrors(arr("keywords"), livePositive),
     ...statusChangeErrors(arr("campaignStatus"), CampaignStatusChangeSchema, "campaignStatus", "campaign", "campaignId"),
     ...statusChangeErrors(arr("adGroupStatus"), AdGroupStatusChangeSchema, "adGroupStatus", "adGroup", "adGroupId"),
+    ...statusChangeErrors(arr("adStatus"), AdStatusChangeSchema, "adStatus", "ad", "adId"),
+    ...adStatusParentErrors(arr("adStatus"), liveAdParents),
     ...searchPartnersErrors(arr("searchPartners")),
     ...searchPartnersPreconditionErrors(arr("searchPartners"), liveSearchPartnersGoogleSearch ?? new Map()),
     ...adGroupsErrors(arr("adGroups")),

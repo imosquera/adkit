@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   addAdGroupsPlan,
   adGroupStatusPlan,
+  adStatusPlan,
   campaignStatusPlan,
   coerceKeyword,
   negKey,
@@ -48,6 +49,66 @@ describe("rewrites", () => {
     const hs = [...h(14), "x".repeat(31)];
     const errs = validate({ rewrites: [{ adId: 1, headlines: hs, descriptions: d(4) }] }, {}, {});
     expect(errs.some((e) => e.includes("headline >30"))).toBe(true);
+  });
+
+  it("finalUrl-only repoint passes (no 15/4 required)", () => {
+    const plan = { rewrites: [{ adId: 1, finalUrl: "https://www.example.com/ideas/x" }] };
+    expect(validate(plan, {}, {})).toEqual([]);
+  });
+
+  it("non-https finalUrl flagged", () => {
+    const errs = validate({ rewrites: [{ adId: 1, finalUrl: "http://x.com" }] }, {}, {});
+    expect(errs.some((e) => e.includes("finalUrl must be an https"))).toBe(true);
+  });
+
+  it("empty rewrite (no copy, no url) flagged", () => {
+    const errs = validate({ rewrites: [{ adId: 1 }] }, {}, {});
+    expect(errs.some((e) => e.includes("no headlines, descriptions, or finalUrl"))).toBe(true);
+  });
+
+  it("copy + finalUrl together passes", () => {
+    const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), finalUrl: "https://x.io/p" }] };
+    expect(validate(plan, {}, {})).toEqual([]);
+  });
+
+  it("headlines-only rewrite flagged (must carry both copy arrays)", () => {
+    const errs = validate({ rewrites: [{ adId: 1, headlines: h(15) }] }, {}, {});
+    expect(errs.some((e) => e.includes("must replace both headlines and descriptions"))).toBe(true);
+  });
+
+  it("descriptions-only rewrite flagged even with a finalUrl", () => {
+    const plan = { rewrites: [{ adId: 1, descriptions: d(4), finalUrl: "https://x.io/p" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("must replace both headlines and descriptions"))).toBe(true);
+  });
+
+  it("valid display path passes (bug 5a)", () => {
+    const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), path1: "demo", path2: "trial" }] };
+    expect(validate(plan, {}, {})).toEqual([]);
+  });
+
+  it("path2 without path1 flagged", () => {
+    const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), path2: "trial" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("path2 requires path1"))).toBe(true);
+  });
+
+  it("path with a space or slash flagged", () => {
+    const plan = { rewrites: [{ adId: 7, headlines: h(15), descriptions: d(4), path1: "free trial" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("ad 7: path1 may not contain spaces or '/'"))).toBe(true);
+  });
+
+  it("path over 15 chars flagged", () => {
+    const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), path1: "waytoolongsegment" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("path1 >15"))).toBe(true);
+  });
+
+  it("leftover TODO placeholder path flagged", () => {
+    const plan = { rewrites: [{ adId: 1, headlines: h(15), descriptions: d(4), path1: "TODO-slug" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("scaffold placeholder"))).toBe(true);
   });
 });
 
@@ -402,6 +463,54 @@ describe("adGroupStatus", () => {
     const errs = validate(plan, {}, {});
     expect(errs.some((e) => e.includes("xyz"))).toBe(true);
     expect(errs.some((e) => e.includes("789") && e.includes("status"))).toBe(true);
+  });
+});
+
+// ---------- adStatus (single ad on/off) ----------
+
+describe("adStatus", () => {
+  it("plan splits changes and skips (keyed by adId)", () => {
+    const blocks = [
+      { adId: "1", status: "ENABLED" }, // currently PAUSED -> change
+      { adId: "2", status: "PAUSED" }, // currently PAUSED -> skip (no-op)
+    ];
+    const live = { 1: "PAUSED", 2: "PAUSED" };
+    const [changes, skips] = adStatusPlan(blocks, live);
+    expect(changes.map((c) => c.adId)).toEqual(["1"]);
+    expect(changes[0].current).toBe("PAUSED");
+    expect(skips.map((s) => s.adId)).toEqual(["2"]);
+  });
+
+  it("unknown live status is a change", () => {
+    const [changes, skips] = adStatusPlan([{ adId: "9", status: "ENABLED" }], {});
+    expect(changes.length).toBe(1);
+    expect(skips).toEqual([]);
+    expect(changes[0].current).toBeNull();
+  });
+
+  it("validation valid passes", () => {
+    const plan = { adStatus: [{ adId: "816978549834", status: "ENABLED" }] };
+    expect(validate(plan, {}, {})).toEqual([]);
+  });
+
+  it("validation rejects bad status and id", () => {
+    const plan = { adStatus: [{ adId: "nope", status: "ON" }] };
+    const errs = validate(plan, {}, {});
+    expect(errs.some((e) => e.includes("nope"))).toBe(true);
+    expect(errs.some((e) => e.includes("status"))).toBe(true);
+  });
+
+  it("rejects an ad with no live parent ad group (stale/removed id)", () => {
+    const plan = { adStatus: [{ adId: "999", status: "ENABLED" }] };
+    // live parent map provided but empty -> ad 999 has no parent
+    const errs = validate(plan, {}, {}, undefined, undefined, {});
+    expect(errs.some((e) => e.includes("999") && e.includes("no live ad group"))).toBe(true);
+  });
+
+  it("passes when the ad's live parent ad group is known", () => {
+    const plan = { adStatus: [{ adId: "999", status: "ENABLED" }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, { 999: 42 });
+    expect(errs).toEqual([]);
   });
 });
 

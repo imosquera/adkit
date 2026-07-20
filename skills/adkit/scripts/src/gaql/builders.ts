@@ -182,6 +182,35 @@ export function searchTermQuery(start: string, end: string): SearchArgs {
   );
 }
 
+/**
+ * Geographic performance keyed by country: one `geographic_view` row per
+ * (campaign, country) over the window, tagged with Google's country geo-target
+ * constant id (`country_criterion_id`, e.g. 2840 = US). The report shell sums these
+ * across campaigns into the per-country `geo` breakdown.
+ */
+export function geoQuery(start: string, end: string): SearchArgs {
+  return reportQuery(
+    "geographic_view",
+    ["campaign.id", "geographic_view.country_criterion_id"],
+    start,
+    end,
+  );
+}
+
+/**
+ * Sub-national geographic performance keyed by region: the same `geographic_view`
+ * rows segmented by `segments.geo_target_region` (US state/metro geo-target resource
+ * names). The report shell sums these into the per-region `geo_regions` breakdown.
+ */
+export function geoRegionQuery(start: string, end: string): SearchArgs {
+  return reportQuery(
+    "geographic_view",
+    ["campaign.id", "segments.geo_target_region"],
+    start,
+    end,
+  );
+}
+
 // ===========================================================================
 // /adkit audit builders
 // ===========================================================================
@@ -466,6 +495,21 @@ export function applyAdGroupStatusesQuery(
   adGroupIds: ReadonlyArray<string | number>,
 ): SearchArgs {
   return inListQuery("ad_group", ["ad_group.id", "ad_group.status"], "ad_group.id", adGroupIds);
+}
+
+/**
+ * Live status + parent ad-group id per ad, so an `adStatus` (ad on/off) block can
+ * skip a no-op flip and resolve the ad_group_ad resource name (which needs both
+ * adGroupId and adId). Ids guarded via gaqlId.
+ */
+export function applyAdStatusesQuery(
+  adIds: ReadonlyArray<string | number>,
+): string {
+  const ids = adIds.map((i) => gaqlId(i)).join(",");
+  return (
+    "SELECT ad_group.id, ad_group_ad.ad.id, ad_group_ad.status " +
+    `FROM ad_group_ad WHERE ad_group_ad.ad.id IN (${ids})`
+  );
 }
 
 /**
