@@ -21,6 +21,8 @@ import {
   auditServingQuery,
   campaignDailyQuery,
   campaignTotalsQuery,
+  geoQuery,
+  geoRegionQuery,
   keywordQuery,
   searchTermQuery,
 } from "./builders.js";
@@ -62,12 +64,20 @@ const CASES: ReadonlyArray<[string, string]> = [
     "SELECT campaign.id, ad_group.id, search_term_view.search_term, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM search_term_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
   ],
   [
+    toGaql(geoQuery("2026-06-08", "2026-06-21")),
+    "SELECT campaign.id, geographic_view.country_criterion_id, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM geographic_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
+  ],
+  [
+    toGaql(geoRegionQuery("2026-06-08", "2026-06-21")),
+    "SELECT campaign.id, segments.geo_target_region, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM geographic_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
+  ],
+  [
     toGaql(auditKeywordsQuery(IDS)),
     "SELECT campaign.id, ad_group.name, ad_group_criterion.keyword.text FROM ad_group_criterion WHERE campaign.id IN (12345,67890) AND ad_group_criterion.type = 'KEYWORD' AND ad_group_criterion.status != 'REMOVED'",
   ],
   [
     toGaql(auditKeywordMetricsQuery(30, IDS)),
-    "SELECT campaign.id, ad_group_criterion.keyword.text, metrics.average_cpc FROM keyword_view WHERE campaign.id IN (12345,67890) AND ad_group_criterion.status = 'ENABLED' AND segments.date DURING LAST_30_DAYS",
+    "SELECT campaign.id, ad_group.id, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, metrics.average_cpc, metrics.impressions, metrics.ctr FROM keyword_view WHERE campaign.id IN (12345,67890) AND ad_group_criterion.status = 'ENABLED' AND segments.date DURING LAST_30_DAYS",
   ],
   [
     toGaql(auditCampaignsQuery(true, null)),
@@ -153,6 +163,6 @@ describe("builder GAQL parity (toGaql reproduces the pre-refactor strings)", () 
   });
 
   it("covers every builder family (report, audit, apply-fixes)", () => {
-    expect(CASES.length).toBe(27);
+    expect(CASES.length).toBe(29);
   });
 });
