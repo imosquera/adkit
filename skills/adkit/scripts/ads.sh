@@ -37,10 +37,12 @@ if [ ! -x "$SCRIPT_DIR/node_modules/.bin/tsx" ]; then
   ( cd "$SCRIPT_DIR" && npm ci --silent 2>/dev/null || npm install --silent )
 fi
 
-# Run from the repo root so relative paths (ideas/, ads/output/reports) resolve,
-# matching the Python wrapper's behavior. tsx transpiles the .ts entry on the fly;
-# stdout stays clean for the JSON envelope (tsx prints nothing on a successful run).
+# Run from the repo root so relative paths (ideas/, ads/output/reports, adbriefs/)
+# resolve, matching the Python wrapper's behavior. tsx transpiles the .ts entry on the
+# fly; stdout stays clean for the JSON envelope (tsx prints nothing on a successful run).
 # Exec the bin directly (its shebang selects node) — layout-agnostic vs `node <bin>`.
-REPO_ROOT="$( cd "${SCRIPT_DIR}/../../../.." && pwd )"
+# The true root is git's toplevel (correct in a linked worktree too); fall back to the
+# fixed layout (<root>/skills/adkit/scripts → three levels up) when git is unavailable.
+REPO_ROOT="$( git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || ( cd "${SCRIPT_DIR}/../../.." && pwd ) )"
 cd "$REPO_ROOT"
 exec "$SCRIPT_DIR/node_modules/.bin/tsx" "$SCRIPT_DIR/src/bin/${mod}.ts" "$@"

@@ -1,5 +1,5 @@
 ---
-description: "Publish a fresh Google Ads search campaign from a processed idea markdown file. Calls google-ads-api directly — no MCP server. Publishes are not persisted locally; revise live ads with /adkit audit then /adkit update."
+description: "Publish a fresh Google Ads search campaign from a processed idea markdown file. Calls google-ads-api directly — no MCP server. Stages the filled brief into adbriefs/<slug>.yaml (the local source of truth) and shows its diff before publishing; revise live ads with /adkit audit then /adkit update."
 argument-hint: "path to processed idea markdown (for example: ideas/processed/chatbase-ai-customer-support-v1.md)"
 user-invocable: true
 disable-model-invocation: false
@@ -128,7 +128,7 @@ Every campaign ships **at least 4 callouts** — short benefit phrases (no link)
 | Brief field | Source |
 | --- | --- |
 | `name` | Processed file basename (sans `.md`); auto-truncated to ≤64 chars |
-| `version` | Vestigial — set `1`. Publishes are not versioned or persisted; revise live ads with `/adkit audit` then `/adkit update`. |
+| `version` | Vestigial — set `1`. The brief is persisted to `adbriefs/<slug>.yaml` as the local source of truth, but not otherwise versioned; revise live ads with `/adkit audit` then `/adkit update`. |
 | `campaign.name` | `<name>-search` |
 | `campaign.networkSettings` | Default `"search-partners-display"` — serves on Google search **plus** search partner sites. The Display Network is always disabled (no Search-with-Display-Select), regardless of this value. Set `"search-only"` to restrict to Google search results only. |
 | `campaign.aiMax` | **AI Max for Search.** Default `true` — Google AI expands beyond the theme's keywords (broad-match tech) and matches landing-page/asset content to more queries; search-term matching stays on. Set `false` for a strictly keyword-matched campaign. Pairs with `negativeKeywords` to stay on-theme. See *STAG + Smart Bidding + AI Max* above. |
@@ -197,9 +197,9 @@ Run `ads.sh preflight` once per session (see `reference/conventions.md`). Non-ze
 ads.sh create $ARGUMENTS --dry-run
 ```
 
-Emits the publish plan (ad-group count, sitelink/callout counts, the ordered step chain) without calling Google Ads. An existing campaign of the same name is reused, not duplicated. Confirm the plan matches what you intended.
+Emits the publish plan (ad-group count, sitelink/callout counts, the ordered step chain) **and the diff** of the campaign's brief against its existing `adbriefs/<slug>.yaml` (an all-added diff the first time) — without calling Google Ads or writing anything. An existing campaign of the same name is reused, not duplicated. This is the **review-the-change gate**: confirm both the plan and the `briefDiff` match what you intended before the real publish. The dry-run envelope carries `briefPath`, `briefDiff` (`{changed, added, removed}`), and `willWriteBrief`.
 
-### 3. Publish
+### 3. Publish (stages the brief into `adbriefs/` first)
 
 ```bash
 ads.sh create $ARGUMENTS
@@ -207,14 +207,15 @@ ads.sh create $ARGUMENTS
 
 The script:
 1. Validates the brief against the zod schema.
-2. Publishes against the Google Ads API via `google-ads-api`: one budget + one campaign + campaign-level sitelinks + campaign-level callouts + per ad group { ad-group, RSA, PHRASE+EXACT keywords }. An existing campaign/ad-group of the same name is **reused** (so a re-run won't duplicate it). Campaign and each RSA are created in **PAUSED** state — nothing serves until you flip status in the Ads UI.
-3. Emits a JSON summary of what was created. **Nothing is written to disk** — the live account and Google's change history are the record (read live state with `/adkit audit`).
+2. **Persists the filled brief to `adbriefs/<slug>.yaml`** — the local **source of truth** for that campaign — *before* publishing (`<slug>` is a kebab-case slug of `campaign.name`). If a brief already exists at that path for a **different** campaign, the run is **refused** (a slug collision never silently clobbers another campaign's brief), not overwritten.
+3. Publishes against the Google Ads API via `google-ads-api`: one budget + one campaign + campaign-level sitelinks + campaign-level callouts + per ad group { ad-group, RSA, PHRASE+EXACT keywords }. An existing campaign/ad-group of the same name is **reused** (so a re-run won't duplicate it). Campaign and each RSA are created in **PAUSED** state — nothing serves until you flip status in the Ads UI.
+4. Emits a JSON summary of what was created, plus `briefPath` and `briefSynced`. The `adbriefs/<slug>.yaml` brief is the local record of what was published; the live account and Google's change history remain the authority for live state (read it with `/adkit audit`). On a publish failure the brief still reflects the *intended* state — the envelope's `failure` (and `briefSynced: false`) is the brief↔live divergence signal.
 
 Exit non-zero ⇒ the JSON output includes `failure.step` and `failure.message`, plus the partial `created` ids so you can see how far it got.
 
 ### 4. Report
 
-Surface the created campaign/ad-group ids, the `status`, and (if applicable) the failure step. Tell the operator the campaign is **paused**; they enable it in the Google Ads UI when ready. To revise a live ad later, use `/adkit audit` then `/adkit update` (not a re-publish).
+Surface the created campaign/ad-group ids, the `status`, the persisted `briefPath`, and (if applicable) the failure step. Tell the operator the campaign is **paused**; they enable it in the Google Ads UI when ready. To revise a live ad later, use `/adkit audit` then `/adkit update` (not a re-publish). The brief format and the write-brief → diff → apply flow are documented in `reference/conventions.md`.
 
 ## Implementation
 

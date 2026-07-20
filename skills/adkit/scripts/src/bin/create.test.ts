@@ -1,14 +1,24 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Stub the publish + client so a non-dry-run create test never touches Google Ads.
+const hoisted = vi.hoisted(() => ({ outcome: { results: [] as unknown[], failure: null as unknown } }));
+vi.mock("../ads/publish.js", () => ({ publishV1: async () => hoisted.outcome }));
+vi.mock("../lib/auth.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/auth.js")>();
+  return { ...actual, loadClient: () => ({}) };
+});
 
 import {
   buildSkeleton,
   customerIdFor,
   ExitError,
   keywordCountWarning,
+  main,
   parseTopN,
   readBrief,
   TARGET_KEYWORDS,
@@ -302,5 +312,107 @@ describe("customerIdFor", () => {
         process.env["GOOGLE_ADS_CUSTOMER_ID"] = prev;
       }
     }
+  });
+});
+
+describe("create wires the adbriefs/ persist + diff gate (main)", () => {
+  const SLUG_PATH = ["adbriefs", "widget-launch-search.yaml"] as const;
+  let root: string;
+  let prevCwd: string;
+  let prevCustomer: string | undefined;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "adkit-create-main-"));
+    prevCwd = process.cwd();
+    process.chdir(root);
+    prevCustomer = process.env["GOOGLE_ADS_CUSTOMER_ID"];
+    process.env["GOOGLE_ADS_CUSTOMER_ID"] = "1234567890";
+    hoisted.outcome = { results: [], failure: null };
+  });
+
+  afterEach(() => {
+    process.chdir(prevCwd);
+    rmSync(root, { recursive: true, force: true });
+    if (prevCustomer === undefined) delete process.env["GOOGLE_ADS_CUSTOMER_ID"];
+    else process.env["GOOGLE_ADS_CUSTOMER_ID"] = prevCustomer;
+  });
+
+  function briefFile(): string {
+    const path = join(root, "brief.yaml");
+    writeFileSync(path, validBriefYaml());
+    return path;
+  }
+
+  function captureStdout(): { text: () => string } {
+    let buf = "";
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown): boolean => {
+      buf += typeof chunk === "string" ? chunk : String(chunk);
+      return true;
+    });
+    return {
+      text: () => {
+        write.mockRestore();
+        return buf;
+      },
+    };
+  }
+
+  it("dry-run reports the brief path + diff and writes NO file live", async () => {
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--dry-run", "--skip-url-check"]);
+    const out = JSON.parse(cap.text()) as { briefPath: string; briefDiff: { changed: boolean }; willWriteBrief: string };
+    expect(code).toBe(0);
+    expect(out.briefPath.endsWith(join(...SLUG_PATH))).toBe(true);
+    expect(out.briefDiff.changed).toBe(true); // new campaign → all-added
+    expect(existsSync(join(root, ...SLUG_PATH))).toBe(false); // dry-run persists nothing
+  });
+
+  it("a real publish persists the brief to adbriefs/ and reports briefSynced", async () => {
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--skip-url-check"]);
+    const out = JSON.parse(cap.text()) as { ok: boolean; briefSynced: boolean; briefPath: string };
+    expect(code).toBe(0);
+    expect(out.ok).toBe(true);
+    expect(out.briefSynced).toBe(true);
+    const persisted = parseBrief(parseYaml(readFileSync(join(root, ...SLUG_PATH), "utf8")));
+    expect(persisted.campaign.name).toBe("widget-launch-search");
+  });
+
+  it("refuses to overwrite a different campaign's brief at the same slug (collision)", async () => {
+    // Pre-seed the slug path with a valid brief describing a DIFFERENT campaign.
+    mkdirSync(join(root, "adbriefs"), { recursive: true });
+    const other = validBriefYaml()
+      .replace("name: widget-launch\n", "name: other-campaign\n")
+      .replace("  name: widget-launch-search", "  name: A Different Campaign");
+    writeFileSync(join(root, ...SLUG_PATH), other);
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--skip-url-check"]);
+    cap.text();
+    expect(code).toBe(1); // die() on AdbriefsError
+  });
+
+  it("surfaces the collision even in --dry-run (the gate must catch it, not the publish)", async () => {
+    mkdirSync(join(root, "adbriefs"), { recursive: true });
+    const other = validBriefYaml()
+      .replace("name: widget-launch\n", "name: other-campaign\n")
+      .replace("  name: widget-launch-search", "  name: A Different Campaign");
+    writeFileSync(join(root, ...SLUG_PATH), other);
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--dry-run", "--skip-url-check"]);
+    cap.text();
+    expect(code).toBe(1); // dry-run dies on the collision rather than printing a bogus diff
+  });
+
+  it("on a publish failure, exits 1 with briefSynced:false but leaves the brief persisted (FR-010)", async () => {
+    hoisted.outcome = { results: [], failure: { step: "create-search-campaign", message: "boom" } };
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--skip-url-check"]);
+    const out = JSON.parse(cap.text()) as { ok: boolean; status: string; briefSynced: boolean };
+    expect(code).toBe(1);
+    expect(out.ok).toBe(false);
+    expect(out.status).toBe("failed");
+    expect(out.briefSynced).toBe(false);
+    // The brief was written before publish, so it stays on disk as the intended state.
+    expect(existsSync(join(root, ...SLUG_PATH))).toBe(true);
   });
 });
