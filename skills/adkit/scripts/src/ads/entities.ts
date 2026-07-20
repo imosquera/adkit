@@ -245,6 +245,31 @@ export async function setAdGroupStatus(
 }
 
 /**
+ * Flip a single ad's (ad_group_ad) serving status to ENABLED or PAUSED. The
+ * resource name is `adGroupAds/{adGroupId}~{adId}`, so both ids are required.
+ * The lever for turning on the PAUSED ad a new ad group ships with. Mirrors
+ * {@link setAdGroupStatus} one level down. Returns the ad_group_ad resource name.
+ */
+export async function setAdGroupAdStatus(
+  client: AdsClient,
+  customerId: string,
+  adGroupId: string,
+  adId: string,
+  status: "ENABLED" | "PAUSED",
+): Promise<string> {
+  const op: AdsMutateOperation = {
+    entity: "ad_group_ad",
+    operation: "update",
+    resource: {
+      resource_name: `customers/${customerId}/adGroupAds/${adGroupId}~${adId}`,
+      status: enums.AdGroupAdStatus[status],
+    },
+  };
+  const result = await client.mutate(customerId, [op]);
+  return result.results[0]!.resource_name;
+}
+
+/**
  * Create each sitelink as a SitelinkAsset, then link all of them to the campaign via
  * CampaignAsset(field_type=SITELINK). Returns the CampaignAsset resource names.
  * No-op (returns []) when the brief carries no sitelinks.

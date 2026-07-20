@@ -460,6 +460,21 @@ export function applyAdGroupStatusesQuery(
 }
 
 /**
+ * Live status + parent ad-group id per ad, so an `adStatus` (ad on/off) block can
+ * skip a no-op flip and resolve the ad_group_ad resource name (which needs both
+ * adGroupId and adId). Ids guarded via gaqlId.
+ */
+export function applyAdStatusesQuery(
+  adIds: ReadonlyArray<string | number>,
+): string {
+  const ids = adIds.map((i) => gaqlId(i)).join(",");
+  return (
+    "SELECT ad_group.id, ad_group_ad.ad.id, ad_group_ad.status " +
+    `FROM ad_group_ad WHERE ad_group_ad.ad.id IN (${ids})`
+  );
+}
+
+/**
  * Live (non-removed) ad-group names per campaign, so an `adGroups` (add-ad-group)
  * fixes block can skip a name that already exists in the target campaign (the
  * add is idempotent — re-running never creates a duplicate ad group). Ids guarded.
