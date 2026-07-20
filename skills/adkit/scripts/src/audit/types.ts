@@ -58,6 +58,10 @@ export interface KeywordCpc {
   text: string;
   avg_cpc: number;
   avg_cpc_micros: number;
+  // impressions (count) and ctr (click-through rate as a 0–1 fraction, the raw
+  // Google Ads value — e.g. 0.05 = 5%) over the same --days window as avg_cpc.
+  impressions: number;
+  ctr: number;
   // adGroupId + matchType let a keyword pause/update plan be authored straight
   // from the audit JSON (no /adkit report round-trip). Both are null only when the
   // API omits the field (shouldn't happen — the query always selects them); null

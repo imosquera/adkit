@@ -487,9 +487,10 @@ export async function campaignServing(
 // ---------------------------------------------------------------------------
 
 /**
- * {campaignId: [{text, matchType, adGroupId, avg_cpc(dollars), avg_cpc_micros}]}
- * for ENABLED keywords, highest CPC first. avg_cpc is the currency value the
- * cluster detector reads; adGroupId + matchType make the row pause-plan-ready.
+ * {campaignId: [{text, matchType, adGroupId, avg_cpc(dollars), avg_cpc_micros,
+ * impressions, ctr}]} for ENABLED keywords, highest CPC first. avg_cpc is the
+ * currency value the cluster detector reads; impressions + ctr add demand/
+ * relevance context; adGroupId + matchType make the row pause-plan-ready.
  */
 export async function keywordCpc(
   client: AdsClient,
@@ -514,6 +515,8 @@ export async function keywordCpc(
         text: r.ad_group_criterion.keyword.text,
         avg_cpc: microsToCurrency(r.metrics.average_cpc),
         avg_cpc_micros: Math.trunc(r.metrics.average_cpc || 0),
+        impressions: r.metrics.impressions,
+        ctr: r.metrics.ctr,
         adGroupId: r.ad_group?.id ?? null,
         matchType: r.ad_group_criterion.keyword.match_type ?? null,
       },

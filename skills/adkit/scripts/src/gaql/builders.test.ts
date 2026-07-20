@@ -23,6 +23,8 @@ describe("auditKeywordMetricsQuery", () => {
     expect(q.fields).toContain("ad_group_criterion.keyword.match_type");
     expect(q.fields).toContain("ad_group_criterion.keyword.text");
     expect(q.fields).toContain("metrics.average_cpc");
+    expect(q.fields).toContain("metrics.impressions");
+    expect(q.fields).toContain("metrics.ctr");
   });
 });
 

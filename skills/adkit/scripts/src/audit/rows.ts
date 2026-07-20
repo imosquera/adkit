@@ -70,7 +70,7 @@ export interface KeywordMetricsRow {
   // (shouldn't-happen) omission to null — an honest "unknown", not a bogus id 0.
   ad_group?: { id: number };
   ad_group_criterion: { keyword: { text: string; match_type?: string } };
-  metrics: { average_cpc: number };
+  metrics: { average_cpc: number; impressions: number; ctr: number };
 }
 
 export interface SearchTermRow {
@@ -188,11 +188,14 @@ export interface RawKeywordMetricsRow {
   campaign: { id: number };
   ad_group?: { id: number };
   ad_group_criterion: { keyword: { text: string; match_type?: string } };
-  metrics?: { average_cpc?: number };
+  metrics?: { average_cpc?: number; impressions?: number; ctr?: number };
 }
 
 export function normalizeKeywordMetricsRow(r: RawKeywordMetricsRow): KeywordMetricsRow {
-  return { ...r, metrics: zeroFillMetrics(r.metrics, ["average_cpc"] as const) };
+  return {
+    ...r,
+    metrics: zeroFillMetrics(r.metrics, ["average_cpc", "impressions", "ctr"] as const),
+  };
 }
 
 export interface RawSearchTermRow {

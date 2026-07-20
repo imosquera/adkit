@@ -248,6 +248,11 @@ export function auditKeywordMetricsQuery(
       "ad_group_criterion.keyword.text",
       "ad_group_criterion.keyword.match_type",
       "metrics.average_cpc",
+      // impressions + ctr ride the same row so a keyword's spend context (CPC),
+      // demand (impressions) and relevance (ctr) are all readable from one audit
+      // run — no /adkit report round-trip (issue #22).
+      "metrics.impressions",
+      "metrics.ctr",
     ],
     "campaign.id",
     campaignIds,
