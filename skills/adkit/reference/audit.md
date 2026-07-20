@@ -59,6 +59,21 @@ Two related growth blockers it also flags:
 A read-only check tells the operator *when* an ad reads like a general LLM (apply the fix with `/adkit update`):
 
 - **`undifferentiated_copy`** (per-ad `issue`) — the ad's message reads as a generic promise indistinguishable from a general LLM. This check is **dynamic, driven per run** by a **differentiation profile** you author from the campaign, its landing page, and the idea, and pass via `--differentiation-profile <path.json>`. The JSON shape is `{ "competitors": string[], "genericPhrases": string[], "axes": [{ "name": string, "triggers": string[] }] }` — `competitors`/`genericPhrases` are the me-too signals to detect, and each `axis` is a differentiator (with the `triggers` that count as "present"). `missingAxes` names which axes the ad fails to lead with; an ad already covering every axis is not flagged. An **empty or absent profile flags nothing**. The fix is `/adkit update` — author sharper copy toward the missing axes.
+
+## Message match — keyword alignment across the funnel
+
+A tightly-themed ad group points every part of itself at the same searches: the ad group **name**, its **keywords**, the **ad copy** (headlines + descriptions), and the **landing page** all share the keyword theme. When they drift apart, Quality Score and relevance suffer.
+
+- **`keyword_alignment`** (per-ad `issue`) — deterministic message-match check across the four levels of an ad group, using the ad group's own keyword theme words (the >2-char tokens of its keywords) as the reference:
+  1. the **ad group name** shares a theme word with the keywords,
+  2. the **headlines** carry the theme (≥3 headlines, matching the "keyword inclusion" lever),
+  3. the **descriptions** carry it (≥1 description), and
+  4. the **landing page** carries it — judged against the ad's **final-URL slug** (domain labels + path words, minus the TLD, common public-suffix labels like `com`/`co`/`net` so a `.com.br` suffix isn't read as copy, and structural noise like `www`/`html`), the only landing-page verbiage the Ads API exposes. There is no page body in the audit data and the scorer stays IO-free, so the URL slug is the deterministic proxy for the landing page's topic (e.g. `/ai-chatbot-crm` aligns to a "chatbot" theme). Judging the page copy itself would need a live fetch — out of scope for the pure scorer.
+
+  Matching is on a **left word boundary with open suffix**: a theme word must begin a word (so `app` does not match `happy`), but any ending is allowed so inflections still count (`chatbot` covers `chatbots`).
+
+  `misaligned` names each level that drifts off the theme (`"ad group name"`, `"headlines"`, `"descriptions"`, `"landing page"`); `themeWords`, `nameAligned`, `headlinesWithKeyword`, `descriptionsWithKeyword`, and `landingPageAligned` (`true`/`false`/`null` when there's no URL to judge) show the evidence. An ad group with **no keywords is never flagged** (nothing to align to), a level with **no evidence** (an absent final URL) is skipped rather than flagged, and an ad aligned on every present level is silent. The fix is `/adkit update` — reword the drifting level toward the keyword theme (or rename the ad group / re-point the ad at the on-theme landing page if those are the odd ones out).
+
 ## Keyword CPC & cluster split
 
 On by default (with the serving layer; `--no-serving` skips it), the audit pulls **per-keyword average CPC** over the `--days` window and emits it as `keywordCpc` (`{campaignId: [{text, avg_cpc, avg_cpc_micros}]}`, priciest first). From that it computes `clusterSplits`: a campaign whose **top keyword CPC is ≥ 3× the cheapest** is mixing a cheap-broad and an expensive-intent keyword group under one budget — one shared budget/bid lets the cheap terms win every auction and starve the expensive ones (the reputation-split pattern). Each entry carries `maxCpc`/`minCpc`/`ratio`, the `expensive`/`cheap` groups, and a `reason`. The fix is structural: split the expensive group into its own campaign with its own budget and $3–6 bids (publish via `/adkit create`), not a creative tweak.

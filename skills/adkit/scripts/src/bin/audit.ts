@@ -37,6 +37,7 @@ import {
   SHARED_HEADLINE_GROUPS,
   cannibalization,
   differentiationGaps,
+  keywordAlignment,
   pathToExcellent,
   requireDigits,
   type CannibalizationPair,
@@ -253,6 +254,12 @@ function scoreAd(
   // Me-too copy: flag ads whose message reads as a generic AI-tool promise and name the
   // absent differentiation axes (FR-014/FR-015), judged against the per-run profile.
   const diff = differentiationGaps(hs, ds, profile);
+  const keywords = agKeywords[r.ad_group.name] ?? [];
+  const finalUrl = (a.ad.final_urls ?? [])[0] ?? null;
+  // Message match: the ad group name, its keywords, the ad copy, and the landing page
+  // should all point at the same searches. Flag any level that drifts off the ad group's
+  // keyword theme (the landing page judged against the final-URL slug).
+  const alignment = keywordAlignment(r.ad_group.name, keywords, hs, ds, finalUrl);
   const actionItems = a.action_items ?? [];
   const adIssues: AdIssue[] = [
     ...(hs.length < MIN_HEADLINES
@@ -266,8 +273,8 @@ function scoreAd(
     ...(hit.length > 0 ? [{ issue: "banned_phrase", items: hit }] : []),
     ...(pins.length > 0 ? [{ issue: "pinned_assets", items: pins }] : []),
     ...(diff ? [diff as AdIssue] : []),
+    ...(alignment ? [alignment as AdIssue] : []),
   ];
-  const keywords = agKeywords[r.ad_group.name] ?? [];
   return {
     adId: a.ad.id,
     adGroup: r.ad_group.name,
@@ -277,7 +284,7 @@ function scoreAd(
     // authoring rewrites/appends instead of re-fetching it live.
     headlines: hs,
     descriptions: ds,
-    finalUrl: (a.ad.final_urls ?? [])[0] ?? null,
+    finalUrl,
     actionItems: [...actionItems],
     issues: adIssues,
     keywords,
