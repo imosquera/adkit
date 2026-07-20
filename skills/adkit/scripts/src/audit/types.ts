@@ -58,6 +58,16 @@ export interface KeywordCpc {
   text: string;
   avg_cpc: number;
   avg_cpc_micros: number;
+  // impressions (count) and ctr (click-through rate as a 0–1 fraction, the raw
+  // Google Ads value — e.g. 0.05 = 5%) over the same --days window as avg_cpc.
+  impressions: number;
+  ctr: number;
+  // adGroupId + matchType let a keyword pause/update plan be authored straight
+  // from the audit JSON (no /adkit report round-trip). Both are null only when the
+  // API omits the field (shouldn't happen — the query always selects them); null
+  // is an honest "unknown" rather than a bogus id 0 / match type. (issue #22)
+  adGroupId: number | null;
+  matchType: string | null;
   // These rows feed the generic (Record-consuming) cluster helpers.
   [key: string]: unknown;
 }
@@ -85,6 +95,31 @@ export interface QualityScoreEntry {
   adRelevance: string;
   expectedCtr: string;
 }
+
+/** One PageSpeed Insights opportunity row (render-blocking / unused-JS). */
+export interface PsiOpportunity {
+  title: string;
+  savingsMs: number | null;
+}
+
+/** A successful PageSpeed Insights (mobile) diagnosis for one final URL. */
+export interface PsiDiagnosis {
+  ok: true;
+  url: string;
+  lcpMs: number | null;
+  renderBlocking: PsiOpportunity[];
+  unusedJs: PsiOpportunity[];
+}
+
+/** PSI could not be obtained for this URL (network / parse / rate-limit). */
+export interface PsiFailure {
+  ok: false;
+  url: string;
+  error: string;
+}
+
+/** Tagged on `ok` so renderers/JSON handle success vs failure without a null soup. */
+export type PsiResult = PsiDiagnosis | PsiFailure;
 
 export interface LandingPageEntry {
   url: string | null;
