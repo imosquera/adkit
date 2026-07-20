@@ -35,7 +35,7 @@ const { validate } = await import("../fixes/plan.js");
 
 describe("rsaUpdateOp", () => {
   it("URL-only repoint omits responsive_search_ad (avoids FIELD_HAS_SUBFIELDS)", () => {
-    const op = rsaUpdateOp("111", 999, null, null, "https://x.io/p");
+    const op = rsaUpdateOp("111", 999, null, null, { finalUrl: "https://x.io/p" });
     const r = op.resource as Record<string, unknown>;
     expect(r.responsive_search_ad).toBeUndefined();
     expect(r.final_urls).toEqual(["https://x.io/p"]);
@@ -49,7 +49,7 @@ describe("rsaUpdateOp", () => {
   });
 
   it("copy + URL sets both", () => {
-    const op = rsaUpdateOp("111", 999, ["h"], ["d"], "https://x.io/p");
+    const op = rsaUpdateOp("111", 999, ["h"], ["d"], { finalUrl: "https://x.io/p" });
     const r = op.resource as Record<string, unknown>;
     expect(r.responsive_search_ad).toBeDefined();
     expect(r.final_urls).toEqual(["https://x.io/p"]);
@@ -662,5 +662,120 @@ describe("languages path", () => {
 
     expect(out).toContain("languages campaign 100: already English only, skipped");
     expect(mutations).toEqual([]); // nothing mutated
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rewrites — display-path (path1/path2) change (issue #14, item 5a)
+// ---------------------------------------------------------------------------
+
+/** Recording client for rewrite-only plans: no live-state reads are needed, so
+ * search returns []; mutate records each batch so the built RSA op can be asserted. */
+function rewritesClient(): {
+  client: AdsClient;
+  mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }>;
+} {
+  const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    async search<Row = unknown>(_customerId: string, _query: string): Promise<Row[]> {
+      return [] as Row[];
+    },
+    async searchStructured<Row = unknown>(_customerId: string, _args: SearchArgs): Promise<Row[]> {
+      return [] as Row[];
+    },
+    async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+      mutations.push({ customerId, operations });
+      return { results: operations.map(() => ({ resource_name: "customers/1/ads/x" })) };
+    },
+  };
+  return { client, mutations };
+}
+
+/** 15 unique headlines / 4 unique descriptions so a rewrite passes validation. */
+function rewrite(extra: Record<string, unknown>): Record<string, unknown> {
+  return {
+    adId: "123",
+    headlines: Array.from({ length: 15 }, (_, i) => `headline ${i}`),
+    descriptions: Array.from({ length: 4 }, (_, i) => `description ${i}`),
+    ...extra,
+  };
+}
+
+function writeRewritesPlan(blocks: Array<Record<string, unknown>>): string {
+  const p = join(dir, "plan.json");
+  writeFileSync(p, JSON.stringify({ customerId: "1111111111", rewrites: blocks }));
+  return p;
+}
+
+/** Pull the responsive_search_ad resource off the (single) recorded ad update op. */
+function recordedRsa(mutations: Array<{ operations: AdsMutateOperation[] }>): Record<string, unknown> {
+  const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "ad" && o.operation === "update");
+  expect(op).toBeDefined();
+  return (op!.resource as Record<string, unknown>).responsive_search_ad as Record<string, unknown>;
+}
+
+describe("rewrites display path", () => {
+  it("sets path1 (lowercased) on the RSA update op", async () => {
+    const { client, mutations } = rewritesClient();
+    currentClient = client;
+    const plan = writeRewritesPlan([rewrite({ path1: "Demo" })]);
+
+    captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+
+    expect(recordedRsa(mutations).path1).toBe("demo");
+  });
+
+  it("sets both path1 and path2 when provided (both lowercased)", async () => {
+    const { client, mutations } = rewritesClient();
+    currentClient = client;
+    const plan = writeRewritesPlan([rewrite({ path1: "Demo", path2: "Trial" })]);
+
+    captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+
+    const rsa = recordedRsa(mutations);
+    expect(rsa.path1).toBe("demo");
+    expect(rsa.path2).toBe("trial");
+  });
+
+  it("leaves the display path untouched for a copy-only rewrite", async () => {
+    const { client, mutations } = rewritesClient();
+    currentClient = client;
+    const plan = writeRewritesPlan([rewrite({})]);
+
+    captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+
+    const rsa = recordedRsa(mutations);
+    expect("path1" in rsa).toBe(false);
+    expect("path2" in rsa).toBe(false);
+  });
+
+  it("dry-run surfaces the display-path change before --apply", async () => {
+    const { client, mutations } = rewritesClient();
+    currentClient = client;
+    const plan = writeRewritesPlan([rewrite({ path1: "demo", path2: "trial" })]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0); // no --apply
+    const out = cap.text();
+
+    expect(out).toContain("display path /demo/trial");
+    expect(mutations).toEqual([]); // dry-run mutates nothing
+  });
+
+  it("rejects an invalid display path before mutating (path2 without path1)", async () => {
+    const { client, mutations } = rewritesClient();
+    currentClient = client;
+    const plan = writeRewritesPlan([rewrite({ path2: "trial" })]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(1); // validation failure
+    const out = cap.text();
+
+    expect(out).toContain("VALIDATION FAILED");
+    expect(out).toContain("path2 requires path1");
+    expect(mutations).toEqual([]); // never reached the mutate edge
   });
 });

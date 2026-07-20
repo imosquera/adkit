@@ -10,7 +10,7 @@
  *   "customerId": "1111111111",
  *   "loginCustomerId": null,
  *   "landingUrl": "https://www.example.com/ideas/<slug>",   // default for new sitelinks
- *   "rewrites":  [{"adId": 123, "headlines": [<15>], "descriptions": [<4>]}],   // full replace
+ *   "rewrites":  [{"adId": 123, "headlines": [<15>], "descriptions": [<4>], "path1"?: "demo", "path2"?: "trial", "finalUrl"?: "https://..."}],   // full replace; optional display-path change / URL repoint
  *   "appendHeadlines": [{"adId": 123, "add": ["..."]}],      // merge with live, keep existing
  *   "sitelinks": [{"campaignId": 456, "add": [{"text","finalUrl","description1","description2"}]}],
  *   "callouts":  [{"campaignId": 456, "add": ["No new portal", "Live in 30 days"]}],
@@ -586,7 +586,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const actions: string[] = [
     ...section(plan, "rewrites").map((r) => {
       const hasCopy = Array.isArray(r.headlines) || Array.isArray(r.descriptions);
-      const parts = [hasCopy ? "15H/4D" : null, r.finalUrl != null ? "finalUrl" : null].filter(Boolean);
+      const paths = [r.path1, r.path2].filter((p): p is string => typeof p === "string");
+      const pathNote = paths.length > 0 ? `display path /${paths.map((p) => p.toLowerCase()).join("/")}` : null;
+      const parts = [hasCopy ? "15H/4D" : null, r.finalUrl != null ? "finalUrl" : null, pathNote].filter(Boolean);
       return `rewrite ad ${pyStr(r.adId)} -> ${parts.join(" + ")}`;
     }),
     ...section(plan, "appendHeadlines").map((a) => {
@@ -682,11 +684,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // 1) RSA rewrites + appends
   const adOps: AdsMutateOperation[] = [];
   for (const rw of section(plan, "rewrites")) {
-    // A rewrite may carry headlines/descriptions, a finalUrl, or both. Absent asset
-    // arrays pass as null so a URL-only repoint leaves the live RSA copy untouched.
+    // A rewrite may carry headlines/descriptions, a finalUrl, a display path, or a mix.
+    // Absent asset arrays pass as null so a URL-only / path-only repoint leaves the live
+    // RSA copy untouched.
     const hs = Array.isArray(rw.headlines) ? (rw.headlines as string[]) : null;
     const ds = Array.isArray(rw.descriptions) ? (rw.descriptions as string[]) : null;
-    adOps.push(rsaUpdateOp(customer, rw.adId, hs, ds, rw.finalUrl as string | undefined));
+    adOps.push(
+      rsaUpdateOp(customer, rw.adId, hs, ds, {
+        finalUrl: rw.finalUrl as string | undefined,
+        path1: rw.path1,
+        path2: rw.path2,
+      }),
+    );
   }
   for (const ap of section(plan, "appendHeadlines")) {
     const cur = live.get(asId(ap.adId)) ?? [];
@@ -905,13 +914,19 @@ function asId(value: unknown): number {
  * Build the RSA update op. google-ads-api derives the update mask from the fields
  * present on the `responsive_search_ad` resource. `headlines`/`descriptions` are set
  * only when non-null (an append passes descriptions === null to leave them untouched).
+ * `path1`/`path2` (the display-URL segments) are set only when provided, so a
+ * copy-only rewrite leaves the ad's existing display path untouched; they are
+ * lowercased to match /adkit create. `finalUrl` repoints the ad's landing URL and
+ * lives on the Ad resource (sibling of responsive_search_ad), set only when present.
+ * Values are already boundary-validated by `rewritesErrors` (displayPathPairErrors)
+ * before this builder runs.
  */
 export function rsaUpdateOp(
   customerId: string,
   adId: unknown,
   headlines: string[] | null,
   descriptions: string[] | null,
-  finalUrl?: string | null,
+  opts?: { finalUrl?: string | null; path1?: unknown; path2?: unknown },
 ): AdsMutateOperation {
   const rsa: Record<string, unknown> = {};
   if (headlines !== null) {
@@ -920,18 +935,24 @@ export function rsaUpdateOp(
   if (descriptions !== null) {
     rsa["descriptions"] = descriptions.map((text) => ({ text }));
   }
+  if (typeof opts?.path1 === "string") {
+    rsa["path1"] = opts.path1.toLowerCase();
+  }
+  if (typeof opts?.path2 === "string") {
+    rsa["path2"] = opts.path2.toLowerCase();
+  }
   const resource: Record<string, unknown> = {
     resource_name: `customers/${customerId}/ads/${pyStr(adId)}`,
   };
-  // Only mask responsive_search_ad when we actually change an asset — an empty
-  // {} makes Google derive a field mask over the whole submessage (FIELD_HAS_SUBFIELDS).
+  // Only mask responsive_search_ad when we actually change an asset or display path —
+  // an empty {} makes Google derive a field mask over the whole submessage (FIELD_HAS_SUBFIELDS).
   if (Object.keys(rsa).length > 0) {
     resource["responsive_search_ad"] = rsa;
   }
   // final_urls lives on the Ad resource (sibling of responsive_search_ad); set it
   // only when the rewrite asks to repoint the ad, so headline-only rewrites are unchanged.
-  if (finalUrl != null) {
-    resource["final_urls"] = [finalUrl];
+  if (opts?.finalUrl != null) {
+    resource["final_urls"] = [opts.finalUrl];
   }
   return { entity: "ad", operation: "update", resource };
 }

@@ -257,6 +257,58 @@ const displayPath = z
   .transform((v) => v.toLowerCase())
   .optional();
 
+/** Max length of a single display-path segment (Google's hard limit). */
+export const DISPLAY_PATH_MAX = 15;
+
+/**
+ * Content rules for a single display-path segment: non-empty, no whitespace or
+ * `/`, and no leftover `TODO` scaffold placeholder. Pure — returns human-readable
+ * error strings ([] when clean). Shared by the create RSA schema and the update
+ * `rewrites` boundary so the two enforce identical rules and cannot drift.
+ * Length/type are the caller's responsibility (create's field parse guarantees a
+ * ≤15-char string; the raw-input {@link displayPathPairErrors} adds them).
+ */
+export function displayPathContentIssues(name: string, value: string): string[] {
+  return [
+    ...(value.trim() === "" ? [`${name} must be non-empty when provided (omit it instead)`] : []),
+    ...(/\s/.test(value) || value.includes("/")
+      ? [`${name} may not contain spaces or '/' (got ${JSON.stringify(value)})`]
+      : []),
+    ...(value.toLowerCase().includes("todo")
+      ? [`${name} still holds a scaffold placeholder (${JSON.stringify(value)}); fill it or omit it`]
+      : []),
+  ];
+}
+
+/**
+ * Validate a display-path pair coming from RAW (untrusted) input — the shape the
+ * update `rewrites` boundary sees. Layers type + length checks on top of the
+ * shared {@link displayPathContentIssues} rules, plus the `path2`-requires-`path1`
+ * ordering invariant. Pure — returns error strings ([] when the pair is valid or
+ * both segments are absent). `prefix` labels each message (e.g. `"ad 123: "`).
+ */
+export function displayPathPairErrors(path1: unknown, path2: unknown, prefix = ""): string[] {
+  const segment = (name: string, value: unknown): string[] => {
+    if (value === undefined) {
+      return [];
+    }
+    if (typeof value !== "string") {
+      return [`${prefix}${name} must be a string`];
+    }
+    return [
+      ...(value.length > DISPLAY_PATH_MAX ? [`${prefix}${name} >${DISPLAY_PATH_MAX} chars (${value.length})`] : []),
+      ...displayPathContentIssues(name, value).map((m) => `${prefix}${m}`),
+    ];
+  };
+  return [
+    ...segment("path1", path1),
+    ...segment("path2", path2),
+    ...(path2 !== undefined && path1 === undefined
+      ? [`${prefix}path2 requires path1 (Google fills the display path in order)`]
+      : []),
+  ];
+}
+
 /**
  * Full RSA asset sets are mandatory: Google can only optimize combinations when all
  * available headline and description slots are populated.
@@ -284,6 +336,9 @@ export const ResponsiveSearchAdSchema = z
         path: ["descriptions"],
       });
     }
+    // Display-path content + ordering rules, shared verbatim with the update
+    // `rewrites` boundary via displayPathContentIssues (length/lowercase already
+    // enforced by the `displayPath` field above).
     for (const [name, value] of [
       ["path1", rsa.path1],
       ["path2", rsa.path2],
@@ -291,26 +346,8 @@ export const ResponsiveSearchAdSchema = z
       if (value === undefined) {
         continue;
       }
-      if (value.trim() === "") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `${name} must be non-empty when provided (omit it instead)`,
-          path: [name],
-        });
-      }
-      if (/\s/.test(value) || value.includes("/")) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `${name} may not contain spaces or '/' (got ${JSON.stringify(value)})`,
-          path: [name],
-        });
-      }
-      if (value.toLowerCase().includes("todo")) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `${name} still holds a scaffold placeholder (${JSON.stringify(value)}); fill it or omit it`,
-          path: [name],
-        });
+      for (const message of displayPathContentIssues(name, value)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: [name] });
       }
     }
     if (rsa.path2 !== undefined && rsa.path1 === undefined) {

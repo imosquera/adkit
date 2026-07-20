@@ -17,6 +17,7 @@ import {
   CampaignStatusChangeSchema,
   KeywordSchema,
   SearchPartnersChangeSchema,
+  displayPathPairErrors,
   type AdGroup,
   type Keyword,
 } from "../lib/schema.js";
@@ -435,6 +436,9 @@ function rewritesErrors(rewrites: Array<Record<string, unknown>>): string[] {
       ...(new Set(ds).size !== ds.length ? [`ad ${adId}: duplicate description`] : []),
       ...hs.filter((h) => h.length > H_MAX).map((h) => `ad ${adId}: headline >${H_MAX} (${h.length}) ${pyRepr(h)}`),
       ...ds.filter((d) => d.length > D_MAX).map((d) => `ad ${adId}: description >${D_MAX} (${d.length}) ${pyRepr(d)}`),
+      // Optional display-path rewrite (path1/path2): same rules as /adkit create,
+      // via the shared displayPathPairErrors parser. Omitted paths add nothing.
+      ...displayPathPairErrors(rw.path1, rw.path2, `ad ${adId}: `),
     ];
   };
   return rewrites.flatMap(one);
