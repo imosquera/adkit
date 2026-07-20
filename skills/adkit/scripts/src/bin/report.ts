@@ -38,10 +38,12 @@ import {
   campaignDailyQuery,
   campaignTotalsQuery,
   dateWindow,
+  geoQuery,
+  geoRegionQuery,
   keywordQuery,
   searchTermQuery,
 } from "../gaql/builders.js";
-import { metricDict, type MetricDict, remediationHint } from "../lib/report.js";
+import { metricDict, type MetricDict, remediationHint, safeRatio } from "../lib/report.js";
 
 /** The account/manager we report on by default (overridable via args). */
 export const DEFAULT_CUSTOMER = "1111111111"; // 111-111-1111
@@ -107,6 +109,18 @@ interface SearchTermRow {
   metrics: RowMetrics;
 }
 
+interface GeoRow {
+  campaign: { id: number | string };
+  geographic_view: { country_criterion_id?: number | string | null };
+  metrics: RowMetrics;
+}
+
+interface GeoRegionRow {
+  campaign: { id: number | string };
+  segments: { geo_target_region?: string | null };
+  metrics: RowMetrics;
+}
+
 // ---------------------------------------------------------------------------
 // Shaped report rows — the flat, normalised records written to the report.
 // ---------------------------------------------------------------------------
@@ -137,8 +151,12 @@ type SearchTermRecord = {
   search_term: string;
 } & MetricDict &
   Record<string, unknown>;
+// Geo rows are aggregated (summed across campaigns per geo key), so unlike the
+// per-entity records above they carry only the geo key + rolled-up metrics.
+type GeoRecord = { country_criterion_id: string } & MetricDict;
+type GeoRegionRecord = { region: string } & MetricDict;
 
-/** The six row collections pulled from the API, before analysis. */
+/** The row collections pulled from the API, before analysis. */
 export interface ReportData {
   campaigns: CampaignRecord[];
   campaign_daily: CampaignDailyRecord[];
@@ -146,6 +164,8 @@ export interface ReportData {
   ads: AdRecord[];
   keywords: KeywordRecord[];
   search_terms: SearchTermRecord[];
+  geo: GeoRecord[];
+  geo_regions: GeoRegionRecord[];
 }
 
 /** One campaign's deterministic cluster analysis. */
@@ -183,9 +203,59 @@ function metricsOf(metrics: RowMetrics): MetricDict {
   });
 }
 
+/** Grouping key for a geo bucket; a null/absent key collapses to one sentinel bucket. */
+const GEO_UNKNOWN = "(unknown)";
+function geoKey(value: number | string | null | undefined): string {
+  return value === null || value === undefined || value === "" ? GEO_UNKNOWN : String(value);
+}
+
+/** The only metrics that can be summed across geo buckets (derived rates cannot). */
+interface GeoTotals {
+  cost: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+}
+
 /**
- * Shape the six raw SDK row collections into the flat, normalised report rows.
- * Pure: same rows in -> same records out.
+ * Roll per-campaign geo rows up per key: sum the additive metrics (cost,
+ * impressions, clicks, conversions) into a {@link GeoTotals}, then recompute every
+ * derived rate (ctr, avg_cpc, cost_per_conversion) from those summed totals — a
+ * per-unit rate summed across buckets is meaningless. Ordered by cost descending.
+ * Pure: no input mutation (reduce into a Map, then map/sort). Output field order
+ * matches {@link MetricDict} so the geo YAML lines up with the other collections.
+ */
+function rollupGeo(
+  rows: ReadonlyArray<{ key: string; metrics: MetricDict }>,
+): Array<{ key: string } & MetricDict> {
+  const summed = rows.reduce((acc, { key, metrics: m }) => {
+    const prev = acc.get(key) ?? { cost: 0, impressions: 0, clicks: 0, conversions: 0 };
+    acc.set(key, {
+      cost: prev.cost + m.cost,
+      impressions: prev.impressions + m.impressions,
+      clicks: prev.clicks + m.clicks,
+      conversions: prev.conversions + m.conversions,
+    });
+    return acc;
+  }, new Map<string, GeoTotals>());
+  return [...summed.entries()]
+    .map(([key, t]) => ({
+      key,
+      cost: t.cost,
+      impressions: t.impressions,
+      clicks: t.clicks,
+      ctr: safeRatio(t.clicks, t.impressions),
+      avg_cpc: safeRatio(t.cost, t.clicks),
+      conversions: t.conversions,
+      cost_per_conversion: safeRatio(t.cost, t.conversions),
+    }))
+    .sort((a, b) => b.cost - a.cost);
+}
+
+/**
+ * Shape the raw SDK row collections into the flat, normalised report rows.
+ * Pure: same rows in -> same records out. The six per-entity collections stay
+ * one-record-per-row; the two geo collections are aggregated per geo key.
  */
 export function shapeRows(rows: {
   campaigns: CampaignTotalsRow[];
@@ -194,6 +264,8 @@ export function shapeRows(rows: {
   ads: AdRow[];
   keywords: KeywordRow[];
   searchTerms: SearchTermRow[];
+  geo: GeoRow[];
+  geoRegions: GeoRegionRow[];
 }): ReportData {
   return {
     campaigns: rows.campaigns.map((r) => ({
@@ -238,6 +310,18 @@ export function shapeRows(rows: {
       search_term: r.search_term_view.search_term,
       ...metricsOf(r.metrics),
     })),
+    geo: rollupGeo(
+      rows.geo.map((r) => ({
+        key: geoKey(r.geographic_view.country_criterion_id),
+        metrics: metricsOf(r.metrics),
+      })),
+    ).map(({ key, ...m }) => ({ country_criterion_id: key, ...m })),
+    geo_regions: rollupGeo(
+      rows.geoRegions.map((r) => ({
+        key: geoKey(r.segments.geo_target_region),
+        metrics: metricsOf(r.metrics),
+      })),
+    ).map(({ key, ...m }) => ({ region: key, ...m })),
   };
 }
 
@@ -375,15 +459,18 @@ async function pull(
   end: string,
   dailyEnd: string,
 ): Promise<ReportData> {
-  const [campaigns, campaignDaily, adGroups, ads, keywords, searchTerms] = await Promise.all([
-    search<CampaignTotalsRow>(client, customerId, campaignTotalsQuery(start, end)),
-    search<CampaignDailyRow>(client, customerId, campaignDailyQuery(start, dailyEnd)),
-    search<AdGroupRow>(client, customerId, adGroupQuery(start, end)),
-    search<AdRow>(client, customerId, adQuery(start, end)),
-    search<KeywordRow>(client, customerId, keywordQuery(start, end)),
-    search<SearchTermRow>(client, customerId, searchTermQuery(start, end)),
-  ]);
-  return shapeRows({ campaigns, campaignDaily, adGroups, ads, keywords, searchTerms });
+  const [campaigns, campaignDaily, adGroups, ads, keywords, searchTerms, geo, geoRegions] =
+    await Promise.all([
+      search<CampaignTotalsRow>(client, customerId, campaignTotalsQuery(start, end)),
+      search<CampaignDailyRow>(client, customerId, campaignDailyQuery(start, dailyEnd)),
+      search<AdGroupRow>(client, customerId, adGroupQuery(start, end)),
+      search<AdRow>(client, customerId, adQuery(start, end)),
+      search<KeywordRow>(client, customerId, keywordQuery(start, end)),
+      search<SearchTermRow>(client, customerId, searchTermQuery(start, end)),
+      search<GeoRow>(client, customerId, geoQuery(start, end)),
+      search<GeoRegionRow>(client, customerId, geoRegionQuery(start, end)),
+    ]);
+  return shapeRows({ campaigns, campaignDaily, adGroups, ads, keywords, searchTerms, geo, geoRegions });
 }
 
 /** Absolute path of the report file for a given day + customer. */
