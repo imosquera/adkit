@@ -1,6 +1,6 @@
 ---
 description: "Apply deterministic updates from an /adkit audit to a live campaign via a validated plan: RSA/extension/negative/budget edits, positive-keyword editing, adding whole new ad groups, and campaign on/off (ads.sh update). Dry-run unless --apply."
-argument-hint: "[--customer <10-digit>] [--apply]  (author an update plan JSON from an /adkit audit, then validate + apply it)"
+argument-hint: "[--customer <10-digit>] [--apply]  (author an update plan YAML from an /adkit audit, then validate + apply it)"
 user-invocable: true
 disable-model-invocation: false
 ---
@@ -16,7 +16,7 @@ $ARGUMENTS
 You apply the updates that an `/adkit audit` identified. The audit is read-only; this skill mutates. The split is deliberate (see `reference/conventions.md` → *Division of labor*):
 
 - **You author the creative update** — when a gap needs new copy, *you* write the 15 headlines / 4 descriptions tuned to that ad group's real keyword (templated, keyword-agnostic copy is what grades POOR).
-- **The CLI validates and mutates** — you write an update plan (JSON); `ads.sh update` re-validates it against the RSA rules and applies it. **Dry-run unless `--apply`.**
+- **The CLI validates and mutates** — you write an update plan (YAML); `ads.sh update` re-validates it against the RSA rules and applies it. **Dry-run unless `--apply`.**
 
 Mechanics (ads.sh invocation, customer-id resolution, the JSON envelope, credentials/preflight) are in **`reference/conventions.md`** — read it once. Run `ads.sh preflight` once per session.
 
@@ -34,26 +34,65 @@ For every ad with `headlines_under`, `descriptions_under`, `duplicate_headlines`
 
 ## 2. Write the update plan
 
-The `update` validator accepts this shape (all sections optional — include only what you're changing):
+The `update` validator accepts this shape (all sections optional — include only what you're changing). The plan is **YAML** — the same format `/adkit create` and the `adbriefs/<slug>.yaml` source of truth use, so there is one config format across the toolkit. (A legacy `.json` plan still works — JSON is a subset of YAML, parsed through the same front door — but author new plans in YAML.)
 
-```json
-{
-  "customerId": "1111111111",
-  "landingUrl": "https://www.example.com/ideas/<slug>",
-  "rewrites":        [{"adId": 813530865969, "headlines": ["…15…"], "descriptions": ["…4…"], "finalUrl": "https://…"}],
-  "appendHeadlines": [{"adId": 813624796200, "add": ["Affordable Close Add-On", "No Full-Suite Lock-In"]}],
-  "sitelinks":       [{"campaignId": 23966750362, "add": [{"text": "Book a Demo", "finalUrl": "https://…", "description1": "…≤35…", "description2": "…≤35…"}]}],
-  "callouts":        [{"campaignId": 23966750362, "add": ["No new portal", "Live in 30 days", "Built for SMB", "Free to start"]}],
-  "negatives":       [{"campaignId": 23955052962, "add": ["free", {"text": "talk to ai", "matchType": "PHRASE"}]}],
-  "keywords":        [{"adGroupId": 1789, "add": ["ai customer reply tool", {"text": "brand voice ai", "matchType": "EXACT"}], "remove": [{"text": "ai writing", "matchType": "BROAD"}], "pause": [{"text": "ai chatbot", "matchType": "PHRASE"}]}],
-  "adGroups":        [{"campaignId": 23955052962, "adGroup": {"name": "ai close assistant", "defaultBidMicros": 2000000, "responsiveSearchAd": {"headlines": ["…15…"], "descriptions": ["…4…"], "finalUrl": "https://…"}, "keywords": ["ai close assistant", {"text": "ai deal closer", "matchType": "EXACT"}]}}],
-  "budgets":         [{"campaignId": 23955052962, "dailyMicros": 50000000, "maxRaisePct": 100}],
-  "campaignStatus":  [{"campaignId": "23955052962", "status": "ENABLED"}],
-  "adGroupStatus":   [{"adGroupId": "200325112680", "status": "PAUSED"}],
-  "adStatus":        [{"adId": "816978549834", "status": "ENABLED"}],
-  "searchPartners":  [{"campaignId": "23955052962", "enabled": false}],
-  "languages":       [{"campaignId": 23969397981}]
-}
+```yaml
+customerId: "1111111111"
+landingUrl: "https://www.example.com/ideas/<slug>"
+rewrites:
+  - adId: 813530865969
+    headlines: ["…15…"]
+    descriptions: ["…4…"]
+    finalUrl: "https://…"
+appendHeadlines:
+  - adId: 813624796200
+    add: ["Affordable Close Add-On", "No Full-Suite Lock-In"]
+sitelinks:
+  - campaignId: 23966750362
+    add:
+      - text: "Book a Demo"
+        finalUrl: "https://…"
+        description1: "…≤35…"
+        description2: "…≤35…"
+callouts:
+  - campaignId: 23966750362
+    add: ["No new portal", "Live in 30 days", "Built for SMB", "Free to start"]
+negatives:
+  - campaignId: 23955052962
+    add: ["free", { text: "talk to ai", matchType: "PHRASE" }]
+keywords:
+  - adGroupId: 1789
+    add: ["ai customer reply tool", { text: "brand voice ai", matchType: "EXACT" }]
+    remove: [{ text: "ai writing", matchType: "BROAD" }]
+    pause: [{ text: "ai chatbot", matchType: "PHRASE" }]
+adGroups:
+  - campaignId: 23955052962
+    adGroup:
+      name: "ai close assistant"
+      defaultBidMicros: 2000000
+      responsiveSearchAd:
+        headlines: ["…15…"]
+        descriptions: ["…4…"]
+        finalUrl: "https://…"
+      keywords: ["ai close assistant", { text: "ai deal closer", matchType: "EXACT" }]
+budgets:
+  - campaignId: 23955052962
+    dailyMicros: 50000000
+    maxRaisePct: 100
+campaignStatus:
+  - campaignId: "23955052962"
+    status: "ENABLED"
+adGroupStatus:
+  - adGroupId: "200325112680"
+    status: "PAUSED"
+adStatus:
+  - adId: "816978549834"
+    status: "ENABLED"
+searchPartners:
+  - campaignId: "23955052962"
+    enabled: false
+languages:
+  - campaignId: 23969397981
 ```
 
 - **`rewrites`** replace *all* assets on an ad; **`appendHeadlines`** merge with the live headlines (preserve the good ones, top up to 15). An optional **`finalUrl`** (https) on a rewrite **repoints the ad's landing page**; it may accompany the 15/4 copy or stand alone — a rewrite carrying only `finalUrl` is a **URL-only repoint** that leaves the live copy untouched (the fix for a new ad group's ad pointing at the wrong page). An empty rewrite (no copy and no `finalUrl`) is rejected.
@@ -71,15 +110,20 @@ The `update` validator accepts this shape (all sections optional — include onl
 
 ## Local brief (`adbriefs/`) — source of truth + review gate
 
-Each campaign has a persisted brief at `adbriefs/<slug>.yaml` (written by `/adkit create`), the local **source of truth** for its full state — see `reference/conventions.md` → *`adbriefs/` — the local source of truth + diff-before-apply gate* for the format and the write-brief → diff → apply flow. The review-the-change gate for an update is the **`--dry-run` (default) → `--apply`** two-step below: dry-run shows the planned actions and mutates nothing; `--apply` performs the live change. After a successful apply, restage the campaign's brief so `adbriefs/<slug>.yaml` reflects the new live state (re-run `/adkit create` from the updated brief, or edit the brief to match), keeping the local record in sync.
+Each campaign persists as **two sibling files** under `adbriefs/`, written by `/adkit create` (Terraform-style intent vs. state):
 
-> **In flight:** teaching `ads.sh update` to stage the plan into the campaign's `adbriefs/` brief and print the *brief diff* automatically (so the update-side gate mirrors `create`'s) is the next increment — the shared `src/adbriefs/` machinery (`store.ts`/`diff.ts`) it needs already exists. Until then, use the `--dry-run` → `--apply` gate and keep the brief in sync by hand.
+- **`adbriefs/<slug>.yaml`** — the **intent brief**: names + copy only, the account-independent source of truth. Portable and replayable; it deliberately carries **no live ids**.
+- **`adbriefs/<slug>.state.yaml`** — the **state file**: the `name ↔ live id` map (`campaignId`, per-ad-group `adGroupId`/`adId`) Google assigned at publish time. This is what lets an id-keyed update plan be resolved back to the brief entity it names, with **no extra live queries**.
+
+See `reference/conventions.md` → *`adbriefs/` — the local source of truth + diff-before-apply gate* for the format and the write-brief → diff → apply flow. The review-the-change gate for an update is the **`--dry-run` (default) → `--apply`** two-step below: dry-run shows the planned actions and mutates nothing; `--apply` performs the live change. After a successful apply, restage the campaign's brief so `adbriefs/<slug>.yaml` reflects the new live state (re-run `/adkit create` from the updated brief, or edit the brief to match), keeping the local record in sync.
+
+> **In flight:** teaching `ads.sh update` to *consume* the state file — resolve a plan's ids to brief entities, stage the change into `adbriefs/<slug>.yaml`, and print the *brief diff* automatically (so the update-side gate mirrors `create`'s) — is the next increment. The state file it needs now exists (written by `create`; see `src/adbriefs/state.ts`), alongside the shared `store.ts`/`diff.ts` machinery. Until update-side staging lands, use the `--dry-run` → `--apply` gate and keep the brief in sync by hand.
 
 ## 3. Dry-run, then apply
 
 ```bash
-ads.sh update /tmp/plan.json            # dry-run: validates + prints planned actions
-ads.sh update /tmp/plan.json --apply     # mutate live
+ads.sh update plan.yaml            # dry-run: validates + prints planned actions
+ads.sh update plan.yaml --apply     # mutate live
 ```
 
 (`ads.sh apply-fixes` is a **deprecated alias** for `ads.sh update` — prefer `update`.)
