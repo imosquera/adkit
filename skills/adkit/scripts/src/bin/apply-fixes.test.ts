@@ -26,7 +26,7 @@ vi.mock("../lib/auth.js", async (importOriginal) => {
   return { ...actual, loadClient: () => currentClient };
 });
 
-const { main, livePositiveKeywords, liveNegatives, rsaUpdateOp } = await import("./apply-fixes.js");
+const { main, loadPlan, livePositiveKeywords, liveNegatives, rsaUpdateOp } = await import("./apply-fixes.js");
 const { validate } = await import("../fixes/plan.js");
 
 // ---------------------------------------------------------------------------
@@ -777,5 +777,74 @@ describe("rewrites display path", () => {
     expect(out).toContain("VALIDATION FAILED");
     expect(out).toContain("path2 requires path1");
     expect(mutations).toEqual([]); // never reached the mutate edge
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadPlan — the single front-door parser. YAML is the authored format; JSON is a
+// subset of YAML, so a legacy .json plan must parse to the identical object the
+// zod validator then receives. One parser, no schema fork.
+// ---------------------------------------------------------------------------
+describe("loadPlan (YAML front door)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "loadplan-"));
+  });
+
+  // A representative plan touching several sections, expressed both ways.
+  const yamlPlan = `
+customerId: "1111111111"
+landingUrl: "https://www.example.com/ideas/close-assistant"
+rewrites:
+  - adId: 813530865969
+    headlines: ["Close Deals Faster", "AI Sales Assistant"]
+    descriptions: ["Ship revenue, not busywork."]
+    finalUrl: "https://www.example.com/close"
+negatives:
+  - campaignId: 23955052962
+    add:
+      - "free"
+      - text: "talk to ai"
+        matchType: "PHRASE"
+budgets:
+  - campaignId: 23955052962
+    dailyMicros: 50000000
+    maxRaisePct: 100
+campaignStatus:
+  - campaignId: "23955052962"
+    status: "ENABLED"
+`;
+
+  const jsonPlan = JSON.stringify({
+    customerId: "1111111111",
+    landingUrl: "https://www.example.com/ideas/close-assistant",
+    rewrites: [
+      {
+        adId: 813530865969,
+        headlines: ["Close Deals Faster", "AI Sales Assistant"],
+        descriptions: ["Ship revenue, not busywork."],
+        finalUrl: "https://www.example.com/close",
+      },
+    ],
+    negatives: [
+      { campaignId: 23955052962, add: ["free", { text: "talk to ai", matchType: "PHRASE" }] },
+    ],
+    budgets: [{ campaignId: 23955052962, dailyMicros: 50000000, maxRaisePct: 100 }],
+    campaignStatus: [{ campaignId: "23955052962", status: "ENABLED" }],
+  });
+
+  it("parses a YAML plan and the equivalent JSON plan to the identical object", () => {
+    const yamlPath = join(dir, "plan.yaml");
+    const jsonPath = join(dir, "plan.json");
+    writeFileSync(yamlPath, yamlPlan);
+    writeFileSync(jsonPath, jsonPlan);
+
+    const fromYaml = loadPlan(yamlPath);
+    const fromJson = loadPlan(jsonPath);
+
+    expect(fromYaml).toEqual(fromJson);
+    // Spot-check the value the validator downstream depends on survived the parse.
+    expect(fromYaml.customerId).toBe("1111111111");
+    expect(fromYaml.negatives?.[0]?.add).toEqual(["free", { text: "talk to ai", matchType: "PHRASE" }]);
   });
 });

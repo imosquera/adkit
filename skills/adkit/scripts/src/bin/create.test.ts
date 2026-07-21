@@ -6,7 +6,7 @@ import { parse as parseYaml } from "yaml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Stub the publish + client so a non-dry-run create test never touches Google Ads.
-const hoisted = vi.hoisted(() => ({ outcome: { results: [] as unknown[], failure: null as unknown } }));
+const hoisted = vi.hoisted(() => ({ outcome: { results: {} as unknown, failure: null as unknown } }));
 vi.mock("../ads/publish.js", () => ({ publishV1: async () => hoisted.outcome }));
 vi.mock("../lib/auth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/auth.js")>();
@@ -25,6 +25,7 @@ import {
 } from "./create.js";
 import { extractNegatives, readThemeGroups, DEFAULT_TOP_N, MAX_KEYWORDS_PER_THEME } from "../ideas/parse.js";
 import { parseBrief, type Brief } from "../lib/schema.js";
+import { parseState } from "../adbriefs/state.js";
 
 // Silence the `error: ...` / scaffold-summary stderr writes the die-path emits.
 vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -327,8 +328,23 @@ describe("create wires the adbriefs/ persist + diff gate (main)", () => {
     process.chdir(root);
     prevCustomer = process.env["GOOGLE_ADS_CUSTOMER_ID"];
     process.env["GOOGLE_ADS_CUSTOMER_ID"] = "1234567890";
-    hoisted.outcome = { results: [], failure: null };
+    hoisted.outcome = { results: validExecResults(), failure: null };
   });
+
+  /** A successful executor result — the ids `buildState` records into `<slug>.state.yaml`. */
+  function validExecResults() {
+    return {
+      budgetId: "111",
+      campaignId: "222",
+      sitelinkResourceNames: [],
+      calloutResourceNames: [],
+      priceAssetResourceNames: [],
+      structuredSnippetResourceNames: [],
+      adGroups: [
+        { name: "widgets", adGroupId: "333", responsiveSearchAdId: "444", keywordResourceNames: [] },
+      ],
+    };
+  }
 
   afterEach(() => {
     process.chdir(prevCwd);
@@ -376,6 +392,40 @@ describe("create wires the adbriefs/ persist + diff gate (main)", () => {
     expect(out.briefSynced).toBe(true);
     const persisted = parseBrief(parseYaml(readFileSync(join(root, ...SLUG_PATH), "utf8")));
     expect(persisted.campaign.name).toBe("widget-launch-search");
+  });
+
+  it("a real publish writes the <slug>.state.yaml with the live ids and reports stateSynced", async () => {
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--skip-url-check"]);
+    const out = JSON.parse(cap.text()) as { stateSynced: boolean; statePath: string | null };
+    expect(code).toBe(0);
+    expect(out.stateSynced).toBe(true);
+    const statePath = join(root, "adbriefs", "widget-launch-search.state.yaml");
+    expect(out.statePath?.endsWith(join("adbriefs", "widget-launch-search.state.yaml"))).toBe(true);
+    const state = parseState(parseYaml(readFileSync(statePath, "utf8")));
+    expect(state.campaign.campaignId).toBe("222");
+    expect(state.campaign.budgetId).toBe("111");
+    expect(state.adGroups).toEqual([{ name: "widgets", adGroupId: "333", adId: "444" }]);
+  });
+
+  it("dry-run announces willWriteState but writes NO state file", async () => {
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--dry-run", "--skip-url-check"]);
+    const out = JSON.parse(cap.text()) as { willWriteState: string };
+    expect(code).toBe(0);
+    expect(out.willWriteState.endsWith(join("adbriefs", "widget-launch-search.state.yaml"))).toBe(true);
+    expect(existsSync(join(root, "adbriefs", "widget-launch-search.state.yaml"))).toBe(false);
+  });
+
+  it("a publish failure writes NO state file and reports stateSynced:false", async () => {
+    hoisted.outcome = { results: validExecResults(), failure: { step: "create-search-campaign", message: "boom" } };
+    const cap = captureStdout();
+    const code = await main([briefFile(), "--skip-url-check"]);
+    const out = JSON.parse(cap.text()) as { stateSynced: boolean; statePath: string | null };
+    expect(code).toBe(1);
+    expect(out.stateSynced).toBe(false);
+    expect(out.statePath).toBe(null);
+    expect(existsSync(join(root, "adbriefs", "widget-launch-search.state.yaml"))).toBe(false);
   });
 
   it("refuses to overwrite a different campaign's brief at the same slug (collision)", async () => {

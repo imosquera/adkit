@@ -35,6 +35,7 @@ import {
   writeBrief,
 } from "../adbriefs/store.js";
 import { diffBriefs } from "../adbriefs/diff.js";
+import { buildState, statePathForCampaign, writeState } from "../adbriefs/state.js";
 import { resolveCustomer } from "../cli/args.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
 import {
@@ -404,6 +405,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     // root the skill runs from) so a test can redirect it.
     const adbriefsRoot = process.cwd();
     const adbriefsPath = briefPathForCampaign(adbriefsRoot, brief);
+    const statePath = statePathForCampaign(adbriefsRoot, brief);
     // Surface a slug collision with a *different* campaign here — in dry-run too — so the
     // review-the-change gate catches it, not just the real publish (FR-008). Otherwise the
     // diff below would compare two unrelated campaigns and read as nonsense.
@@ -440,6 +442,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         briefPath: adbriefsPath,
         briefDiff: { changed: briefDiff.changed, added: briefDiff.added, removed: briefDiff.removed },
         willWriteBrief: adbriefsPath,
+        // The state file (name ↔ live ids) is written after a successful publish, once
+        // Google has assigned the ids — so a dry-run only announces the intent.
+        willWriteState: statePath,
         willPublish:
           `budget → campaign(PAUSED) → ${brief.campaign.sitelinks.length} sitelinks → ` +
           `${brief.campaign.callouts.length} callouts → ${agNames.length}x ` +
@@ -463,6 +468,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     const client = loadClient();
     const outcome = await publishV1(client, customerId, brief, archiveExisting);
 
+    // On a successful publish, persist the live-id state file (name ↔ campaignId/
+    // adGroupId/adId) beside the intent brief. This is what lets `/adkit update` later
+    // resolve a plan's ids back to brief entities and stage a change into the brief
+    // (see src/adbriefs/state.ts). Only written on success — a partial publish has no
+    // complete id set to record.
+    const stateSynced = outcome.failure === null;
+    if (stateSynced) {
+      writeState(adbriefsRoot, brief, buildState(brief, outcome.results));
+    }
+
     emitJson({
       ok: outcome.failure === null,
       status: outcome.failure === null ? "success" : "failed",
@@ -470,9 +485,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       created: outcome.results,
       failure: outcome.failure,
       briefPath: adbriefsPath,
+      statePath: stateSynced ? statePath : null,
       // The brief was written before publish, so it reflects the intended state; on a
       // failure the envelope's `failure` is the brief↔live divergence signal (FR-010).
       briefSynced: outcome.failure === null,
+      stateSynced,
       note: `Campaign + RSAs created PAUSED. Brief persisted at ${adbriefsPath} (local source of truth; manage live via the Ads UI / /adkit audit).`,
     });
     return outcome.failure === null ? 0 : 1;

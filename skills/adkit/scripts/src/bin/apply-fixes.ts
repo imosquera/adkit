@@ -1,11 +1,16 @@
 /**
- * IO entry: apply a fixes plan (JSON) produced from an /adkit audit run.
+ * IO entry: apply a fixes plan (YAML) produced from an /adkit audit run.
  *
  * The model authors the plan (product-specific copy); this script validates it
  * against the same RSA rules /adkit create enforces, then mutates. Dry-run unless
  * `--apply`.
  *
- * Plan JSON shape (all sections optional):
+ * The plan is authored in YAML — the same format `/adkit create` and the
+ * `adbriefs/<slug>.yaml` source of truth use, so there is one config format across
+ * the toolkit. JSON is a subset of YAML, so a legacy `.json` plan still parses
+ * through the same front door (`loadPlan`); there is no second parser or schema.
+ *
+ * Plan shape (all sections optional):
  * {
  *   "customerId": "1111111111",
  *   "loginCustomerId": null,
@@ -53,10 +58,11 @@
  * warning line + a distinct key in the JSON envelope). The harness/permission layer
  * gates the live-spend action.
  *
- * Usage: ads.sh update plan.json [--apply]   (alias: ads.sh apply-fixes)
+ * Usage: ads.sh update plan.yaml [--apply]   (alias: ads.sh apply-fixes)
  */
 
 import { readFileSync, statSync } from "node:fs";
+import { parse as yamlParse, YAMLParseError } from "yaml";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 
@@ -416,6 +422,17 @@ interface FixesPlan extends Record<string, unknown> {
   languages?: Array<Record<string, unknown>>;
 }
 
+/**
+ * Read + parse an update plan file into the loose {@link FixesPlan} structure. The
+ * plan is authored in YAML (the format `/adkit create` and `adbriefs/<slug>.yaml`
+ * use); JSON is a subset of YAML, so a legacy `.json` plan parses through this same
+ * front door with no second parser. `validate` (zod) remains the sole authority on
+ * shape — this only turns text into an object.
+ */
+export function loadPlan(path: string): FixesPlan {
+  return yamlParse(readFileSync(path, "utf8")) as FixesPlan;
+}
+
 /** A plan section as a typed array (empty when absent). */
 function section(plan: FixesPlan, key: keyof FixesPlan): Array<Record<string, unknown>> {
   const value = plan[key];
@@ -450,8 +467,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     emitJson(errorEnvelope(`plan file not found: ${planPath}`));
     return 2;
   }
-  // PARSE, DON'T VALIDATE: read + parse the plan JSON ONCE into a typed structure.
-  const plan = JSON.parse(readFileSync(planPath, "utf8")) as FixesPlan;
+  // PARSE, DON'T VALIDATE: read + parse the plan YAML ONCE into a typed structure.
+  let plan: FixesPlan;
+  try {
+    plan = loadPlan(planPath);
+  } catch (exc) {
+    if (exc instanceof YAMLParseError) {
+      const where = exc.linePos?.[0] ? ` (line ${exc.linePos[0].line})` : "";
+      emitJson(errorEnvelope(`plan is not valid YAML${where}: ${exc.message.split("\n")[0]}`));
+      return 2;
+    }
+    throw exc;
+  }
   if (!("customerId" in plan) || plan.customerId === undefined) {
     emitJson(errorEnvelope("plan is missing required 'customerId'"));
     return 2;
