@@ -76,6 +76,22 @@ describe("createAdGroup", () => {
     await createAdGroup(client, "123", ag, CAMPAIGN_RN, "PAUSED");
     expect(calls[0]!.ops[0]!.resource["status"]).toBe(enums.AdGroupStatus.PAUSED);
   });
+
+  it("disables AI Max search-term matching by default (ad-group opt-out)", async () => {
+    const { client, calls } = makeFake();
+    const ag = briefFixture({}).adGroups[0]!;
+    await createAdGroup(client, "123", ag, CAMPAIGN_RN);
+    const setting = calls[0]!.ops[0]!.resource["ai_max_ad_group_setting"] as { disable_search_term_matching: boolean };
+    expect(setting.disable_search_term_matching).toBe(true);
+  });
+
+  it("keeps AI Max search-term matching on when the ad group opts in (adGroup.aiMax)", async () => {
+    const { client, calls } = makeFake();
+    const ag = { ...briefFixture({}).adGroups[0]!, aiMax: true };
+    await createAdGroup(client, "123", ag, CAMPAIGN_RN);
+    const setting = calls[0]!.ops[0]!.resource["ai_max_ad_group_setting"] as { disable_search_term_matching: boolean };
+    expect(setting.disable_search_term_matching).toBe(false);
+  });
 });
 
 describe("targetUsCanada", () => {
