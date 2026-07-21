@@ -153,7 +153,7 @@ export function buildSkeleton(
       networkSettings: "search-partners-display", // Google search + search partners (Display Network always off); "search-only" to restrict
       bidStrategy: "maximize-clicks", // cold-start warm-up; graduate to maximize-conversions in UI after ~15-30 conv/30d
       // "cpcBidCeilingMicros": 2_000_000,  // optional $2.00 max CPC cap for the maximize-clicks warm-up
-      aiMax: true, // AI Max for Search on; set False for strict keyword matching
+      aiMax: true, // AI Max for Search on; set False for strict keyword matching. Per-ad-group opt-out via adGroups[].aiMax (default off)
       // "devices": ["computer", "tablet", "tv"],  // omit = default (mobile -100%); list all to serve everywhere
 
       // Campaign-level negative keywords, auto-seeded from the processed

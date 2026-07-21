@@ -608,6 +608,10 @@ export async function createAdGroup(
       status: enums.AdGroupStatus[status],
       type: enums.AdGroupType.SEARCH_STANDARD,
       cpc_bid_micros: adGroup.defaultBidMicros,
+      // AI Max search-term matching is disabled per ad group unless the ad group
+      // opts in (adGroup.aiMax). Even under a campaign running AI Max, ad groups
+      // stay on strict keyword matching by default. No-op when campaign AI Max is off.
+      ai_max_ad_group_setting: { disable_search_term_matching: !adGroup.aiMax },
     },
   };
   const result = await client.mutate(customerId, [op]);

@@ -173,7 +173,8 @@ export const CampaignSchema = z
     // Optional max CPC ceiling (micros) for maximize-clicks — caps warm-up spend.
     cpcBidCeilingMicros: z.number().int().gt(0).optional(),
     // AI Max for Search: broad-match expansion + Google-AI asset/landing-page
-    // matching. On by default (Google's recommended posture).
+    // matching. On by default (Google's recommended posture). Individual ad
+    // groups opt out via AdGroup.aiMax (default off — see AdGroupSchema).
     aiMax: z.boolean().default(true),
     // Device targeting. Undefined => default brief: mobile excluded at -100%.
     devices: z.array(z.enum(DEVICES)).optional(),
@@ -367,6 +368,11 @@ export const AdGroupSchema = z
     defaultBidMicros: z.number().int().gt(0).max(15_000_000),
     responsiveSearchAd: ResponsiveSearchAdSchema,
     keywords: z.array(KeywordSchema).min(1).max(AD_GROUP_MAX_KEYWORDS),
+    // AI Max search-term matching for this ad group. Off by default: even when
+    // the campaign runs AI Max, each ad group stays on strict keyword matching
+    // (disable_search_term_matching = true) unless it opts in here. No effect
+    // when campaign.aiMax is false.
+    aiMax: z.boolean().default(false),
   })
   .strict();
 export type AdGroup = z.infer<typeof AdGroupSchema>;
