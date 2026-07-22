@@ -1,7 +1,7 @@
 {
-  "branch_name": "026-adbriefs-stage-diff",
-  "feature_num": "026",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/026-adbriefs-stage-diff",
-  "source_issue": 26,
-  "feature_directory": "specs/026-adbriefs-stage-diff"
+  "branch_name": "031-adcopy-best-practices",
+  "feature_num": "031",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/031-adcopy-best-practices",
+  "source_issue": 31,
+  "feature_directory": "specs/031-adcopy-best-practices"
 }

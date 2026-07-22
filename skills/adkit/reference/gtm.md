@@ -272,7 +272,7 @@ After `### Keyword Themes` is written, generate **one Responsive Search Ad set p
 7. Display path: two segments, each ≤ 15 chars, lowercase, hyphenated; reflect the theme's resolved offer (e.g. `/free-guide/<topic>` for a cold-resolved theme, `/get-quote/<topic>` for a scalding one).
 8. Notes line, keyed to the theme's resolved temperature: cold = soft lead magnet, no urgency/RLSA · warm = destination match + any retargeting · hot = FOMO mechanic + any RLSA segment · scalding = explicit CTA + any RLSA/area-code call extension.
 
-### Ad Copy — Eight Principles (binding)
+### Ad Copy — Nine Principles (binding)
 
 Each theme has ONE resolved temperature — the buying-cycle stage its `> Offer:` was matched to in the Keyword phase (cold/warm/hot/scalding, per Buying-Cycle Temperature & Offer Matching). Write that theme's whole ad set to that one temperature; the gradient below tells you how hard to push at each.
 
@@ -284,12 +284,13 @@ Each theme has ONE resolved temperature — the buying-cycle stage its `> Offer:
 6. **Explicit, action-oriented CTA.** Direct verbs on hot/scalding themes; softer verbs ("See", "Learn") allowed only on a cold theme.
 7. **Dynamic keyword insertion.** On hot/scalding themes, ≥1 headline uses `{KeyWord:<fallback>}` so the ad mirrors the query; combine with location tokens where applicable.
 8. **RLSA / retargeting awareness.** In Notes, call out RLSA-targeted sets and the segment (cart-abandon, pricing-viewer, demo-no-show); for those, include one returning-visitor-incentive headline.
+9. **Distribute across persuasion angles + quality-score rules** — see [`reference/google/4-ad-copy.md`](google/4-ad-copy.md) (Persuasion Angles + Quality-Score Alignment), the canonical source for these. Spread the 15 headlines across the three offer-matched frames it defines — cost-of-inaction, FOMO/scarcity-urgency (hot/scalding themes only), and risk-reversal — alongside the value/feature/proof angles, and satisfy its relevance rules (landing-page match, ad-group keywords in headlines, USP-led, emotion+logic mix, no near-duplicate phrasing, keyword insertion where variants are broad). Honor its **honest-use gate**: use scarcity, guarantees, and proof numbers only when the source idea backs them — omit the angle otherwise, never invent it. This is a **qualitative distribution across the existing 15 slots, not a new required count** — the hard minimums in the Output Contract and self-check (A5) are unchanged.
 
 ### Ad Copy — Execution Steps
 
 A1. Read back the `### Keyword Themes` block you wrote. For each non-spend-trap theme lift its `> Offer:` line (used verbatim as the RSA's `> Offer:`), its resolved temperature (the buying-cycle stage that offer was matched to — sets how hard to push), and its member keywords (the concept to carry across ≥3 headlines). Skip `[spend-trap]` themes entirely.
 A2. Extract the idea's category, buyer, key promises, pricing, timelines, and proof points from the processed file for numbers and claims.
-A3. Generate one RSA ad set per non-spend-trap theme per the Output Contract and Eight Principles, in `### Keyword Themes` order. Each ad set's temperature is that theme's own resolved temperature (cold/warm/hot/scalding) — there is no fixed Cold/Warm/Hot/Scalding quartet; a campaign may have, say, two hot themes and one warm.
+A3. Generate one RSA ad set per non-spend-trap theme per the Output Contract and Nine Principles, in `### Keyword Themes` order. Each ad set's temperature is that theme's own resolved temperature (cold/warm/hot/scalding) — there is no fixed Cold/Warm/Hot/Scalding quartet; a campaign may have, say, two hot themes and one warm.
 A4. Self-check every headline (≤30 chars), every description (≤90 chars), every display-path segment (≤15 chars). Rewrite any over-limit line before writing.
 A5. Self-check per-theme minimums: 15 unique headlines, 4 unique descriptions, ≥2 numbers, ≥1 CTA verb, keyword-in-≥3-headlines, dynamic insertion when the theme is hot/scalding, no shared opening-3-words, no pins.
 A6. Append `### Ad Copy` after `### Keyword Themes` (replace it if it already exists); preserve `### Keywords`, `### Keyword Themes`, and everything else exactly.
