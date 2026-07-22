@@ -59,7 +59,7 @@ const REPO_ROOT = process.cwd();
  * Scaffolded briefs are throwaway (not committed). Stable temp path so re-running
  * the same idea slug finds the brief you filled in on the first pass.
  */
-const BRIEF_TMP_DIR = join(tmpdir(), "ads-briefs");
+const BRIEF_TMP_DIR = join(tmpdir(), "adbriefs");
 
 // ---------- io helpers ----------
 
