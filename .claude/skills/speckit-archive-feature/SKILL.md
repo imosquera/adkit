@@ -1,0 +1,1 @@
+../../../.specify/extensions/archive/.specify-dev/agent-commands/claude/speckit-archive-feature/SKILL.md

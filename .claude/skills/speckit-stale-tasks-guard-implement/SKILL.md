@@ -1,0 +1,1 @@
+../../../.specify/extensions/stale-tasks-guard/.specify-dev/agent-commands/claude/speckit-stale-tasks-guard-implement/SKILL.md

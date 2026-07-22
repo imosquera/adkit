@@ -1,0 +1,1 @@
+../../../.specify/extensions/progress/.specify-dev/agent-commands/claude/speckit-progress-tasks/SKILL.md

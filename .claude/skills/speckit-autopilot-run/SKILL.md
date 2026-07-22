@@ -1,0 +1,1 @@
+../../../.specify/extensions/autopilot/.specify-dev/agent-commands/claude/speckit-autopilot-run/SKILL.md
