@@ -38,23 +38,34 @@ const httpsUrl = z.string().refine(
   { message: "finalUrl must use https://" },
 );
 
-// Pinning is disabled: it collapses Google's combinatorial asset testing and is
-// the #1 silent ad-strength killer. `pin` stays in the schema (so historical
-// records still load) but is locked to "NONE" — any attempt to pin is rejected.
-export const HeadlineSchema = z
-  .object({
-    text: z.string().min(1).max(30),
-    pin: z.literal("NONE").default("NONE"),
-  })
-  .strict();
+// Pinning is disabled skill-wide: it collapses Google's combinatorial asset
+// testing and is the #1 silent ad-strength killer. An asset is therefore just its
+// `text` — there is no `pin` field to author, and none is written back to the brief.
+// The "no pinning" invariant lives in code (the publisher only ever sends `text`),
+// not as a per-asset "NONE" carried through the YAML.
+//
+// `dropLegacyPin` keeps older briefs loading: every brief the previous serializer
+// wrote carries `pin: "NONE"` on each headline/description, so we strip that one
+// legacy value at the parse boundary before the strict shape runs. A *real* pin
+// attempt (any other `pin` value) is left in place and rejected by `.strict()`.
+const dropLegacyPin = (v: unknown): unknown => {
+  if (v !== null && typeof v === "object" && (v as { pin?: unknown }).pin === "NONE") {
+    const { pin: _pin, ...rest } = v as Record<string, unknown>;
+    return rest;
+  }
+  return v;
+};
+
+export const HeadlineSchema = z.preprocess(
+  dropLegacyPin,
+  z.object({ text: z.string().min(1).max(30) }).strict(),
+);
 export type Headline = z.infer<typeof HeadlineSchema>;
 
-export const DescriptionSchema = z
-  .object({
-    text: z.string().min(1).max(90),
-    pin: z.literal("NONE").default("NONE"),
-  })
-  .strict();
+export const DescriptionSchema = z.preprocess(
+  dropLegacyPin,
+  z.object({ text: z.string().min(1).max(90) }).strict(),
+);
 export type Description = z.infer<typeof DescriptionSchema>;
 
 export const MATCH_TYPES = ["EXACT", "PHRASE", "BROAD"] as const;
