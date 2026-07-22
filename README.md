@@ -10,13 +10,16 @@ npx skills add git@github.com:imosquera/adkit.git
 
 ## Skills
 
-| Skill | Description |
-|---|---|
-| `/adkit create` | Publish a new search campaign from a processed idea markdown file |
-| `/adkit audit` | Audit live ad strength and surface actionable fixes |
-| `/adkit update` | Apply headline/description rewrites and sitelink changes to live ads |
-| `/adkit report` | Pull performance metrics for a campaign |
-| `/adkit gtm` | Generate keyword tiers and RSA ad copy for a processed idea |
+`adkit` is a single skill that routes to six subcommands. Invoke with `/adkit <command>` (e.g. `/adkit audit`); run bare `/adkit` to be prompted for one.
+
+| Command | Category | Description |
+|---|---|---|
+| `/adkit create` | Publishing | Publish a new search campaign from a processed idea markdown file |
+| `/adkit update` | Publishing | Apply headline/description rewrites and sitelink changes to live ads |
+| `/adkit audit` | Analysis | Audit live ad strength and surface actionable fixes (read-only) |
+| `/adkit report` | Analysis | Pull performance metrics and generate a markdown + Chart.js dashboard |
+| `/adkit research` | Analysis | Research competitors + keywords: seed from competitors/campaign, expand to adjacent keywords/competitors, rank the landscape by theme (volume, cost, competitiveness) |
+| `/adkit gtm` | Planning | Generate keyword tiers and RSA ad copy for a processed idea |
 
 ## Setup
 
