@@ -17,12 +17,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
-import type { AdsClient, GaqlRow } from "../lib/auth.js";
+import { loginCustomerIdFromYaml, type AdsClient, type GaqlRow } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
 import type { SearchArgs } from "../gaql/search-args.js";
 import { matchTypeName } from "../ads/enums.js";
-import { type LoginCustomerId, normalizeId, resolveLoginCustomerId } from "../cli/args.js";
-import { requireDigits } from "../audit/scoring.js";
+import {
+  type LoginCustomerId,
+  loginHeaderValue,
+  normalizeId,
+  resolveLoginCustomerId,
+  type ResolvedLogin,
+} from "../cli/args.js";
 import { sdkErrorMessage } from "../cli/output.js";
 import { isManagerMetricsError, managerMetricsHint } from "./audit.js";
 import {
@@ -44,7 +49,15 @@ import {
   keywordQuery,
   searchTermQuery,
 } from "../gaql/builders.js";
-import { metricDict, type MetricDict, remediationHint, safeRatio } from "../lib/report.js";
+import {
+  type EffectiveManager,
+  managerIdField,
+  managerPhrase,
+  metricDict,
+  type MetricDict,
+  remediationHint,
+  safeRatio,
+} from "../lib/report.js";
 
 /**
  * The account we report on by default (overridable via args). There is no default
@@ -409,6 +422,16 @@ export interface ReportArgs {
 }
 
 /**
+ * The value token following a space-form flag at `index`, or `undefined` when there
+ * is none — a following `--flag` counts as none, so `--manager --days 7` leaves the
+ * manager absent instead of swallowing an unrelated flag as an id (spec Edge Cases).
+ */
+function flagValue(argv: string[], index: number): string | undefined {
+  const next = argv[index + 1];
+  return next === undefined || next.startsWith("--") ? undefined : next;
+}
+
+/**
  * Parse argv into {@link ReportArgs}: positional `customer` then `--manager`
  * and `--days` flags, matching report.py's argparse. Falls back to defaults;
  * `manager` has no default (absence is `null`, not a placeholder id).
@@ -422,17 +445,21 @@ export function parseArgs(argv: string[]): ReportArgs {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--manager") {
-      manager = argv[i + 1] ?? manager;
-      i += 1;
+      const value = flagValue(argv, i);
+      manager = value ?? manager;
+      i += value === undefined ? 0 : 1;
     } else if (arg === "--days") {
-      days = Number.parseInt(argv[i + 1] ?? "", 10);
-      i += 1;
+      const value = flagValue(argv, i);
+      days = value === undefined ? days : Number.parseInt(value, 10);
+      i += value === undefined ? 0 : 1;
     } else if (arg === "--customer") {
-      // Mirror --manager/--days: consume the next token; a valueless trailing
-      // flag keeps the default rather than swallowing an unrelated token.
-      customer = argv[i + 1] ?? customer;
+      // Mirror --manager/--days: consume the next token, but never a token that is
+      // itself a flag — a valueless (or flag-followed) --customer keeps the default
+      // rather than swallowing an unrelated token.
+      const value = flagValue(argv, i);
+      customer = value ?? customer;
       customerFromFlag = true;
-      i += 1;
+      i += value === undefined ? 0 : 1;
     } else if (arg.startsWith("--manager=")) {
       manager = arg.slice("--manager=".length);
     } else if (arg.startsWith("--days=")) {
@@ -486,6 +513,30 @@ export function reportPath(cwd: string, generatedAt: string, customer: string): 
 }
 
 /**
+ * Which manager the run actually goes through, for the report field and the error
+ * text. The flag/env tiers already carry their id; the yaml tier defers to the
+ * credentials, so the id is read back out of them.
+ *
+ * That read is BEST-EFFORT on purpose, and its catch is not a swallowed error on the
+ * main path: this feeds a display/report field only, and under
+ * `ADKIT_READ_BACKEND=mcp` there may be no credentials file at all while the report
+ * itself succeeds. An unreadable file yields `yaml` ("a login was inherited, value
+ * unknown"), which is distinct from `none` ("no header was sent") — the run's real
+ * failures still surface on their own paths.
+ */
+function effectiveManager(login: ResolvedLogin): EffectiveManager {
+  if (login.source !== "yaml") {
+    return { kind: "id", id: login.value };
+  }
+  try {
+    const fromYaml = normalizeId(loginCustomerIdFromYaml());
+    return fromYaml ? { kind: "id", id: fromYaml } : { kind: "none" };
+  } catch {
+    return { kind: "yaml" };
+  }
+}
+
+/**
  * IO entry point. Loads credentials, pulls the report, writes the raw YAML under
  * ads/output/reports/, and prints the path. Returns a process exit code.
  *
@@ -494,8 +545,9 @@ export function reportPath(cwd: string, generatedAt: string, customer: string): 
  * `env` is injectable so the login-customer-id precedence is testable without
  * mutating `process.env`.
  *
- * The login-customer-id is parsed exactly once here (resolve + digit-check) into
- * the value the client seam accepts; nothing downstream re-checks it.
+ * The login-customer-id is parsed exactly once here, by
+ * {@link resolveLoginCustomerId} (tier + digit-check), into the value the client
+ * seam accepts; nothing downstream re-checks or re-normalizes it.
  */
 export async function main(
   argv: string[],
@@ -505,14 +557,10 @@ export async function main(
   const args = parseArgs(argv);
   const customer = normalizeId(args.customer);
   const login = resolveLoginCustomerId(args.manager, env);
-  // The id actually used for the login header, or null when the run used none
-  // (KEEP_YAML_LOGIN defers to whatever google-ads.yaml carries).
-  const manager = typeof login === "string" ? login : null;
-  requireDigits("manager", manager);
 
   let client: AdsClient;
   try {
-    client = clientFactory(login);
+    client = clientFactory(loginHeaderValue(login));
   } catch (exc) {
     process.stderr.write(
       `error: could not load Google Ads credentials (${String(exc)}). ` +
@@ -520,6 +568,11 @@ export async function main(
     );
     return 1;
   }
+
+  // Which manager the run is ACTUALLY going through — reported and blamed below.
+  // The yaml tier defers to the credentials, so the id has to be read back out of
+  // them to be named; that read is best-effort by design (see effectiveManager).
+  const manager = effectiveManager(login);
 
   // The one clock read; injected into the pure layer.
   const today = new Date();
@@ -538,8 +591,9 @@ export async function main(
     const msgs = isManagerMetrics ? managerMetricsHint() : sdkErrorMessage(exc);
     const hint = isManagerMetrics ? "" : remediationHint(msgs, customer, manager);
     // Name the manager ACTUALLY used so the operator can see which tier supplied it
-    // (flag/env/credentials), rather than a fabricated id.
-    const via = manager ? ` via manager ${manager}` : " with no manager";
+    // (flag/env/credentials), rather than a fabricated id — and say the login came
+    // from google-ads.yaml when it did, instead of claiming none was used.
+    const via = managerPhrase(manager);
     process.stderr.write(
       `error: Google Ads query failed for customer ${customer}${via}: ` +
         `${msgs}${hint ? ". " + hint : ""}\n`,
@@ -557,7 +611,7 @@ export async function main(
 
   const report = buildReport({
     customer,
-    manager,
+    manager: managerIdField(manager),
     data,
     start,
     end,

@@ -293,6 +293,11 @@ export type AlignmentGap = {
  * injection. Absent (null/undefined) is allowed. Delegates the digits check to the
  * central gaqlId validator.
  *
+ * `label` names the SOURCE of the bad value VERBATIM, so it carries its own marker
+ * (`--customer`, `--manager`, `GOOGLE_ADS_LOGIN_CUSTOMER_ID`): the same id can reach
+ * a command through a flag OR an environment variable, and naming a flag the
+ * operator never passed sends them to fix the wrong thing.
+ *
  * Naming note: Python `_require_digits` raised `SystemExit`; here it throws a plain
  * `Error` with the same message text.
  */
@@ -303,7 +308,7 @@ export function requireDigits(label: string, value: string | null | undefined): 
   try {
     gaqlId(value);
   } catch {
-    throw new Error(`error: --${label} must be digits only, got ${pyRepr(value)}`);
+    throw new Error(`error: ${label} must be digits only, got ${pyRepr(value)}`);
   }
 }
 

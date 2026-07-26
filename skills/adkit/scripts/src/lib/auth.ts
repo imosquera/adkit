@@ -132,6 +132,22 @@ function readCredentials(): AdsYaml {
   return (parseYaml(readFileSync(credentialsPath(), "utf8")) as AdsYaml | null) ?? {};
 }
 
+/**
+ * The yaml's `login_customer_id` — the MCC login HEADER — and nothing else;
+ * `undefined` when the credentials carry none.
+ *
+ * Deliberately not {@link customerIdFromYaml}: that one answers "which account do we
+ * QUERY" and prefers `target_customer_id`, so it would report a leaf id as the
+ * manager. Unlike it, this does NOT swallow a read failure — a caller that only
+ * wants a display value decides for itself that an unreadable file is tolerable
+ * (see {@link KEEP_YAML_LOGIN}'s consumers), and a caller on the main path must not
+ * silently see "no login" when the truth is "could not tell".
+ */
+export function loginCustomerIdFromYaml(): string | undefined {
+  const login = readCredentials().login_customer_id;
+  return login ? String(login) : undefined;
+}
+
 /** The leaf/target customer id from the yaml (target first, then login), dash-free — or null. */
 export function customerIdFromYaml(): string | null {
   try {

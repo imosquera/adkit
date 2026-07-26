@@ -9,6 +9,38 @@
  */
 
 /**
+ * Which manager (login-customer-id) a run ACTUALLY went through, as far as the
+ * command can tell. Three cases, not two:
+ *  - `id` — that MCC id was sent as the login header (from `--manager`, from
+ *    `GOOGLE_ADS_LOGIN_CUSTOMER_ID`, or read back out of google-ads.yaml),
+ *  - `none` — no login header was sent at all (direct access),
+ *  - `yaml` — the login was inherited from google-ads.yaml, whose value could not be
+ *    read back (e.g. no credentials file under `ADKIT_READ_BACKEND=mcp`). A header
+ *    may well have been sent, so claiming "no manager" here would be a lie.
+ */
+export type EffectiveManager =
+  | { readonly kind: "id"; readonly id: string }
+  | { readonly kind: "none" }
+  | { readonly kind: "yaml" };
+
+/** The report's `manager_id` field: the id when known, an explicit null otherwise (FR-008). */
+export function managerIdField(manager: EffectiveManager): string | null {
+  return manager.kind === "id" ? manager.id : null;
+}
+
+/** Trailing clause naming the manager a failed query went through (FR-008). */
+export function managerPhrase(manager: EffectiveManager): string {
+  switch (manager.kind) {
+    case "id":
+      return ` via manager ${manager.id}`;
+    case "yaml":
+      return " via the login_customer_id in google-ads.yaml";
+    case "none":
+      return " with no manager";
+  }
+}
+
+/**
  * Map a Google Ads API error message to an actionable next step. Bad/expired
  * tokens surface at query time (not at credential load), so route those to
  * render-yaml; permission/access problems point at the customer/manager ids.
@@ -16,19 +48,31 @@
 export function remediationHint(
   message: string,
   customer: string,
-  manager: string | null,
+  manager: EffectiveManager,
 ): string {
   const low = message.toLowerCase();
   if (["authenticat", "credential", "developer token", "oauth"].some((k) => low.includes(k))) {
     return "Re-render credentials: bash ads.sh render-yaml";
   }
   if (["permission", "authoriz", "not authorized"].some((k) => low.includes(k))) {
-    // `manager === null` means no login header was sent, so pointing at a manager
-    // would be misleading — name the tiers that could supply one instead.
-    return manager
-      ? `Verify customer ${customer} is accessible under manager ${manager}.`
-      : `Verify customer ${customer} is directly accessible, or pass --manager <mcc-id> ` +
-          `(or export GOOGLE_ADS_LOGIN_CUSTOMER_ID) to reach it through a manager.`;
+    // Three-way, matching {@link EffectiveManager}: blame a manager only when one is
+    // known; point at the credentials when the login was inherited from them but the
+    // value is unreadable; name the tiers that COULD supply one only when the run
+    // genuinely sent no login header.
+    switch (manager.kind) {
+      case "id":
+        return `Verify customer ${customer} is accessible under manager ${manager.id}.`;
+      case "yaml":
+        return (
+          `Verify customer ${customer} is accessible under the login_customer_id in ` +
+          `google-ads.yaml, or pass --manager <mcc-id> to override it.`
+        );
+      case "none":
+        return (
+          `Verify customer ${customer} is directly accessible, or pass --manager <mcc-id> ` +
+          `(or export GOOGLE_ADS_LOGIN_CUSTOMER_ID) to reach it through a manager.`
+        );
+    }
   }
   return "";
 }

@@ -56,6 +56,7 @@ export {
   DEFAULT_CREDENTIALS_PATH,
   KEEP_YAML_LOGIN,
   loadClient,
+  loginCustomerIdFromYaml,
   parseReadBackend,
   READ_BACKEND_ENV,
   readBackend,
@@ -100,7 +101,15 @@ export { clusterSplitRecommendation, keywordsToPromote, negativesToAdd } from ".
 export type { Negative, Proposal, SplitRecommendation } from "./lib/cluster.js";
 
 // --- Report metrics + GAQL builders (pure) ---
-export { metricDict, microsToCurrency, remediationHint, safeRatio } from "./lib/report.js";
+export {
+  type EffectiveManager,
+  managerIdField,
+  managerPhrase,
+  metricDict,
+  microsToCurrency,
+  remediationHint,
+  safeRatio,
+} from "./lib/report.js";
 export * from "./gaql/builders.js";
 export { toGaql } from "./gaql/search-args.js";
 export type { SearchArgs } from "./gaql/search-args.js";
@@ -129,7 +138,9 @@ export { validate as validateFixesPlan } from "./fixes/plan.js";
 export { emitJson, errorEnvelope, ok, sdkErrorMessage } from "./cli/output.js";
 export {
   type LoginCustomerId,
+  loginHeaderValue,
   normalizeId,
   resolveCustomer,
   resolveLoginCustomerId,
+  type ResolvedLogin,
 } from "./cli/args.js";

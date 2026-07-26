@@ -959,8 +959,8 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     emitJson(errorEnvelope("Provide --customer or export GOOGLE_ADS_CUSTOMER_ID (or set a target/login id in yaml)"));
     return 2;
   }
-  requireDigits("customer", customer);
-  requireDigits("login-customer-id", args.loginCustomerId);
+  requireDigits("--customer", customer);
+  requireDigits("--login-customer-id", args.loginCustomerId);
   const client = loadReadClient(args.loginCustomerId);
 
   // --campaign accepts an id (digits) or a name substring; resolve the name to an id once.
@@ -973,7 +973,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     }
     campaignId = resolved;
   }
-  requireDigits("campaign", campaignId);
+  requireDigits("--campaign", campaignId);
 
   const camps = await campaigns(client, customer, !args.all, campaignId);
   const campIds = camps.map((c) => c.campaign.id);

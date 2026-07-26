@@ -98,11 +98,11 @@ describe("isManagerMetricsError (bug 4)", () => {
 
 describe("requireDigits guard", () => {
   it("throws on a non-digit id (injection guard runs in the shell)", () => {
-    expect(() => requireDigits("campaign", "1; DROP TABLE")).toThrow();
+    expect(() => requireDigits("--campaign", "1; DROP TABLE")).toThrow();
   });
 
   it("allows a null id", () => {
-    expect(() => requireDigits("campaign", null)).not.toThrow();
+    expect(() => requireDigits("--campaign", null)).not.toThrow();
   });
 });
 

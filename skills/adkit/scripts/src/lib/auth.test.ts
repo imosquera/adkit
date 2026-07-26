@@ -1,5 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { KEEP_YAML_LOGIN, parseReadBackend, resolveLoginHeader, toSdkMutateOperations } from "./auth.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  customerIdFromYaml,
+  KEEP_YAML_LOGIN,
+  loginCustomerIdFromYaml,
+  parseReadBackend,
+  resolveLoginHeader,
+  toSdkMutateOperations,
+} from "./auth.js";
 
 describe("toSdkMutateOperations", () => {
   it("unwraps a remove op's resource to the bare resource-name string", () => {
@@ -72,3 +82,47 @@ describe("resolveLoginHeader", () => {
 // to the exact pre-refactor GAQL) plus the loadReadClient dispatch tests in
 // lib/mcp-client.test.ts. A hand-rolled stub mirroring loadClient would only assert
 // toGaql === toGaql, so it is intentionally omitted.
+
+describe("loginCustomerIdFromYaml", () => {
+  let dir: string;
+  let credsPath: string;
+  let orig: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "auth-"));
+    credsPath = join(dir, "google-ads.yaml");
+    orig = process.env.GOOGLE_ADS_CREDENTIALS;
+    process.env.GOOGLE_ADS_CREDENTIALS = credsPath;
+  });
+
+  afterEach(() => {
+    if (orig === undefined) {
+      delete process.env.GOOGLE_ADS_CREDENTIALS;
+    } else {
+      process.env.GOOGLE_ADS_CREDENTIALS = orig;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns the yaml's login_customer_id as a string", () => {
+    writeFileSync(credsPath, "developer_token: t\nlogin_customer_id: 4444444444\n");
+    expect(loginCustomerIdFromYaml()).toBe("4444444444");
+  });
+
+  it("returns undefined when the yaml carries no login_customer_id", () => {
+    writeFileSync(credsPath, "developer_token: t\n");
+    expect(loginCustomerIdFromYaml()).toBeUndefined();
+  });
+
+  it("reads the LOGIN id, never the target id customerIdFromYaml prefers", () => {
+    // customerIdFromYaml answers "which account do we query" (target first), so
+    // reusing it here would report a leaf account as the manager.
+    writeFileSync(credsPath, "target_customer_id: 1111111111\nlogin_customer_id: 4444444444\n");
+    expect(loginCustomerIdFromYaml()).toBe("4444444444");
+    expect(customerIdFromYaml()).toBe("1111111111");
+  });
+
+  it("throws (rather than reporting 'no login') when the credentials are unreadable", () => {
+    expect(() => loginCustomerIdFromYaml()).toThrow();
+  });
+});
