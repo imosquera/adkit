@@ -147,6 +147,23 @@ export function customerIdFromYaml(): string | null {
 }
 
 /**
+ * Map a caller's login-customer-id decision + the yaml's own `login_customer_id`
+ * to the header value the SDK should carry (`undefined` = send no header).
+ *
+ * Pure, and split out of {@link loadClient} so the three-way sentinel semantics are
+ * pinnable without live credentials:
+ *  - {@link KEEP_YAML_LOGIN} → the yaml's value (or no header when the yaml has none),
+ *  - `null` → no header, regardless of what the yaml carries,
+ *  - a string → that MCC id.
+ */
+export function resolveLoginHeader(
+  loginCustomerId: string | null | typeof KEEP_YAML_LOGIN,
+  yamlLogin: string | undefined,
+): string | undefined {
+  return loginCustomerId === KEEP_YAML_LOGIN ? yamlLogin : loginCustomerId ?? undefined;
+}
+
+/**
  * Build the real {@link AdsClient} from the google-ads.yaml credentials.
  *
  * `loginCustomerId` semantics mirror the Python `load_client`:
@@ -166,7 +183,7 @@ export function loadClient(
   });
   const refreshToken = creds.refresh_token ?? "";
   const yamlLogin = creds.login_customer_id !== undefined ? String(creds.login_customer_id) : undefined;
-  const resolvedLogin = loginCustomerId === KEEP_YAML_LOGIN ? yamlLogin : loginCustomerId ?? undefined;
+  const resolvedLogin = resolveLoginHeader(loginCustomerId, yamlLogin);
 
   const customerFor = (customerId: string) =>
     api.Customer({

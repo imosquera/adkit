@@ -127,4 +127,9 @@ export { validate as validateFixesPlan } from "./fixes/plan.js";
 
 // --- CLI helpers ---
 export { emitJson, errorEnvelope, ok, sdkErrorMessage } from "./cli/output.js";
-export { normalizeId, resolveCustomer } from "./cli/args.js";
+export {
+  type LoginCustomerId,
+  normalizeId,
+  resolveCustomer,
+  resolveLoginCustomerId,
+} from "./cli/args.js";

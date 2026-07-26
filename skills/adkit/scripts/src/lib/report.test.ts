@@ -86,6 +86,15 @@ describe("remediationHint", () => {
   it("empty for unknown errors", () => {
     expect(remediationHint("some unrelated quota message", "111", "222")).toBe("");
   });
+
+  it("points at the manager tiers instead of a manager id when none was used", () => {
+    const h = remediationHint("User doesn't have permission to access customer", "111", null);
+    expect(h).toContain("111");
+    expect(h).toContain("--manager");
+    expect(h).toContain("GOOGLE_ADS_LOGIN_CUSTOMER_ID");
+    // Never invents a manager to blame.
+    expect(h).not.toContain("under manager");
+  });
 });
 
 describe("microsToCurrency", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseReadBackend, toSdkMutateOperations } from "./auth.js";
+import { KEEP_YAML_LOGIN, parseReadBackend, resolveLoginHeader, toSdkMutateOperations } from "./auth.js";
 
 describe("toSdkMutateOperations", () => {
   it("unwraps a remove op's resource to the bare resource-name string", () => {
@@ -39,6 +39,28 @@ describe("parseReadBackend", () => {
   it("selects mcp only when explicitly requested (case/space-insensitive)", () => {
     expect(parseReadBackend("mcp")).toBe("mcp");
     expect(parseReadBackend("  MCP ")).toBe("mcp");
+  });
+});
+
+// The login-header mapping loadClient applies. Pinned here so the two zero-flag
+// report paths cannot regress into each other: an MCC-nested account (yaml carries a
+// login) and a directly-accessible one (yaml carries none) must BOTH work from the
+// same KEEP_YAML_LOGIN decision.
+describe("resolveLoginHeader", () => {
+  it("maps KEEP_YAML_LOGIN to the yaml's login_customer_id (MCC-nested leaf)", () => {
+    expect(resolveLoginHeader(KEEP_YAML_LOGIN, "9999999999")).toBe("9999999999");
+  });
+
+  it("omits the header when KEEP_YAML_LOGIN meets a yaml with no login (direct leaf)", () => {
+    expect(resolveLoginHeader(KEEP_YAML_LOGIN, undefined)).toBeUndefined();
+  });
+
+  it("omits the header for an explicit null even when the yaml carries a login", () => {
+    expect(resolveLoginHeader(null, "9999999999")).toBeUndefined();
+  });
+
+  it("sends an explicit string override in place of the yaml value", () => {
+    expect(resolveLoginHeader("1234567890", "9999999999")).toBe("1234567890");
   });
 });
 

@@ -21,7 +21,8 @@ import type { AdsClient, GaqlRow } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
 import type { SearchArgs } from "../gaql/search-args.js";
 import { matchTypeName } from "../ads/enums.js";
-import { normalizeId } from "../cli/args.js";
+import { type LoginCustomerId, normalizeId, resolveLoginCustomerId } from "../cli/args.js";
+import { requireDigits } from "../audit/scoring.js";
 import { sdkErrorMessage } from "../cli/output.js";
 import { isManagerMetricsError, managerMetricsHint } from "./audit.js";
 import {
@@ -45,9 +46,12 @@ import {
 } from "../gaql/builders.js";
 import { metricDict, type MetricDict, remediationHint, safeRatio } from "../lib/report.js";
 
-/** The account/manager we report on by default (overridable via args). */
+/**
+ * The account we report on by default (overridable via args). There is no default
+ * manager: the login-customer-id is RESOLVED (flag → env → credentials) rather than
+ * defaulted to a literal, see {@link resolveLoginCustomerId}.
+ */
 export const DEFAULT_CUSTOMER = "1111111111"; // 111-111-1111
-export const DEFAULT_MANAGER = "2222222222"; // 222-222-2222
 export const DEFAULT_DAYS = 14;
 
 // ---------------------------------------------------------------------------
@@ -180,7 +184,8 @@ export interface Recommendation {
 /** The full raw report written to disk (and its shape). */
 export interface Report extends ReportData {
   customer_id: string;
-  manager_id: string;
+  /** The login-customer-id actually used, or `null` when the run used none. Key always present. */
+  manager_id: string | null;
   window: { start: string; end: string; days: number; partial_day: string };
   generated_at: string;
   recommendations: Recommendation[];
@@ -371,7 +376,7 @@ export function recommendations(data: ReportData): Recommendation[] {
  */
 export function buildReport(params: {
   customer: string;
-  manager: string;
+  manager: string | null;
   data: ReportData;
   start: string;
   end: string;
@@ -398,17 +403,19 @@ export function buildReport(params: {
 /** Parsed CLI arguments (parse-don't-validate: parse once, up front). */
 export interface ReportArgs {
   customer: string;
-  manager: string;
+  /** `null` when `--manager` was absent — the login is resolved from env/credentials instead. */
+  manager: string | null;
   days: number;
 }
 
 /**
  * Parse argv into {@link ReportArgs}: positional `customer` then `--manager`
- * and `--days` flags, matching report.py's argparse. Falls back to defaults.
+ * and `--days` flags, matching report.py's argparse. Falls back to defaults;
+ * `manager` has no default (absence is `null`, not a placeholder id).
  */
 export function parseArgs(argv: string[]): ReportArgs {
   let customer = DEFAULT_CUSTOMER;
-  let manager = DEFAULT_MANAGER;
+  let manager: string | null = null;
   let days = DEFAULT_DAYS;
   let sawPositional = false;
   let customerFromFlag = false;
@@ -484,18 +491,28 @@ export function reportPath(cwd: string, generatedAt: string, customer: string): 
  *
  * `clientFactory` is injectable so tests can supply a fake AdsClient; production
  * calls default to {@link loadReadClient} (SDK by default; MCP when ADKIT_READ_BACKEND=mcp).
+ * `env` is injectable so the login-customer-id precedence is testable without
+ * mutating `process.env`.
+ *
+ * The login-customer-id is parsed exactly once here (resolve + digit-check) into
+ * the value the client seam accepts; nothing downstream re-checks it.
  */
 export async function main(
   argv: string[],
-  clientFactory: (manager: string) => AdsClient = loadReadClient,
+  clientFactory: (login: LoginCustomerId) => AdsClient = loadReadClient,
+  env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
   const args = parseArgs(argv);
   const customer = normalizeId(args.customer);
-  const manager = normalizeId(args.manager);
+  const login = resolveLoginCustomerId(args.manager, env);
+  // The id actually used for the login header, or null when the run used none
+  // (KEEP_YAML_LOGIN defers to whatever google-ads.yaml carries).
+  const manager = typeof login === "string" ? login : null;
+  requireDigits("manager", manager);
 
   let client: AdsClient;
   try {
-    client = clientFactory(manager);
+    client = clientFactory(login);
   } catch (exc) {
     process.stderr.write(
       `error: could not load Google Ads credentials (${String(exc)}). ` +
@@ -520,8 +537,11 @@ export async function main(
     const isManagerMetrics = isManagerMetricsError(exc);
     const msgs = isManagerMetrics ? managerMetricsHint() : sdkErrorMessage(exc);
     const hint = isManagerMetrics ? "" : remediationHint(msgs, customer, manager);
+    // Name the manager ACTUALLY used so the operator can see which tier supplied it
+    // (flag/env/credentials), rather than a fabricated id.
+    const via = manager ? ` via manager ${manager}` : " with no manager";
     process.stderr.write(
-      `error: Google Ads query failed for customer ${customer} via manager ${manager}: ` +
+      `error: Google Ads query failed for customer ${customer}${via}: ` +
         `${msgs}${hint ? ". " + hint : ""}\n`,
     );
     return 1;

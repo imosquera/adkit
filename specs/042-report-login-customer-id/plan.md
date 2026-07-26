@@ -163,11 +163,18 @@ introducing a one-off `Result` type that no other caller in the package understa
 
 ### Library choice
 
-**Hand-rolled, no schema library.** The package has no Zod/valibot dependency, and the
-parsed value here is a three-arm union over one already-normalized string — a schema
-library would add a dependency and a second normalization vocabulary to express what
-`normalizeId` + `requireDigits` already express. Reusing the existing helpers keeps this
-feature's boundary identical to `audit`'s, which is the stated goal of FR-004.
+**Hand-rolled, reusing existing helpers — deliberately not zod.** The package *does*
+depend on zod, and uses it where it earns its keep: `src/lib/brand.ts` parses
+model-authored JSON of unbounded shape (`parseDifferentiationProfile`), and
+`src/lib/schema.ts` parses structured payloads. Neither situation applies here. The
+value parsed at this boundary is a three-arm union over one already-normalized string,
+and one of its arms is a `unique symbol` sentinel that zod cannot express naturally
+(`z.custom` with a type predicate would be strictly more code than the union itself).
+Introducing a schema here would add a second normalization vocabulary alongside
+`normalizeId` + `requireDigits`, which already express exactly this rule and are what
+`audit` uses — and matching `audit`'s boundary is the stated goal of FR-004. The rule of
+thumb this follows: zod for untrusted structured payloads, plain parsers for scalar CLI
+arguments.
 
 ## Implementation Approach
 

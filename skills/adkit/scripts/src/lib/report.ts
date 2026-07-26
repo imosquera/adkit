@@ -13,13 +13,22 @@
  * tokens surface at query time (not at credential load), so route those to
  * render-yaml; permission/access problems point at the customer/manager ids.
  */
-export function remediationHint(message: string, customer: string, manager: string): string {
+export function remediationHint(
+  message: string,
+  customer: string,
+  manager: string | null,
+): string {
   const low = message.toLowerCase();
   if (["authenticat", "credential", "developer token", "oauth"].some((k) => low.includes(k))) {
     return "Re-render credentials: bash ads.sh render-yaml";
   }
   if (["permission", "authoriz", "not authorized"].some((k) => low.includes(k))) {
-    return `Verify customer ${customer} is accessible under manager ${manager}.`;
+    // `manager === null` means no login header was sent, so pointing at a manager
+    // would be misleading — name the tiers that could supply one instead.
+    return manager
+      ? `Verify customer ${customer} is accessible under manager ${manager}.`
+      : `Verify customer ${customer} is directly accessible, or pass --manager <mcc-id> ` +
+          `(or export GOOGLE_ADS_LOGIN_CUSTOMER_ID) to reach it through a manager.`;
   }
   return "";
 }

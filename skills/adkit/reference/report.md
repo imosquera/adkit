@@ -1,6 +1,6 @@
 ---
 description: "Download last N days of ENABLED-campaign Google Ads metrics (down to keyword/search-term), then write a markdown analysis + a Chart.js HTML dashboard to ads/output/reports/."
-argument-hint: "--customer <id> [--manager <id>] [--days 14]  (a bare positional <customer> also works; defaults: 111-111-1111 via 222-222-2222, 14 days)"
+argument-hint: "--customer <id> [--manager <id>] [--days 14]  (a bare positional <customer> also works; defaults: 111-111-1111, 14 days; the manager/login id is resolved, not defaulted)"
 user-invocable: true
 disable-model-invocation: false
 ---
@@ -31,6 +31,21 @@ This prints the path to a raw YAML file under `ads/output/reports/` named
 `<YYYY-MM-DD>-<customer>-raw.yaml`. If the command exits non-zero (bad
 credentials → run `ads.sh render-yaml`; or no enabled campaigns matched), stop
 and report the error to the user — do not fabricate a report.
+
+**Manager / login-customer-id.** There is no default manager id. The login header
+is resolved through this precedence chain, first non-blank wins:
+
+1. `--manager <id>` on the command line,
+2. the `GOOGLE_ADS_LOGIN_CUSTOMER_ID` environment variable,
+3. the `login_customer_id` in `google-ads.yaml` (seeded by `ads.sh render-yaml`
+   from Secret Manager) — inherited, the same source `audit` and `preflight` use.
+
+If none of them supplies a value, no login header is sent, which is exactly what a
+directly-accessible account needs. Ids may be given in dashed form
+(`222-222-2222`) and are normalised to 10 digits. Blank or whitespace-only values
+count as absent, so an exported-but-empty variable falls through rather than
+clearing an MCC login. The `manager_id` field in the raw YAML records the id
+actually used, or `null` when the run used none.
 
 Read that YAML. Its shape: `customer_id`, `manager_id`, `window`
 (`start`/`end`/`days`/`partial_day`), `generated_at`, arrays `campaigns`,
