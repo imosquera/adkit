@@ -41,6 +41,27 @@ The same integer-vs-string mismatch affects `adRelevance` (`creative_quality_sco
 
 ---
 
+### User Story 3 - The PSI API key is sourceable from `.adkit.yaml` / Secret Manager, not just an env var (Priority: P2)
+
+*Added mid-flight — the user, after the enum-mismatch fix above, explicitly asked to fold in a second, related PSI-not-running gap into this same feature rather than opening a separate one: "add it to the init" / "combine that fix into this."*
+
+Today `audit.ts` resolves the PSI key from only two tiers: the `--psi-key` flag, then the `PAGESPEED_API_KEY` env var. If neither is set, the audit reports "no credential" and skips PSI — even after User Story 1's enum fix makes the trigger logic correct. An operator who has already run `ads.sh init` / `bootstrap-secrets` / `render-yaml` to source their Google Ads credentials from GCP Secret Manager should be able to source the PSI key the same way, rather than being forced to export a raw env var every session.
+
+**Why this priority**: This is a second, independent way PSI can still fail to run after Story 1 ships — same underlying "PSI never actually runs" problem the issue is about, just a different missing tier. Not the originally reported defect, so it sits at P2 alongside Story 2.
+
+**Independent Test**: With no `--psi-key` flag and no `PAGESPEED_API_KEY` env var set, but `.adkit.yaml` carrying a `psi_api_key` value, confirm the audit's PSI key resolution returns that config value rather than `null`.
+
+**Acceptance Scenarios**:
+
+1. **Given** `ads.sh init` is run, **When** the operator is prompted through the credential fields, **Then** they are also (optionally, skippable with a blank answer) prompted for a PSI API key.
+2. **Given** `ads.sh bootstrap-secrets` is run, **When** the operator answers the PSI key prompt, **Then** the value is seeded into GCP Secret Manager under a dedicated secret name, the same way the Ads credentials are.
+3. **Given** that secret exists in Secret Manager, **When** `ads.sh render-yaml` runs, **Then** it pulls the PSI key back into `.adkit.yaml`'s `psi_api_key` field, alongside the Ads credentials, without disturbing other fields.
+4. **Given** `.adkit.yaml` carries `psi_api_key` and no `--psi-key` flag or `PAGESPEED_API_KEY` env var is set, **When** `/adkit audit` resolves the PSI key, **Then** it uses the config value.
+5. **Given** both a `--psi-key` flag/env value and a config value are present, **When** the audit resolves the PSI key, **Then** the flag wins over env, which wins over the config value (unchanged precedence, just with a new lowest tier instead of `null`).
+6. **Given** no flag, no env var, and no config value, **When** the audit resolves the PSI key, **Then** it is `null` and PSI skips with the existing graceful-degrade message (updated to also mention the config/Secret Manager path).
+
+---
+
 ## Clarifications
 
 ### Session 2026-07-27
@@ -53,12 +74,25 @@ Auto-answered by autopilot from the issue text + repo code (`scripts/src/bin/aud
 - Q: What happens to a missing/absent field (row has no `quality_info`, or the sub-field is undefined)? → A: Unchanged — still normalizes to `""`, exactly as `normalizeQualityScoreRow` does today. This spec fixes the int-vs-string mismatch only; changing the missing-field default is a separate, unrequested behavior change and risks new call sites comparing against `""` unexpectedly.
 - Q: Should the raw row types (`QualityScoreRow`/`RawQualityScoreRow` in `rows.ts`) be widened to `string | number`, or left as `string` with an unsound cast? → A: Widened to `string | number`. The type already lied about the runtime shape (this bug is proof); the type-driven-design convention in this repo ("parse, don't validate") calls for the type to reflect what the wire actually sends, with the narrowing done once, explicitly, at the point that produces the trusted `QualityScoreEntry.landingPageExp`/`.adRelevance`/`.expectedCtr` strings.
 
+### Session 2026-07-27 (addition — PSI key sourcing)
+
+Auto-answered by autopilot from the coordinator's relayed user request + repo code (`scripts/src/lib/config.ts`, `scripts/src/bin/init.ts`, `scripts/src/bin/bootstrap-secrets.ts`, `scripts/src/bin/render-yaml.ts`). Posted to issue #40 as an addendum comment per the same auto-answer convention as the session above.
+
+- Q: Is the PSI key field required or skippable at `init` time? → A: Skippable — `init.ts`'s existing prompt loop already treats every field as "type a value or press enter to leave it out of the yaml" (a blank answer with no default is simply omitted), so `psi_api_key` needs no special-cased optionality; it follows the same pattern as every other credential field, including the already-optional `target_customer_id`.
+- Q: What is the exact Secret Manager secret name? → A: `google-pagespeed-api-key`, matching the existing `google-ads-*` naming convention for the other secrets in `bootstrap-secrets.ts`/`render-yaml.ts`'s `SECRETS` arrays.
+- Q: Is the new `render-yaml.ts` `SecretSpec` entry `required: true` or `required: false`? → A: `required: false`, mirroring `target_customer_id`'s precedent exactly — not every operator has PSI access, and the audit already degrades gracefully (skips with a reason) when no key is present, so a missing secret must not abort `render-yaml`.
+- Q: Should `.adkit.yaml`'s `psi_api_key` sit in `CREDENTIAL_FIELDS` or `PREFERENCE_FIELDS` in `config.ts`? → A: `CREDENTIAL_FIELDS` (as a secret, not a preference) — it is fetched from Secret Manager like the Ads credentials, not a locally-scoped default like `reports_dir`, and its comment already states "the ones `render-yaml` fetches from Secret Manager."
+- Q: Is the PSI key prompt read with echo (like an id) or muted (like a token)? → A: Muted (`sensitive: true`) — an API key is a credential, not an identifier; matches `developer_token`/`client_secret`/`refresh_token`'s treatment, not `client_id`/`login_customer_id`/`target_customer_id`'s.
+- Q: Does adding the new lowest tier change the flag→env precedence order operators already rely on? → A: No — `resolveTier`'s existing flag→env→config→fallback order is reused unchanged; only the `config` tier, which previously always evaluated to `undefined` for this field (the config schema had no `psi_api_key` key), now can carry a real value.
+
 ### Edge Cases
 
 - A component field already arriving as its canonical string (as today's tests exercise) continues to pass through unchanged — no regression on the already-working path.
 - A component field missing entirely (row has no `quality_info`, or the sub-field is absent) continues to degrade the same way it does today (empty string), not a new "UNKNOWN" value that downstream code doesn't expect to compare against.
 - An unrecognized raw integer outside the known 0-4 QualityScoreBucket range maps to `"UNKNOWN"` rather than throwing or producing a nonsensical string, so a future/undocumented enum value degrades gracefully instead of crashing the audit.
 - The PSI trigger logic itself (the `===` comparison and URL-selection flow in `belowAverageFinalUrls`) is unchanged — only the value it compares against is fixed at its source.
+- An operator who leaves the PSI key blank at both `init` and `bootstrap-secrets` time still gets a (possibly empty-valued) Secret Manager secret created — an accepted, pre-existing quirk of `bootstrap-secrets.ts`'s uniform prompt-then-seed loop (it already behaves this way for a blank `target_customer_id` today); `render-yaml` and `resolveTier` both treat a blank/whitespace value as absent regardless, so no bogus non-null key ever reaches the audit.
+- A blank `psi_api_key` in `.adkit.yaml` (or the field simply absent) must not appear in the rendered yaml body at all — `buildConfigYamlBody` already skips blank field values for every field, so this needs no special handling.
 
 ## Requirements *(mandatory)*
 
@@ -72,6 +106,11 @@ Auto-answered by autopilot from the issue text + repo code (`scripts/src/bin/aud
 - **FR-006**: The raw row type(s) feeding the mapping (`QualityScoreRow` / `RawQualityScoreRow` in `scripts/src/audit/rows.ts`) MUST be widened to admit `string | number` for these three fields, so the type system reflects the value shape the API actually sends instead of asserting a `string` that was never enforced at a parse boundary.
 - **FR-007**: The PSI URL selector (`belowAverageFinalUrls` in `scripts/src/lib/psi.ts`) and the Quality Score render sections (`renderQualityScoreSection` in `scripts/src/audit/render.ts`) MUST NOT be changed — they already compare against the correct string form; only the value reaching them is fixed.
 - **FR-008**: A regression test MUST prove that a Quality Score row arriving with `post_click_quality_score` as the raw integer `2` results in a `QualityScoreEntry` selected by `belowAverageFinalUrls` and triggers a non-no-op `runPsi` call.
+- **FR-009** *(User Story 3, added mid-flight)*: `.adkit.yaml`'s config schema (`AdkitConfig` in `scripts/src/lib/config.ts`) MUST gain an optional `psi_api_key` field, added to `CREDENTIAL_FIELDS` so `ads.sh init` prompts for it (as a skippable, muted/sensitive prompt) alongside the Ads credentials.
+- **FR-010** *(User Story 3)*: `ads.sh bootstrap-secrets` MUST seed the PSI key into GCP Secret Manager under a new secret name (`google-pagespeed-api-key`), following the existing `gcloud`-shell-out pattern — no new SDK dependency.
+- **FR-011** *(User Story 3)*: `ads.sh render-yaml` MUST pull that secret back into `.adkit.yaml`'s `psi_api_key` field, as an optional (`required: false`) `SecretSpec` entry — a missing secret must not abort the render, mirroring `target_customer_id`.
+- **FR-012** *(User Story 3)*: The audit's PSI key resolution (`parseAudarArgs` in `scripts/src/bin/audit.ts`) MUST become a three-tier `resolveTier`-based resolution — `--psi-key` flag → `PAGESPEED_API_KEY` env → `.adkit.yaml`'s `psi_api_key` — replacing the current two-tier flag-or-env resolution, implemented as a small pure exported function so it is independently unit-testable.
+- **FR-013** *(User Story 3)*: The "no credential" skip message in `runPsi` MUST be updated to mention the config-file/Secret Manager path, not only the flag and env var, so the message stays accurate once a third tier exists.
 
 ## Success Criteria *(mandatory)*
 
@@ -81,9 +120,13 @@ Auto-answered by autopilot from the issue text + repo code (`scripts/src/bin/aud
 - **SC-002**: All existing PSI and audit unit tests continue to pass unchanged (the already-string-typed test fixtures in `audit-psi.test.ts` still exercise a valid path).
 - **SC-003**: A new unit test covering the integer-enum path exists and passes, demonstrating the fix without requiring live Google Ads or PSI credentials.
 - **SC-004**: `landingPageExp`, `adRelevance`, and `expectedCtr` in the audit's emitted JSON are always one of the canonical string buckets, never a bare number, for any input the mapping is exercised with in tests.
+- **SC-005** *(User Story 3)*: An operator who has run `init` → `bootstrap-secrets` → `render-yaml` for their PSI key, and exports no env var and passes no flag, gets PSI diagnosis on a below-average audit — the config tier alone is sufficient to enable the feature end-to-end.
+- **SC-006** *(User Story 3)*: The flag → env → config precedence is covered by unit tests for all four presence combinations (all present picks flag; flag absent picks env; flag+env absent picks config; all absent yields `null`).
 
 ## Assumptions
 
 - The Google Ads API's `google-ads-api` client library returns these three `quality_info` sub-fields as the raw `QualityScoreBucket` enum integer (`0`=UNSPECIFIED, `1`=UNKNOWN, `2`=BELOW_AVERAGE, `3`=AVERAGE, `4`=ABOVE_AVERAGE) despite most other enums on the same client resolving to their string name — this is the confirmed root cause from a live run cited in issue #40, not a hypothesis to re-verify.
 - No live Google Ads or PageSpeed Insights credentials are available in this environment; verification is via the existing and new unit/vitest suites only, per the issue's own verification note.
-- This is a pure bug fix with no user-facing behavior change beyond "PSI now actually runs when it should have all along" — no new CLI flags, no new configuration, no schema/versioning concerns.
+- This is a pure bug fix with no user-facing behavior change beyond "PSI now actually runs when it should have all along" for User Stories 1-2 — no new CLI flags, no new configuration, no schema/versioning concerns for the enum-mismatch fix itself.
+- User Story 3 (added mid-flight, same underlying "PSI never runs" problem, different missing tier) does add one new optional config field (`psi_api_key`) and one new optional Secret Manager secret (`google-pagespeed-api-key`) — this is additive/backward-compatible: existing `.adkit.yaml` files and existing flag/env-based PSI usage are unaffected, since the new tier only activates when the higher-precedence flag and env tiers are both absent.
+- No `@google-cloud/secret-manager` SDK dependency is added — the PSI key follows the repo's existing `gcloud` CLI shell-out convention for Secret Manager, matching the Ads-credential precedent exactly.

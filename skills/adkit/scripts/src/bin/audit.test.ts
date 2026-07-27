@@ -28,6 +28,7 @@ import {
   qualityScore,
   resolveAuditCustomer,
   resolveCampaign,
+  resolvePsiKey,
   searchTerms,
 } from "./audit.js";
 
@@ -481,5 +482,28 @@ describe("landingPagePolicy", () => {
     expect(result[1]).toHaveLength(1);
     expect(result[1][0].url).toBe("https://example.com/broken");
     expect(result[1][0].issue).toBe("destination_not_working");
+  });
+});
+
+describe("resolvePsiKey (issue #40: PSI key sourceable from .adkit.yaml / Secret Manager)", () => {
+  it("prefers the --psi-key flag over env and config", () => {
+    expect(resolvePsiKey("flag-key", "env-key", "config-key")).toBe("flag-key");
+  });
+
+  it("prefers PAGESPEED_API_KEY env over config when no flag is passed", () => {
+    expect(resolvePsiKey(undefined, "env-key", "config-key")).toBe("env-key");
+  });
+
+  it("falls back to the config value (psi_api_key, sourced from Secret Manager via render-yaml) when flag and env are both absent", () => {
+    expect(resolvePsiKey(undefined, undefined, "config-key")).toBe("config-key");
+  });
+
+  it("returns null when no tier has a value", () => {
+    expect(resolvePsiKey(undefined, undefined, undefined)).toBeNull();
+  });
+
+  it("treats a blank/whitespace-only tier as absent, falling through to the next", () => {
+    expect(resolvePsiKey("  ", undefined, "config-key")).toBe("config-key");
+    expect(resolvePsiKey(undefined, "   ", "config-key")).toBe("config-key");
   });
 });

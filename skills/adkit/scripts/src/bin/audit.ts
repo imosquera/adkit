@@ -25,6 +25,7 @@ import { readFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 import { parseArgs } from "node:util";
+import { loadConfig, resolveTier } from "../lib/config.js";
 
 import {
   IS_OPPORTUNITY,
@@ -731,7 +732,8 @@ export async function runPsi(
   }
   if (!apiKey) {
     return {
-      skipped: "no credential — set PAGESPEED_API_KEY or pass --psi-key to diagnose low landing-page scores",
+      skipped:
+        "no credential — set PAGESPEED_API_KEY, pass --psi-key, or run `ads.sh bootstrap-secrets` + `ads.sh render-yaml` to source psi_api_key from .adkit.yaml / Secret Manager, to diagnose low landing-page scores",
       results: [],
     };
   }
@@ -875,12 +877,27 @@ interface ParsedArgs {
   days: number;
   noServing: boolean;
   profile: DifferentiationProfile;
-  /** Operator-supplied PageSpeed Insights API key (--psi-key overrides env). */
+  /** Operator-supplied PageSpeed Insights API key — see {@link resolvePsiKey} for the flag → env → config resolution order. */
   psiKey: string | null;
 }
 
 /** Only 7/14/30 are valid windows, mirroring argparse `choices=[7, 14, 30]`. */
 const VALID_DAYS = new Set([7, 14, 30]);
+
+/**
+ * Resolve the PageSpeed Insights API key: `--psi-key` flag → `PAGESPEED_API_KEY`
+ * env → `.adkit.yaml`'s `psi_api_key` (populated via `bootstrap-secrets` +
+ * `render-yaml` from GCP Secret Manager's `google-pagespeed-api-key`, the same
+ * pipeline the Google Ads credentials already flow through) → `null` (PSI degrades
+ * gracefully — see {@link runPsi}). Pure given the three already-read tiers.
+ */
+export function resolvePsiKey(
+  flag: string | null | undefined,
+  envValue: string | undefined,
+  configValue: string | undefined,
+): string | null {
+  return resolveTier(flag, envValue, configValue) ?? null;
+}
 
 /**
  * Parse argv into typed values once. The differentiation profile is read+parsed
@@ -922,7 +939,7 @@ function parseAudarArgs(argv: string[]): ParsedArgs {
     days,
     noServing: values["no-serving"] ?? false,
     profile,
-    psiKey: values["psi-key"] ?? process.env.PAGESPEED_API_KEY ?? null,
+    psiKey: resolvePsiKey(values["psi-key"], process.env.PAGESPEED_API_KEY, loadConfig().psi_api_key),
   };
 }
 

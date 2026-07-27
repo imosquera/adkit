@@ -10,6 +10,7 @@ describe("SECRETS", () => {
       ["refresh_token", "google-ads-refresh-token", true],
       ["login_customer_id", "google-ads-login-customer-id", true],
       ["target_customer_id", "google-ads-target-customer-id", false],
+      ["psi_api_key", "google-pagespeed-api-key", false],
     ]);
   });
 });

@@ -26,6 +26,7 @@ describe("CONFIG_FIELDS", () => {
       ["refresh_token", "", true],
       ["login_customer_id", "", false],
       ["target_customer_id", "", false],
+      ["psi_api_key", "", true],
       ["secrets_project", "your-project-prod", false],
       ["read_backend", "sdk", false],
       ["reports_dir", "ads/output/reports", false],

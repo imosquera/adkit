@@ -34,6 +34,8 @@ export interface AdkitConfig {
   refresh_token?: string;
   login_customer_id?: string;
   target_customer_id?: string;
+  /** PageSpeed Insights API key — optional; enables `audit`'s PSI auto-diagnosis (issue #40). */
+  psi_api_key?: string;
   secrets_project?: string;
   read_backend?: string;
   reports_dir?: string;
@@ -58,6 +60,7 @@ export const CREDENTIAL_FIELDS: readonly ConfigField[] = [
   { key: "refresh_token", label: "OAuth refresh token", default: "", sensitive: true },
   { key: "login_customer_id", label: "Default manager/login customer id (used as login-customer-id when no --manager flag is passed)", default: "", sensitive: false },
   { key: "target_customer_id", label: "Default target/leaf customer id", default: "", sensitive: false },
+  { key: "psi_api_key", label: "PageSpeed Insights API key (optional — enables `audit`'s PSI landing-page diagnosis; leave blank to skip)", default: "", sensitive: true },
 ];
 
 /** The non-secret project-preference fields. */

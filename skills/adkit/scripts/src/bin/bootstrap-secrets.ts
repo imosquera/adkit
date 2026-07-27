@@ -29,6 +29,10 @@ export const SECRETS: readonly string[] = [
   "google-ads-refresh-token",
   "google-ads-login-customer-id",
   "google-ads-target-customer-id",
+  // Optional — enables `audit`'s PSI landing-page diagnosis (issue #40). A blank
+  // answer here still creates/updates the secret with an empty value; render-yaml
+  // treats it as an optional field, same as google-ads-target-customer-id.
+  "google-pagespeed-api-key",
 ];
 
 /**

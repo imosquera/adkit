@@ -20,6 +20,17 @@ point in `audit.ts` (`qualityScore()`), via one small pure helper, and widens th
 row type to admit the actual `string | number` wire shape. No change to the PSI
 trigger/selection logic itself, no schema/CLI-flag changes.
 
+**Scope addition (mid-flight, User Story 3)**: the user asked to fold a second,
+related PSI-not-running gap into this same branch/PR rather than a separate issue:
+`audit.ts` resolved the PSI key from only `--psi-key` flag or `PAGESPEED_API_KEY`
+env, with no config-file fallback. This plan now also covers wiring `psi_api_key`
+through the existing `init` → `bootstrap-secrets` → `render-yaml` → `.adkit.yaml`
+pipeline (the same one Google Ads credentials already use), and switching `audit.ts`'s
+resolution to a three-tier `resolveTier`-based flag → env → config chain. See the
+"PSI Key Config Wiring (User Story 3 addition)" subsections below for the added
+design.
+trigger/selection logic itself, no schema/CLI-flag changes.
+
 ## Technical Context
 
 **Language/Version**: TypeScript (Node.js), compiled with `tsc`, run via `tsx`/Node ESM.
@@ -98,6 +109,29 @@ skills/adkit/scripts/
 **Structure Decision**: Single existing CLI project (`skills/adkit/scripts/`). No new
 packages, no new top-level directories — this is a same-file, same-module bug fix.
 
+### Source Code — PSI Key Config Wiring (User Story 3 addition)
+
+```text
+skills/adkit/scripts/
+├── src/
+│   ├── lib/
+│   │   ├── config.ts                 # AdkitConfig + CREDENTIAL_FIELDS — add optional psi_api_key
+│   │   └── config.test.ts            # update the CONFIG_FIELDS exact-list assertion
+│   └── bin/
+│       ├── init.ts                    # unchanged — CONFIG_FIELDS-driven prompt loop already covers the new field
+│       ├── init.test.ts               # update fixed-length answer arrays + add a psi_api_key-answered case
+│       ├── bootstrap-secrets.ts        # SECRETS — add "google-pagespeed-api-key"
+│       ├── bootstrap-secrets.test.ts   # update SECRETS list + isSensitive coverage
+│       ├── render-yaml.ts              # SECRETS — add { field: "psi_api_key", secret: "google-pagespeed-api-key", required: false }
+│       ├── render-yaml.test.ts         # update SECRETS list assertion
+│       ├── audit.ts                    # psiKey resolution — new resolvePsiKey() through resolveTier(flag, env, config.psi_api_key)
+│       └── audit.test.ts               # new resolvePsiKey precedence tests
+└── (no new files, no new dependencies)
+```
+
+No `@google-cloud/secret-manager` SDK dependency is added; the addition follows the
+existing `gcloud` CLI shell-out convention already used for every other secret.
+
 ## Research Notes (Phase 0)
 
 No open unknowns — the root cause and required fix are fully specified by the source
@@ -138,6 +172,29 @@ section for the auto-answered implementation-adjacent decisions). Findings:
 
 No `NEEDS CLARIFICATION` markers remain in Technical Context above.
 
+### Research Notes — PSI Key Config Wiring (User Story 3 addition)
+
+- **Decision**: Reuse the existing `init` → `bootstrap-secrets` → `render-yaml` →
+  `.adkit.yaml` pipeline exactly as the Google Ads credentials use it, rather than
+  building a parallel mechanism. **Rationale**: The user explicitly asked for this
+  ("flowing through the same pipeline Google Ads credentials already use"); the
+  pipeline already has a proven optional-field precedent (`target_customer_id`) to
+  copy verbatim. **Alternatives considered**: A dedicated `--psi-key-secret` flag
+  pointing at an arbitrary Secret Manager secret name — rejected as unrequested
+  extra surface area for a field that fits the existing convention with zero new
+  mechanism.
+- **Decision**: `resolveTier` (already in `lib/config.ts`, already used by
+  `render-yaml.ts`'s `PROJECT` resolution) is reused for the new `psiKey` tier chain
+  instead of hand-rolling another `??` chain. **Rationale**: It is the established
+  flag→env→config→fallback helper in this codebase; `audit.ts`'s old `psiKey`
+  resolution was the one place still bypassing it. Using it here removes an
+  inconsistency rather than adding a new pattern.
+- **Decision**: No `@google-cloud/secret-manager` SDK dependency. **Rationale**:
+  Confirmed via `scripts/package.json` — the project has zero GCP SDK dependencies;
+  every existing secret flows through `gcloud` CLI shell-outs
+  (`execFileSync`/`accessSecretArgs`/`createArgs`/`addVersionArgs`). Adding the SDK
+  for one field would introduce a second, inconsistent access pattern.
+
 ## Data Model (Phase 1)
 
 No new entities. One existing type is widened at its true wire boundary:
@@ -157,6 +214,26 @@ No API contracts change — `qualityScore()`'s exported signature
 (`Promise<Record<number, QualityScoreEntry[]>>`) is unchanged; only the values inside
 it are corrected. No `contracts/` artifact applies (internal CLI function, not an
 external interface).
+
+### Data Model — PSI Key Config Wiring (User Story 3 addition)
+
+- **`AdkitConfig.psi_api_key?: string`** (`scripts/src/lib/config.ts`) — new optional
+  field, added to `CREDENTIAL_FIELDS` (not `PREFERENCE_FIELDS` — it is a
+  Secret-Manager-sourced secret, matching that array's own doc comment). Follows
+  every existing field's shape exactly: `{ key, label, default: "", sensitive: true }`.
+- **`bootstrap-secrets.ts`'s `SECRETS: readonly string[]`** — gains
+  `"google-pagespeed-api-key"` as a new entry. No new type; it's the same flat
+  string-array shape every other secret name already uses.
+- **`render-yaml.ts`'s `SECRETS: readonly SecretSpec[]`** — gains
+  `{ field: "psi_api_key", secret: "google-pagespeed-api-key", required: false }`,
+  reusing the existing `SecretSpec` interface unchanged (no new fields on the type).
+- **`audit.ts`'s new `resolvePsiKey(flag, envValue, configValue): string | null`** —
+  a pure function wrapping `resolveTier`, replacing the old inline
+  `values["psi-key"] ?? process.env.PAGESPEED_API_KEY ?? null` two-tier expression.
+
+No API contracts change here either — `init`/`bootstrap-secrets`/`render-yaml`'s CLI
+surfaces (argv, exit codes) are unchanged; only the set of fields/secrets they
+iterate over grows by one, using the exact same loop/shape each already has.
 
 ## Parse Boundaries
 
@@ -192,6 +269,33 @@ This is a TypeScript feature, so this section is substantive (not N/A).
    five-value closed enum needs; `zod` is reserved in this codebase for boundaries
    with real structural uncertainty (arbitrary third-party JSON), not a single
    `number → string` table lookup.
+
+### Parse Boundaries — PSI Key Config Wiring (User Story 3 addition)
+
+5. **Trust boundary**: `.adkit.yaml`'s `psi_api_key` field (read via `loadConfig()`
+   in `lib/config.ts`, itself parsed via the `yaml` package's `parse()` — an existing
+   boundary, not a new one) and the CLI's own `--psi-key` flag / `PAGESPEED_API_KEY`
+   env var, both already-existing boundaries in `audit.ts`'s `parseAudarArgs()`. No
+   new raw-input source is introduced; `psi_api_key` is one more optional key on an
+   already-parsed `AdkitConfig` shape.
+6. **Domain type**: `string | null` — deliberately not a new branded type. An API
+   key has no structural invariant beyond "some string" that this codebase can
+   usefully enforce (unlike, say, a customer id, which is branded/digit-checked
+   elsewhere); a branded `PsiApiKey` type would add ceremony without a corresponding
+   parse-time check to justify it (YAGNI, consistent with Story 1's decision not to
+   brand the Quality Score bucket strings either).
+7. **Parser**: `resolvePsiKey(flag, envValue, configValue): string | null`
+   (`scripts/src/bin/audit.ts`, exported for direct unit testing) — a pure wrapper
+   around the existing `resolveTier` boundary helper. Not a `Result`-returning
+   parser for the same reason as `qualityScoreBucket`: every input combination maps
+   to a defined output (a resolved string or `null`), there is no failure mode to
+   report.
+8. **Library choice**: `resolveTier` (`lib/config.ts`) is reused
+   rather than reimplemented — it is the exact existing flag→env→config→fallback
+   parser this codebase already applies to `render-yaml.ts`'s `PROJECT` and
+   `cli/args.ts`'s customer-resolution chain (per that helper's own doc comment).
+   `audit.ts`'s old `psiKey` line was the one holdout still hand-rolling `??` instead
+   of calling it.
 
 ## Complexity Tracking
 
