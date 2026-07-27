@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  adGroupQuery,
+  adQuery,
   applyPositiveKeywordsQuery,
   auditAdGroupAdQuery,
   auditKeywordMetricsQuery,
   auditSearchTermsQuery,
+  campaignDailyQuery,
+  campaignTotalsQuery,
   geoQuery,
   geoRegionQuery,
+  keywordQuery,
+  searchTermQuery,
 } from "./builders.js";
 import { toGaql } from "./search-args.js";
 
@@ -112,4 +118,35 @@ describe("applyPositiveKeywordsQuery", () => {
     expect(q.conditions).toContain("ad_group_criterion.type = KEYWORD");
     expect(q.conditions).toContain("ad_group_criterion.status != 'REMOVED'");
   });
+});
+
+describe("campaignDailyQuery", () => {
+  it("selects campaign.status even though it isn't a dimension, since the shared WHERE filters on it (#43)", () => {
+    const q = campaignDailyQuery("2026-06-08", "2026-06-21");
+    expect(q.conditions).toContain("campaign.status = 'ENABLED'");
+    expect(q.fields).toContain("campaign.status");
+  });
+});
+
+describe("every report query's SELECT covers its own WHERE + ORDER BY fields (#43)", () => {
+  const reportQueries: Record<string, (start: string, end: string) => ReturnType<typeof campaignTotalsQuery>> = {
+    campaignTotalsQuery,
+    campaignDailyQuery,
+    adGroupQuery,
+    adQuery,
+    keywordQuery,
+    searchTermQuery,
+    geoQuery,
+    geoRegionQuery,
+  };
+
+  for (const [name, build] of Object.entries(reportQueries)) {
+    it(`${name}: fields ⊇ {campaign.status, ...orderings}`, () => {
+      const q = build("2026-06-08", "2026-06-21");
+      expect(q.fields).toContain("campaign.status");
+      for (const field of q.orderings ?? []) {
+        expect(q.fields).toContain(field);
+      }
+    });
+  }
 });

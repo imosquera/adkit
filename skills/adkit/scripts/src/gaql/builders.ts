@@ -25,7 +25,8 @@ import type { SearchArgs } from "./search-args.js";
 // Shared fragments & factories
 // ===========================================================================
 
-const _ENABLED = "campaign.status = 'ENABLED'";
+const _STATUS_FIELD = "campaign.status";
+const _ENABLED = `${_STATUS_FIELD} = 'ENABLED'`;
 const _METRICS: readonly string[] = [
   "metrics.cost_micros",
   "metrics.impressions",
@@ -63,6 +64,11 @@ function _whereConds(start: string, end: string): readonly string[] {
  * WHERE ENABLED AND date BETWEEN …`. The families differ only in `resource`, the
  * leading dimension fields, and (for the daily view) an ORDER BY — everything else
  * (the metric columns, the WHERE) is identical.
+ *
+ * `fields` is the union of `dims`, `_STATUS_FIELD` (the WHERE clause always
+ * filters on it, and GAQL rejects a query whose WHERE/ORDER BY references a
+ * field missing from SELECT), and `orderings` — deduped via `Set` so a dims
+ * list that already names one of these isn't repeated (#43).
  */
 function reportQuery(
   resource: string,
@@ -71,9 +77,10 @@ function reportQuery(
   end: string,
   orderings?: readonly string[],
 ): SearchArgs {
+  const fields = new Set([...dims, _STATUS_FIELD, ...(orderings ?? [])]);
   return {
     resource,
-    fields: [...dims, ..._METRICS],
+    fields: [...fields, ..._METRICS],
     conditions: _whereConds(start, end),
     ...(orderings ? { orderings } : {}),
   };
