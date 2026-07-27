@@ -13,6 +13,7 @@
  */
 
 import { z } from "zod";
+import { DkiFieldError, containsDkiSyntax, parseDkiField } from "../dki/parse.js";
 
 export const AD_NAME_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
 export const CUSTOMER_ID_PATTERN = /^[0-9]{10}$/;
@@ -27,23 +28,71 @@ export const MAX_AD_GROUPS = 10;
 export const AD_GROUP_MAX_KEYWORDS = 30;
 
 /** A validated `https://` URL string. Mirrors Pydantic's HttpUrl + https-only guard. */
-const httpsUrl = z.string().refine(
-  (v) => {
-    try {
-      return new URL(v).protocol === "https:";
-    } catch {
-      return false;
+const httpsUrl = z
+  .string()
+  .refine(
+    (v) => {
+      try {
+        return new URL(v).protocol === "https:";
+      } catch {
+        return false;
+      }
+    },
+    { message: "finalUrl must use https://" },
+  )
+  // FR-002: Google forbids DKI/customizers in the Final URL — reject the field
+  // outright rather than trying to parse it as a DKI field.
+  .superRefine((v, ctx) => {
+    if (containsDkiSyntax(v)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "DKI/customizers are not allowed in finalUrl" });
     }
-  },
-  { message: "finalUrl must use https://" },
-);
+  });
+
+/**
+ * A string field that may carry inline DKI codes (`{keyword:default text}`,
+ * issue #19). Parses at this boundary (FR-001/FR-014): rejects malformed codes,
+ * enforces `limit` against the worst-case length (every code replaced by its
+ * verbatim default, per FR-006), and — when `asciiOnly` — rejects special /
+ * non-ASCII characters anywhere in the field (FR-007, for Display-path use).
+ */
+function dkiText(fieldName: string, limit: number, opts: { asciiOnly?: boolean } = {}) {
+  return z
+    .string()
+    .min(1)
+    .superRefine((text, ctx) => {
+      let field;
+      try {
+        field = parseDkiField(fieldName, text);
+      } catch (exc) {
+        if (exc instanceof DkiFieldError) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: exc.message });
+          return;
+        }
+        throw exc;
+      }
+      if (field.worstCaseLength > limit) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `${fieldName} worst-case length ${field.worstCaseLength} exceeds the ${limit}-char limit ` +
+            "(every DKI code replaced by its default text)",
+        });
+      }
+      if (opts.asciiOnly && !/^[\x00-\x7F]*$/.test(text)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${fieldName} may not contain special/non-ASCII characters (got ${JSON.stringify(text)})`,
+        });
+      }
+    });
+}
 
 // Pinning is disabled: it collapses Google's combinatorial asset testing and is
 // the #1 silent ad-strength killer. `pin` stays in the schema (so historical
 // records still load) but is locked to "NONE" — any attempt to pin is rejected.
 export const HeadlineSchema = z
   .object({
-    text: z.string().min(1).max(30),
+    text: dkiText("headline", 30),
     pin: z.literal("NONE").default("NONE"),
   })
   .strict();
@@ -51,7 +100,7 @@ export type Headline = z.infer<typeof HeadlineSchema>;
 
 export const DescriptionSchema = z
   .object({
-    text: z.string().min(1).max(90),
+    text: dkiText("description", 90),
     pin: z.literal("NONE").default("NONE"),
   })
   .strict();
@@ -250,11 +299,14 @@ export const CampaignSchema = z
   });
 export type Campaign = z.infer<typeof CampaignSchema>;
 
-/** Lowercase a display path (or pass through undefined). */
-const displayPath = z
-  .string()
-  .max(15)
-  .transform((v) => v.toLowerCase())
+/**
+ * Display-URL path segment: DKI-aware (FR-001, FR-007) worst-case length ≤15 and
+ * ASCII-only. Lowercased for the historical "pretty URL" convention — but only
+ * when it carries no DKI code, since lowercasing would destroy the code's casing
+ * mode and break the round-trip guarantee (FR-008).
+ */
+const displayPath = dkiText("path", 15, { asciiOnly: true })
+  .transform((v) => (containsDkiSyntax(v) ? v : v.toLowerCase()))
   .optional();
 
 /**

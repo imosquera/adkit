@@ -1,7 +1,7 @@
 {
-  "branch_name": "028-simplify-consolidate-scripts",
-  "feature_num": "028",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/028-simplify-consolidate-scripts",
-  "source_issue": 28,
-  "feature_directory": "specs/028-simplify-consolidate-scripts"
+  "branch_name": "019-dynamic-keyword-insertion",
+  "feature_num": "019",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/019-dynamic-keyword-insertion",
+  "source_issue": 19,
+  "feature_directory": "specs/019-dynamic-keyword-insertion"
 }
