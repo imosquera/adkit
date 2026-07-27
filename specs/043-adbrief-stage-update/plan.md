@@ -51,8 +51,7 @@ specs/043-adbrief-stage-update/
 ├── spec.md
 ├── plan.md
 ├── tasks.md              # created by /speckit-tasks
-└── checklists/
-    └── requirements.md   # spec quality checklist
+└── requirements.md       # spec quality checklist
 ```
 
 ### Source Code (repository root)
