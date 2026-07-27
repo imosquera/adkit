@@ -25,7 +25,9 @@ import type { SearchArgs } from "./search-args.js";
 // Shared fragments & factories
 // ===========================================================================
 
-const _ENABLED = "campaign.status = 'ENABLED'";
+const _STATUS_FIELD = "campaign.status";
+const _DATE_FIELD = "segments.date";
+const _ENABLED = `${_STATUS_FIELD} = 'ENABLED'`;
 const _METRICS: readonly string[] = [
   "metrics.cost_micros",
   "metrics.impressions",
@@ -55,7 +57,7 @@ function isoDate(ms: number): string {
 
 /** The shared report WHERE predicates: ENABLED campaigns over the date window. */
 function _whereConds(start: string, end: string): readonly string[] {
-  return [_ENABLED, `segments.date BETWEEN '${start}' AND '${end}'`];
+  return [_ENABLED, `${_DATE_FIELD} BETWEEN '${start}' AND '${end}'`];
 }
 
 /**
@@ -63,6 +65,12 @@ function _whereConds(start: string, end: string): readonly string[] {
  * WHERE ENABLED AND date BETWEEN …`. The families differ only in `resource`, the
  * leading dimension fields, and (for the daily view) an ORDER BY — everything else
  * (the metric columns, the WHERE) is identical.
+ *
+ * `fields` is the union of `dims`, `_STATUS_FIELD` and `_DATE_FIELD` (the WHERE
+ * clause built by `_whereConds` always filters on both, and GAQL rejects a query
+ * whose WHERE/ORDER BY references a field missing from SELECT), and `orderings`
+ * — deduped via `Set` so a dims list that already names one of these isn't
+ * repeated (#43).
  */
 function reportQuery(
   resource: string,
@@ -71,9 +79,10 @@ function reportQuery(
   end: string,
   orderings?: readonly string[],
 ): SearchArgs {
+  const fields = new Set([...dims, _STATUS_FIELD, _DATE_FIELD, ...(orderings ?? [])]);
   return {
     resource,
-    fields: [...dims, ..._METRICS],
+    fields: [...fields, ..._METRICS],
     conditions: _whereConds(start, end),
     ...(orderings ? { orderings } : {}),
   };
@@ -123,7 +132,7 @@ function campaignScope(
 // ===========================================================================
 
 export function campaignTotalsQuery(start: string, end: string): SearchArgs {
-  return reportQuery("campaign", ["campaign.id", "campaign.name", "campaign.status"], start, end);
+  return reportQuery("campaign", ["campaign.id", "campaign.name"], start, end);
 }
 
 export function campaignDailyQuery(start: string, end: string): SearchArgs {

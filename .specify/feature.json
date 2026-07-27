@@ -1,7 +1,7 @@
 {
-  "branch_name": "044-psi-enum-string-mismatch",
-  "feature_num": "044",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/044-psi-enum-string-mismatch",
-  "source_issue": 40,
-  "feature_directory": "specs/044-psi-enum-string-mismatch"
+  "branch_name": "045-report-gaql-select-clause-fix",
+  "feature_num": "045",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/045-report-gaql-select-clause-fix",
+  "source_issue": 43,
+  "feature_directory": "specs/045-report-gaql-select-clause-fix"
 }
