@@ -39,23 +39,25 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 - Human-readable summaries (tables, progress) go to **stderr** — redirect stdout (`> /tmp/out.json`) when you want only the payload.
 - Non-zero exit always pairs with an `ok:false` / `failure` payload that names the failing step.
 
-## Credentials & preflight
+## Credentials, project config, & preflight
 
-- Credentials live in `~/.config/google-ads/google-ads.yaml` (or the `GOOGLE_ADS_CREDENTIALS` env). Secrets are in Google Secret Manager (project `your-project-prod`).
-- If the yaml is missing, render it once: `ads.sh render-yaml` (one-time seed of the secrets: `ads.sh bootstrap-secrets`).
-- Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
-
-## Project config (`.adkit.yaml`)
-
-- `ads.sh init` scaffolds `.adkit.yaml` at the repo root (or the `ADKIT_CONFIG` path)
-  with a one-time interactive prompt — **create-if-missing**; it never overwrites an
-  existing file. Distinct from `google-ads.yaml`: this file holds non-secret, reusable
-  *project defaults* (default manager/target customer id, the Secret Manager project,
-  the read backend, and the `create`/`report` output directories), not credentials, and
-  is safe to commit.
-- Precedence for every field: an explicit flag, then the matching env var, then this
-  config file, then a hardcoded default — the same flag→env→yaml tiering as
+- Everything local lives in one file: `.adkit.yaml` at the repo root (or the
+  `ADKIT_CONFIG` / legacy `GOOGLE_ADS_CREDENTIALS` path). It carries both the Google
+  Ads API **credentials** (`developer_token`, `client_id`, `client_secret`,
+  `refresh_token`, `login_customer_id`, `target_customer_id`) and non-secret
+  **project preferences** (the Secret Manager project, the read backend, the
+  `create`/`report` output directories). It contains real secrets — **git-ignored,
+  per-machine, never commit it**. Secrets themselves are seeded in Google Secret
+  Manager (project `your-project-prod`).
+- `ads.sh init` scaffolds it with a one-time interactive prompt — **create-if-missing**;
+  it never overwrites an existing file.
+- `ads.sh render-yaml` pulls the credential fields from Secret Manager and **merges**
+  them in, leaving any preferences `init` (or a hand-edit) already set untouched. One-time
+  seed of the secrets themselves: `ads.sh bootstrap-secrets`.
+- Precedence for every field: an explicit flag, then the matching env var, then
+  `.adkit.yaml`, then a hardcoded default — the same flag→env→yaml tiering as
   customer-id resolution above. See `lib/config.ts`'s `resolveTier`.
+- Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
 
 ## Read backend (SDK vs google-ads-mcp)
 

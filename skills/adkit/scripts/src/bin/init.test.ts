@@ -68,14 +68,21 @@ describe("main (temp cwd)", () => {
   }
 
   it("writes the config from prompted answers when no file exists", async () => {
-    mockAnswers(["1234567890", "", "proj-x", "", "", "", ""]);
+    // developer_token, client_id, client_secret, refresh_token, login_customer_id,
+    // target_customer_id, secrets_project, read_backend, reports_dir, briefs_dir, ideas_dir
+    mockAnswers(["dev-tok", "cid", "csecret", "rtok", "1234567890", "", "proj-x", "", "", "", ""]);
     const code = await main();
     expect(code).toBe(0);
     const written = readFileSync(join(dir, ".adkit.yaml"), "utf8");
+    expect(written).toContain('developer_token: "dev-tok"');
+    expect(written).toContain('client_id: "cid"');
+    expect(written).toContain('client_secret: "csecret"');
+    expect(written).toContain('refresh_token: "rtok"');
     expect(written).toContain('login_customer_id: "1234567890"');
     expect(written).toContain('secrets_project: "proj-x"');
     expect(written).toContain('read_backend: "sdk"');
     expect(written).toContain('reports_dir: "ads/output/reports"');
+    expect(written).toContain("use_proto_plus: true");
     expect(written).not.toContain("target_customer_id");
   });
 

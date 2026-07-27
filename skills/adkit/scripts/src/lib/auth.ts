@@ -12,11 +12,10 @@
  */
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { GoogleAdsApi, type MutateOperation } from "google-ads-api";
 import { parse as parseYaml } from "yaml";
 import { type SearchArgs, toGaql } from "../gaql/search-args.js";
+import { configPath } from "./config.js";
 
 /**
  * One atomic mutate operation. Decoupled from the SDK's heavily-generic
@@ -91,8 +90,6 @@ export function readBackend(): ReadBackend {
   return parseReadBackend(process.env[READ_BACKEND_ENV]);
 }
 
-export const DEFAULT_CREDENTIALS_PATH = join(homedir(), ".config", "google-ads", "google-ads.yaml");
-
 /**
  * Sentinel distinguishing "keep the yaml's login_customer_id header" (pass nothing)
  * from "override it" (pass a value, including `null` to clear the MCC header for
@@ -123,9 +120,9 @@ export function toSdkMutateOperations(operations: AdsMutateOperation[]): Array<R
   );
 }
 
-/** Path to the google-ads.yaml credentials file (env override wins). */
+/** Path to the credentials — an alias for `.adkit.yaml`'s {@link "./config.js".configPath}, kept under its historical name. */
 export function credentialsPath(): string {
-  return process.env["GOOGLE_ADS_CREDENTIALS"] || DEFAULT_CREDENTIALS_PATH;
+  return configPath();
 }
 
 function readCredentials(): AdsYaml {

@@ -1,15 +1,19 @@
 /**
- * One-time interactive scaffold of the project's reusable, non-secret defaults
- * (see {@link "../lib/config.js"}) into `.adkit.yaml`.
+ * One-time interactive scaffold of the project's local config (see
+ * {@link "../lib/config.js"}) into `.adkit.yaml`: both the Google Ads
+ * credentials and the non-secret project preferences (Secret Manager project,
+ * read backend, output dirs).
  *
  * Create-if-missing, mirroring `bootstrap-secrets.ts`: an existing config file is
- * never clobbered — rerun after deleting it, or hand-edit it directly.
+ * never clobbered — rerun after deleting it, or hand-edit it directly. Running
+ * `ads.sh render-yaml` afterward refreshes just the credential fields from
+ * Secret Manager without disturbing the preferences entered here.
  *
  * The IO (terminal prompts, fs) is isolated at the edges; the prompt text and the
  * yaml body come from pure functions in `lib/config.ts`.
  */
 
-import { createInterface } from "node:readline";
+import { createInterface, type Interface } from "node:readline";
 import { writeFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
@@ -31,9 +35,26 @@ export function existsLine(path: string): string {
 }
 
 /**
+ * Mute echo of the characters typed in response to `promptText` — used for
+ * credential fields — until `unmute()` is called. Same trick as
+ * `bootstrap-secrets.ts`: overwrite each keystroke the readline writer would
+ * otherwise echo, while still letting the prompt text itself through.
+ */
+function muteEcho(rl: Interface, promptText: string): () => void {
+  const asMuted = rl as unknown as { output: NodeJS.WriteStream; _writeToOutput?: (s: string) => void };
+  asMuted._writeToOutput = (stringToWrite: string): void => {
+    asMuted.output.write(stringToWrite.includes(promptText) ? stringToWrite : "");
+  };
+  return () => {
+    delete asMuted._writeToOutput;
+  };
+}
+
+/**
  * Prompt for every config field, falling back to its default on a blank answer.
- * Returns a `field -> value` map with only non-blank fields present, in the same
- * shape {@link buildConfigYamlBody} expects.
+ * Sensitive fields (credentials) are read without echo. Returns a
+ * `field -> value` map with only non-blank fields present, in the same shape
+ * {@link buildConfigYamlBody} expects.
  *
  * Reads answers via the readline `Interface`'s async iterator rather than
  * chained `rl.question()` calls: over a piped (non-TTY) stdin that delivers all
@@ -48,8 +69,14 @@ export async function promptAll(): Promise<Map<string, string>> {
     const lines = rl[Symbol.asyncIterator]();
     const entries: Array<[string, string]> = [];
     for (const field of CONFIG_FIELDS) {
-      process.stdout.write(promptFor(field.label, field.default));
+      const text = promptFor(field.label, field.default);
+      process.stdout.write(text);
+      const unmute = field.sensitive ? muteEcho(rl, text) : null;
       const { value, done } = await lines.next();
+      unmute?.();
+      if (field.sensitive) {
+        process.stdout.write("\n");
+      }
       const answer = (done ? "" : value).trim();
       const resolved = answer || field.default;
       if (resolved) {
@@ -65,7 +92,7 @@ export async function promptAll(): Promise<Map<string, string>> {
 /**
  * Scaffold `.adkit.yaml` if it doesn't already exist. Returns the process exit
  * code (0 on success, whether that means it wrote the file or left an existing
- * one in place).
+ * one in place). Written with 0600 perms — the file carries real credentials.
  */
 export async function main(): Promise<number> {
   const target = configPath();
@@ -74,7 +101,7 @@ export async function main(): Promise<number> {
     return 0;
   }
   const values = await promptAll();
-  writeFileSync(target, buildConfigYamlBody(values));
+  writeFileSync(target, buildConfigYamlBody(values), { mode: 0o600 });
   process.stdout.write(doneLine(target));
   return 0;
 }

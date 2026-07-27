@@ -1,25 +1,37 @@
 /**
- * Reusable, non-secret project defaults for the adkit entrypoints.
+ * The project's single local config file: `.adkit.yaml`.
  *
- * Distinct from `google-ads.yaml` (the API *credentials* file rendered by
- * `render-yaml` from Secret Manager — see {@link "./auth.js".credentialsPath}):
- * this file holds per-project preferences an operator would otherwise have to
- * re-pass as flags or re-export as env vars every session — the default
- * manager/target customer id, the Secret Manager project, the read backend, and
- * the output directories `create`/`report` write into. It carries no secrets and
- * is safe to commit.
+ * Folds together two things that used to live in separate files:
+ *  - the Google Ads API **credentials** (`developer_token`, `client_id`,
+ *    `client_secret`, `refresh_token`, `login_customer_id`,
+ *    `target_customer_id`) that `render-yaml` used to write to
+ *    `~/.config/google-ads/google-ads.yaml`;
+ *  - the **non-secret project defaults** `ads.sh init` scaffolds (the Secret
+ *    Manager project, the read backend, and the `create`/`report` output
+ *    directories) that an operator would otherwise re-pass as flags or
+ *    re-export as env vars every session.
  *
- * Written by `ads.sh init` ({@link "../bin/init.js"}); read via {@link loadConfig}.
- * Every field is optional — an absent file resolves to `{}`, and callers combine
- * it with a flag/env tier via {@link resolveTier}.
+ * The combined file carries real secrets, so — unlike the plain-defaults file
+ * this replaced — it is git-ignored and per-machine, at the repo root (or the
+ * `ADKIT_CONFIG` path). `render-yaml` merges freshly-pulled secrets into it
+ * without clobbering the non-secret fields `init` (or a hand-edit) already set.
+ *
+ * Written by `ads.sh init` ({@link "../bin/init.js"}) and `ads.sh render-yaml`;
+ * read via {@link loadConfig}. Every field is optional — an absent file
+ * resolves to `{}`, and callers combine it with a flag/env tier via
+ * {@link resolveTier}.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
-/** The non-secret project defaults `init` writes and every entrypoint may read. */
+/** The project config `init`/`render-yaml` write and every entrypoint may read. */
 export interface AdkitConfig {
+  developer_token?: string;
+  client_id?: string;
+  client_secret?: string;
+  refresh_token?: string;
   login_customer_id?: string;
   target_customer_id?: string;
   secrets_project?: string;
@@ -29,27 +41,40 @@ export interface AdkitConfig {
   ideas_dir?: string;
 }
 
-/** One config field: its yaml key, prompt label, and default value. Emit/prompt order. */
+/** One config field: its yaml key, prompt label, default value, and whether its input should be echoed. */
 export interface ConfigField {
   key: keyof AdkitConfig;
   label: string;
   default: string;
+  /** Read without echo (a credential), rather than shown in the clear (an id or preference). */
+  sensitive: boolean;
 }
 
-/** The config fields, in yaml-emit and prompt order. Defaults mirror the hardcoded values elsewhere in this codebase. */
-export const CONFIG_FIELDS: readonly ConfigField[] = [
-  { key: "login_customer_id", label: "Default manager/login customer id (used as login-customer-id when no --manager flag is passed)", default: "" },
-  { key: "target_customer_id", label: "Default target/leaf customer id", default: "" },
-  { key: "secrets_project", label: "GCP Secret Manager project", default: "your-project-prod" },
-  { key: "read_backend", label: "Read backend (sdk|mcp)", default: "sdk" },
-  { key: "reports_dir", label: "Reports output directory", default: "ads/output/reports" },
-  { key: "briefs_dir", label: "Brief output directory", default: "adbriefs" },
-  { key: "ideas_dir", label: "Processed-ideas directory", default: "ideas/processed" },
+/** The credential fields — the ones `render-yaml` fetches from Secret Manager. Load-bearing: must match render-yaml's SECRETS. */
+export const CREDENTIAL_FIELDS: readonly ConfigField[] = [
+  { key: "developer_token", label: "Google Ads developer token", default: "", sensitive: true },
+  { key: "client_id", label: "OAuth client id", default: "", sensitive: false },
+  { key: "client_secret", label: "OAuth client secret", default: "", sensitive: true },
+  { key: "refresh_token", label: "OAuth refresh token", default: "", sensitive: true },
+  { key: "login_customer_id", label: "Default manager/login customer id (used as login-customer-id when no --manager flag is passed)", default: "", sensitive: false },
+  { key: "target_customer_id", label: "Default target/leaf customer id", default: "", sensitive: false },
 ];
+
+/** The non-secret project-preference fields. */
+export const PREFERENCE_FIELDS: readonly ConfigField[] = [
+  { key: "secrets_project", label: "GCP Secret Manager project", default: "your-project-prod", sensitive: false },
+  { key: "read_backend", label: "Read backend (sdk|mcp)", default: "sdk", sensitive: false },
+  { key: "reports_dir", label: "Reports output directory", default: "ads/output/reports", sensitive: false },
+  { key: "briefs_dir", label: "Brief output directory", default: "adbriefs", sensitive: false },
+  { key: "ideas_dir", label: "Processed-ideas directory", default: "ideas/processed", sensitive: false },
+];
+
+/** Every config field, in yaml-emit and prompt order: credentials first, then preferences. */
+export const CONFIG_FIELDS: readonly ConfigField[] = [...CREDENTIAL_FIELDS, ...PREFERENCE_FIELDS];
 
 /** Path to the project config file (env override wins), resolved against the current working directory. */
 export function configPath(): string {
-  return process.env["ADKIT_CONFIG"] || join(process.cwd(), ".adkit.yaml");
+  return process.env["ADKIT_CONFIG"] || process.env["GOOGLE_ADS_CREDENTIALS"] || join(process.cwd(), ".adkit.yaml");
 }
 
 /** Whether a config file already exists at {@link configPath}. */
@@ -59,12 +84,13 @@ export function configExists(): boolean {
 
 /**
  * Serialize resolved field values into the yaml body text (trailing newline
- * included). Pure: fields absent from `values` (or blank) are skipped, mirroring
- * `render-yaml`'s `buildYamlBody`.
+ * included). Pure: fields absent from `values` (or blank) are skipped. Always
+ * ends with `use_proto_plus: true`, matching the value the google-ads client
+ * libraries have historically expected in this file.
  */
 export function buildConfigYamlBody(values: ReadonlyMap<string, string>): string {
   const header = [
-    "# Written by adkit init. Reusable project defaults — no secrets.",
+    "# Written by adkit init/render-yaml. Contains secrets — do not commit.",
     "# Explicit flags and env vars still override these values at run time.",
   ];
   const fieldLines = CONFIG_FIELDS.flatMap((field) => {
@@ -75,7 +101,7 @@ export function buildConfigYamlBody(values: ReadonlyMap<string, string>): string
     const escaped = value.replace(/"/g, '\\"');
     return [`${field.key}: "${escaped}"`];
   });
-  return [...header, ...fieldLines].join("\n") + "\n";
+  return [...header, ...fieldLines, "use_proto_plus: true"].join("\n") + "\n";
 }
 
 /** Parse a config yaml body into an {@link AdkitConfig}. Pure; unknown/missing fields are simply absent. */
@@ -90,6 +116,15 @@ export function loadConfig(): AdkitConfig {
   } catch {
     return {};
   }
+}
+
+/** The present (non-blank) fields of `config`, as a `field -> value` map in {@link CONFIG_FIELDS} order — the shape {@link buildConfigYamlBody} expects. */
+export function configToValueMap(config: AdkitConfig): Map<string, string> {
+  const entries = CONFIG_FIELDS.flatMap((field): Array<[string, string]> => {
+    const value = config[field.key];
+    return value ? [[field.key, String(value)]] : [];
+  });
+  return new Map(entries);
 }
 
 /**

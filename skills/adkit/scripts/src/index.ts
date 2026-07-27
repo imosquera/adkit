@@ -53,7 +53,6 @@ export type {
 export {
   credentialsPath,
   customerIdFromYaml,
-  DEFAULT_CREDENTIALS_PATH,
   KEEP_YAML_LOGIN,
   loadClient,
   parseReadBackend,
