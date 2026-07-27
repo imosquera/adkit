@@ -20,9 +20,10 @@ import { isMainModule } from "../cli/entry.js";
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { credentialsPath } from "../lib/auth.js";
+import { loadConfig, resolveTier } from "../lib/config.js";
 
-/** GCP project holding the secrets; env-overridable, mirroring the Python default. */
-export const PROJECT = process.env["GOOGLE_ADS_SECRETS_PROJECT"] ?? "your-project-prod";
+/** GCP project holding the secrets: env var, then the project config, then the Python-mirroring default. */
+export const PROJECT = resolveTier(null, process.env["GOOGLE_ADS_SECRETS_PROJECT"], loadConfig().secrets_project, "your-project-prod")!;
 
 /**
  * One credential field: the yaml key, its Secret Manager secret name, and whether

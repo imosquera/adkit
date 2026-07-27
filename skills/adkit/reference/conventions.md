@@ -18,7 +18,7 @@ ads.sh <subcommand> [args…]
 
 - `ads.sh` resolves `node` (Node ≥ 24, https://nodejs.org), ensures the npm deps are installed on first run (`npm ci`, falling back to `npm install`), then runs the entry point directly from TypeScript via `tsx` (`node_modules/.bin/tsx src/bin/<cmd>.ts`). No build step and no `dist/` — `tsx` transpiles on the fly, so a source edit takes effect on the next run.
 - **No persistent server, no MCP** — every invocation is a single Node process.
-- Subcommands: `preflight`, `create`, `audit`, `update`, `keyword-ideas`, `report`, `render-yaml`, `bootstrap-secrets` (`apply-fixes` is a deprecated alias for `update`).
+- Subcommands: `init`, `preflight`, `create`, `audit`, `update`, `keyword-ideas`, `report`, `render-yaml`, `bootstrap-secrets` (`apply-fixes` is a deprecated alias for `update`).
 
 ## Customer-id vs login-customer-id
 
@@ -44,6 +44,18 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 - Credentials live in `~/.config/google-ads/google-ads.yaml` (or the `GOOGLE_ADS_CREDENTIALS` env). Secrets are in Google Secret Manager (project `your-project-prod`).
 - If the yaml is missing, render it once: `ads.sh render-yaml` (one-time seed of the secrets: `ads.sh bootstrap-secrets`).
 - Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
+
+## Project config (`.adkit.yaml`)
+
+- `ads.sh init` scaffolds `.adkit.yaml` at the repo root (or the `ADKIT_CONFIG` path)
+  with a one-time interactive prompt — **create-if-missing**; it never overwrites an
+  existing file. Distinct from `google-ads.yaml`: this file holds non-secret, reusable
+  *project defaults* (default manager/target customer id, the Secret Manager project,
+  the read backend, and the `create`/`report` output directories), not credentials, and
+  is safe to commit.
+- Precedence for every field: an explicit flag, then the matching env var, then this
+  config file, then a hardcoded default — the same flag→env→yaml tiering as
+  customer-id resolution above. See `lib/config.ts`'s `resolveTier`.
 
 ## Read backend (SDK vs google-ads-mcp)
 

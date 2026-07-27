@@ -61,6 +61,8 @@ export {
   readBackend,
 } from "./lib/auth.js";
 export type { AdsClient, AdsMutateOperation, GaqlRow, GaqlValue, MutateResult, ReadBackend } from "./lib/auth.js";
+export { CONFIG_FIELDS, configExists, configPath, loadConfig, resolveTier } from "./lib/config.js";
+export type { AdkitConfig, ConfigField } from "./lib/config.js";
 export { createMcpReadClient, loadReadClient, McpNotConfiguredError, toMcpSearchParams } from "./lib/mcp-client.js";
 export type { McpAdsClient, McpSearchParams } from "./lib/mcp-client.js";
 
