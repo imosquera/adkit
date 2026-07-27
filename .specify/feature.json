@@ -1,7 +1,7 @@
 {
-  "branch_name": "031-adcopy-best-practices",
-  "feature_num": "031",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/031-adcopy-best-practices",
-  "source_issue": 31,
-  "feature_directory": "specs/031-adcopy-best-practices"
+  "branch_name": "042-report-login-customer-id",
+  "feature_num": "042",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/042-report-login-customer-id",
+  "source_issue": 42,
+  "feature_directory": "specs/042-report-login-customer-id"
 }

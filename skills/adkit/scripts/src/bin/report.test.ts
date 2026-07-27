@@ -7,17 +7,18 @@
  * mirroring report.py's side effects.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
-import type { AdsClient } from "../lib/auth.js";
+import { KEEP_YAML_LOGIN, type AdsClient } from "../lib/auth.js";
+import type { LoginCustomerId } from "../cli/args.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import {
   DEFAULT_CUSTOMER,
   DEFAULT_DAYS,
-  DEFAULT_MANAGER,
   buildReport,
   main,
   parseArgs,
@@ -25,6 +26,9 @@ import {
   reportPath,
   shapeRows,
 } from "./report.js";
+
+/** The placeholder MCC this feature removed; must never come back as a runtime default. */
+const PLACEHOLDER_MANAGER = "2222222222";
 
 /** A raw metrics block as the SDK returns it (snake_case, numbers/micros). */
 function metrics(over: Record<string, number> = {}) {
@@ -41,10 +45,10 @@ function metrics(over: Record<string, number> = {}) {
 }
 
 describe("parseArgs", () => {
-  it("defaults with no args", () => {
+  it("defaults with no args — and `manager` has NO default id, only absence", () => {
     expect(parseArgs([])).toEqual({
       customer: DEFAULT_CUSTOMER,
-      manager: DEFAULT_MANAGER,
+      manager: null,
       days: DEFAULT_DAYS,
     });
   });
@@ -68,7 +72,7 @@ describe("parseArgs", () => {
   it("accepts --customer <id> like the other subcommands", () => {
     expect(parseArgs(["--customer", "1234567890"])).toEqual({
       customer: "1234567890",
-      manager: DEFAULT_MANAGER,
+      manager: null,
       days: DEFAULT_DAYS,
     });
   });
@@ -76,7 +80,7 @@ describe("parseArgs", () => {
   it("accepts the --customer=<id> equals form", () => {
     expect(parseArgs(["--customer=1234567890"])).toEqual({
       customer: "1234567890",
-      manager: DEFAULT_MANAGER,
+      manager: null,
       days: DEFAULT_DAYS,
     });
   });
@@ -92,6 +96,17 @@ describe("parseArgs", () => {
 
   it("keeps the default when --customer is given with no value", () => {
     expect(parseArgs(["--customer"]).customer).toBe(DEFAULT_CUSTOMER);
+  });
+
+  it("does not let --manager swallow a following flag as its value", () => {
+    // spec Edge Cases: a valueless --manager must leave the manager absent (resolved
+    // from env/credentials instead) rather than consuming an unrelated token.
+    expect(parseArgs(["--manager", "--days", "7"])).toEqual({
+      customer: DEFAULT_CUSTOMER,
+      manager: null,
+      days: 7,
+    });
+    expect(parseArgs(["--manager"]).manager).toBeNull();
   });
 
   it("takes an empty --customer= value literally (surfaces as a readable error downstream)", () => {
@@ -407,7 +422,7 @@ describe("buildReport", () => {
   it("carries identifiers, window, and recommendations in order", () => {
     const report = buildReport({
       customer: "1111111111",
-      manager: "2222222222",
+      manager: "9999999999",
       data,
       start: "2026-06-08",
       end: "2026-06-21",
@@ -416,7 +431,7 @@ describe("buildReport", () => {
       generatedAt: "2026-06-22",
     });
     expect(report.customer_id).toBe("1111111111");
-    expect(report.manager_id).toBe("2222222222");
+    expect(report.manager_id).toBe("9999999999");
     expect(report.window).toEqual({
       start: "2026-06-08",
       end: "2026-06-21",
@@ -433,6 +448,22 @@ describe("buildReport", () => {
       "generated_at",
     ]);
   });
+
+  it("keeps manager_id present as an explicit null when no manager was used", () => {
+    const report = buildReport({
+      customer: "1111111111",
+      manager: null,
+      data,
+      start: "2026-06-08",
+      end: "2026-06-21",
+      days: 14,
+      dailyEnd: "2026-06-22",
+      generatedAt: "2026-06-22",
+    });
+    // Stable output shape for consumers: the key stays, the absence is legible.
+    expect("manager_id" in report).toBe(true);
+    expect(report.manager_id).toBeNull();
+  });
 });
 
 describe("reportPath", () => {
@@ -446,15 +477,36 @@ describe("reportPath", () => {
 describe("main (fake client, temp cwd)", () => {
   let dir: string;
   let cwd: string;
+  let credsPath: string;
+  let origCreds: string | undefined;
+
+  /**
+   * `main` reads the credentials back to name the manager a yaml-tier run went
+   * through, so the tests own that file too: by default it carries NO
+   * `login_customer_id` (the directly-reachable leaf case, US1). Tests that need the
+   * MCC-nested case rewrite it via {@link writeCredentials}.
+   */
+  function writeCredentials(yaml: string): void {
+    writeFileSync(credsPath, yaml);
+  }
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "report-"));
     cwd = process.cwd();
     process.chdir(dir);
+    credsPath = join(dir, "google-ads.yaml");
+    origCreds = process.env.GOOGLE_ADS_CREDENTIALS;
+    process.env.GOOGLE_ADS_CREDENTIALS = credsPath;
+    writeCredentials("developer_token: t\nclient_id: c\nclient_secret: s\nrefresh_token: r\n");
   });
 
   afterEach(() => {
     process.chdir(cwd);
+    if (origCreds === undefined) {
+      delete process.env.GOOGLE_ADS_CREDENTIALS;
+    } else {
+      process.env.GOOGLE_ADS_CREDENTIALS = origCreds;
+    }
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -525,20 +577,31 @@ describe("main (fake client, temp cwd)", () => {
       out.push(String(s));
       return true;
     }) as typeof process.stdout.write;
+    // The explicit --manager override, in dashed human form: it must reach the
+    // client seam (and the report) normalised to 10 digits.
+    const seen: LoginCustomerId[] = [];
     let code: number;
     try {
-      code = await main(["1111111111", "--manager", "2222222222", "--days", "14"], () => client);
+      code = await main(
+        ["1111111111", "--manager", "999-999-9999", "--days", "14"],
+        (login) => {
+          seen.push(login);
+          return client;
+        },
+        {},
+      );
     } finally {
       process.stdout.write = orig;
     }
 
     expect(code).toBe(0);
+    expect(seen).toEqual(["9999999999"]);
     const printed = out.join("").trim();
     expect(printed).toMatch(/ads\/output\/reports\/\d{4}-\d{2}-\d{2}-1111111111-raw\.yaml$/);
 
     const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
     expect(parsed.customer_id).toBe("1111111111");
-    expect(parsed.manager_id).toBe("2222222222");
+    expect(parsed.manager_id).toBe("9999999999");
     expect((parsed.campaigns as unknown[])).toHaveLength(1);
     expect(parsed.recommendations).toBeDefined();
     expect((parsed.window as { days: number }).days).toBe(14);
@@ -561,7 +624,7 @@ describe("main (fake client, temp cwd)", () => {
     }) as typeof process.stderr.write;
     let code: number;
     try {
-      code = await main([], () => client);
+      code = await main([], () => client, {});
     } finally {
       process.stderr.write = origErr;
     }
@@ -589,7 +652,7 @@ describe("main (fake client, temp cwd)", () => {
     }) as typeof process.stderr.write;
     let code: number;
     try {
-      code = await main([], () => client);
+      code = await main([], () => client, {});
     } finally {
       process.stderr.write = origErr;
     }
@@ -597,6 +660,9 @@ describe("main (fake client, temp cwd)", () => {
     const text = err.join("");
     expect(text).toContain("Google Ads query failed");
     expect(text).toContain("permission");
+    // No manager resolved: the message says so instead of naming a fabricated id.
+    expect(text).toContain("with no manager");
+    expect(text).not.toContain(PLACEHOLDER_MANAGER);
   });
 
   it("surfaces the manager-metrics hint when metrics are queried on an MCC", async () => {
@@ -627,7 +693,7 @@ describe("main (fake client, temp cwd)", () => {
     }) as typeof process.stderr.write;
     let code: number;
     try {
-      code = await main([], () => client);
+      code = await main([], () => client, {});
     } finally {
       process.stderr.write = origErr;
     }
@@ -648,11 +714,268 @@ describe("main (fake client, temp cwd)", () => {
     try {
       code = await main([], () => {
         throw new Error("missing google-ads.yaml");
-      });
+      }, {});
     } finally {
       process.stderr.write = origErr;
     }
     expect(code).toBe(1);
     expect(err.join("")).toContain("could not load Google Ads credentials");
+  });
+
+  // -------------------------------------------------------------------------
+  // Login-customer-id resolution at the `main` boundary (issue #42). `env` is
+  // injected, so none of these mutate process.env.
+  // -------------------------------------------------------------------------
+
+  /** One campaign so `main` gets far enough to write a report. */
+  const oneCampaign = {
+    campaign: [
+      {
+        campaign: { id: 11, name: "Camp A", status: "ENABLED" },
+        metrics: metrics({ cost_micros: 1_000_000, impressions: 10, clicks: 1, conversions: 1 }),
+      },
+    ],
+  };
+
+  /** Run `main` capturing stdout, returning the exit code, printed path, and factory args. */
+  async function runMain(argv: string[], env: Record<string, string | undefined>) {
+    const client = fakeClient(oneCampaign);
+    const seen: LoginCustomerId[] = [];
+    const out: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((s: string) => {
+      out.push(String(s));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      const code = await main(
+        argv,
+        (login) => {
+          seen.push(login);
+          return client;
+        },
+        env,
+      );
+      return { code, seen, printed: out.join("").trim() };
+    } finally {
+      process.stdout.write = orig;
+    }
+  }
+
+  it("with no flag and no env, inherits the yaml login and records manager_id: null", async () => {
+    const { code, seen, printed } = await runMain(["1111111111"], {});
+    expect(code).toBe(0);
+    // Identity check against the sentinel, not a string comparison: the "inherit
+    // the credentials' login_customer_id" decision reaches loadReadClient intact.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(KEEP_YAML_LOGIN);
+
+    const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
+    expect("manager_id" in parsed).toBe(true);
+    expect(parsed.manager_id).toBeNull();
+    expect(readFileSync(printed, "utf8")).not.toContain(PLACEHOLDER_MANAGER);
+  });
+
+  it("uses GOOGLE_ADS_LOGIN_CUSTOMER_ID when no --manager is passed", async () => {
+    const { code, seen, printed } = await runMain(["1111111111"], {
+      GOOGLE_ADS_LOGIN_CUSTOMER_ID: "999-999-9999",
+    });
+    expect(code).toBe(0);
+    expect(seen).toEqual(["9999999999"]);
+    const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
+    expect(parsed.manager_id).toBe("9999999999");
+  });
+
+  it("lets --manager beat the environment", async () => {
+    const { seen } = await runMain(["1111111111", "--manager", "1234567890"], {
+      GOOGLE_ADS_LOGIN_CUSTOMER_ID: "9999999999",
+    });
+    expect(seen).toEqual(["1234567890"]);
+  });
+
+  it("treats a blank env value as absent rather than as 'no manager'", async () => {
+    const { seen } = await runMain(["1111111111"], { GOOGLE_ADS_LOGIN_CUSTOMER_ID: "   " });
+    expect(seen[0]).toBe(KEEP_YAML_LOGIN);
+  });
+
+  it("rejects a non-digits manager before it ever reaches the client", async () => {
+    const seen: LoginCustomerId[] = [];
+    await expect(
+      main(["1111111111", "--manager", "not-an-id"], (login) => {
+        seen.push(login);
+        return fakeClient(oneCampaign);
+      }, {}),
+    ).rejects.toThrow(/--manager must be digits only/);
+    expect(seen).toEqual([]);
+  });
+
+  it("blames GOOGLE_ADS_LOGIN_CUSTOMER_ID, not --manager, for a malformed env value", async () => {
+    // The operator passed no flag here; naming one would send them to fix the wrong tier.
+    const seen: LoginCustomerId[] = [];
+    const run = () =>
+      main(["1111111111"], (login) => {
+        seen.push(login);
+        return fakeClient(oneCampaign);
+      }, { GOOGLE_ADS_LOGIN_CUSTOMER_ID: "not-an-id" });
+    await expect(run()).rejects.toThrow(/GOOGLE_ADS_LOGIN_CUSTOMER_ID must be digits only/);
+    await expect(run()).rejects.not.toThrow(/--manager/);
+    expect(seen).toEqual([]);
+  });
+
+  it("normalises a dashed positional customer end to end", async () => {
+    const { code, printed } = await runMain(["999-999-9999"], {});
+    expect(code).toBe(0);
+    expect(printed).toMatch(/\d{4}-\d{2}-\d{2}-9999999999-raw\.yaml$/);
+    const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
+    expect(parsed.customer_id).toBe("9999999999");
+  });
+
+  it("reads the env tier from process.env when no env map is injected", async () => {
+    // Pins `main`'s `env = process.env` default: with `{}` there the whole
+    // environment tier would silently stop working in production.
+    const orig = process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID;
+    process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID = "999-999-9999";
+    const seen: LoginCustomerId[] = [];
+    try {
+      const code = await main(["1111111111"], (login) => {
+        seen.push(login);
+        return fakeClient(oneCampaign);
+      });
+      expect(code).toBe(0);
+    } finally {
+      if (orig === undefined) {
+        delete process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID;
+      } else {
+        process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID = orig;
+      }
+    }
+    expect(seen).toEqual(["9999999999"]);
+  });
+
+  // -------------------------------------------------------------------------
+  // The manager a run ACTUALLY went through (FR-008), including the yaml tier.
+  // -------------------------------------------------------------------------
+
+  /** A client whose every read fails with `message` (the API-rejection path). */
+  function failingClient(message: string): AdsClient {
+    const fail = () => {
+      throw { failure: { errors: [{ message }] } };
+    };
+    return {
+      async search() {
+        return fail();
+      },
+      async searchStructured() {
+        return fail();
+      },
+      async mutate() {
+        return fail();
+      },
+    };
+  }
+
+  /** Run `main` capturing stderr; returns the exit code and the captured text. */
+  async function runMainErr(
+    argv: string[],
+    env: Record<string, string | undefined>,
+    clientFactory: (login: LoginCustomerId) => AdsClient,
+  ) {
+    const err: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string) => {
+      err.push(String(s));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const code = await main(argv, clientFactory, env);
+      return { code, text: err.join("") };
+    } finally {
+      process.stderr.write = origErr;
+    }
+  }
+
+  it("records the yaml's login_customer_id as manager_id when it supplied the header (US2 AC2)", async () => {
+    // The run goes through an MCC; reporting `manager_id: null` here would tell the
+    // operator no manager was used when one demonstrably was.
+    writeCredentials("developer_token: t\nlogin_customer_id: 444-444-4444\n");
+    const { code, seen, printed } = await runMain(["1111111111"], {});
+    expect(code).toBe(0);
+    expect(seen).toEqual([KEEP_YAML_LOGIN]); // the decision still reaches the seam intact
+    const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
+    expect(parsed.manager_id).toBe("4444444444");
+  });
+
+  it("names the inherited yaml MCC in the failure text (FR-008)", async () => {
+    writeCredentials("developer_token: t\nlogin_customer_id: 4444444444\n");
+    const { code, text } = await runMainErr(["1111111111"], {}, () =>
+      failingClient("User doesn't have permission"),
+    );
+    expect(code).toBe(1);
+    expect(text).toContain("via manager 4444444444");
+    expect(text).not.toContain("with no manager");
+    expect(text).toContain("under manager 4444444444"); // the hint blames the same id
+  });
+
+  it("names --manager in the failure text when the flag supplied it (FR-008)", async () => {
+    const { code, text } = await runMainErr(["1111111111", "--manager", "999-999-9999"], {}, () =>
+      failingClient("User doesn't have permission"),
+    );
+    expect(code).toBe(1);
+    expect(text).toContain("via manager 9999999999");
+    expect(text).not.toContain("with no manager");
+  });
+
+  it("credits google-ads.yaml when the inherited login cannot be read back", async () => {
+    // Unreadable credentials mean "a login may have been inherited, value unknown" —
+    // distinct from "no header was sent", so the message must not claim the latter.
+    rmSync(credsPath, { force: true });
+    const { code, text } = await runMainErr(["1111111111"], {}, () =>
+      failingClient("User doesn't have permission"),
+    );
+    expect(code).toBe(1);
+    expect(text).toContain("google-ads.yaml");
+    expect(text).not.toContain("with no manager");
+  });
+
+  it("builds its client through loadReadClient by default, so ADKIT_READ_BACKEND is honoured (FR-004)", async () => {
+    // Pins `main`'s default clientFactory: swapping it for `loadClient` would drop
+    // the backend dispatch, and this run would die reading the (absent) credentials
+    // instead of reaching the MCP read client.
+    rmSync(credsPath, { force: true });
+    const origBackend = process.env.ADKIT_READ_BACKEND;
+    process.env.ADKIT_READ_BACKEND = "mcp";
+    const err: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string) => {
+      err.push(String(s));
+      return true;
+    }) as typeof process.stderr.write;
+    let code: number;
+    try {
+      code = await main(["1111111111"], undefined, {});
+    } finally {
+      process.stderr.write = origErr;
+      if (origBackend === undefined) {
+        delete process.env.ADKIT_READ_BACKEND;
+      } else {
+        process.env.ADKIT_READ_BACKEND = origBackend;
+      }
+    }
+    expect(code).toBe(1);
+    const text = err.join("");
+    expect(text).toContain("ADKIT_READ_BACKEND=mcp");
+    expect(text).not.toContain("could not load Google Ads credentials");
+  });
+});
+
+// FR-010: the placeholder MCC must not creep back in as a runtime default.
+// Source-level and scoped to the entrypoint, so unrelated fixture ids in other
+// files are not caught.
+describe("no hardcoded manager placeholder in the report entrypoint (FR-010)", () => {
+  it("src/bin/report.ts contains no 2222222222 / 222-222-2222 literal", () => {
+    const source = readFileSync(fileURLToPath(new URL("./report.ts", import.meta.url)), "utf8");
+    expect(source).not.toContain(PLACEHOLDER_MANAGER);
+    expect(source).not.toContain("222-222-2222");
+    expect(source).not.toContain("DEFAULT_MANAGER");
   });
 });

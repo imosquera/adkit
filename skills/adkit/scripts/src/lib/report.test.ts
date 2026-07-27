@@ -8,7 +8,14 @@ import {
   keywordQuery,
   searchTermQuery,
 } from "../gaql/builders.js";
-import { metricDict, microsToCurrency, remediationHint, safeRatio } from "./report.js";
+import {
+  managerIdField,
+  managerPhrase,
+  metricDict,
+  microsToCurrency,
+  remediationHint,
+  safeRatio,
+} from "./report.js";
 import { toGaql } from "../gaql/search-args.js";
 
 describe("dateWindow", () => {
@@ -70,21 +77,64 @@ describe("report queries", () => {
 });
 
 describe("remediationHint", () => {
+  const viaManager = { kind: "id", id: "222" } as const;
+
   it("routes token errors to render-yaml", () => {
-    expect(remediationHint("Request had invalid authentication credentials", "111", "222")).toContain(
-      "render-yaml",
-    );
-    expect(remediationHint("OAuth token expired", "111", "222")).toContain("render-yaml");
+    expect(
+      remediationHint("Request had invalid authentication credentials", "111", viaManager),
+    ).toContain("render-yaml");
+    expect(remediationHint("OAuth token expired", "111", viaManager)).toContain("render-yaml");
   });
 
   it("routes permission errors to ids", () => {
-    const h = remediationHint("User doesn't have permission to access customer", "111", "222");
+    const h = remediationHint("User doesn't have permission to access customer", "111", viaManager);
     expect(h).toContain("111");
     expect(h).toContain("222");
   });
 
   it("empty for unknown errors", () => {
-    expect(remediationHint("some unrelated quota message", "111", "222")).toBe("");
+    expect(remediationHint("some unrelated quota message", "111", viaManager)).toBe("");
+  });
+
+  it("points at the manager tiers instead of a manager id when none was used", () => {
+    const h = remediationHint("User doesn't have permission to access customer", "111", {
+      kind: "none",
+    });
+    expect(h).toContain("111");
+    expect(h).toContain("--manager");
+    expect(h).toContain("GOOGLE_ADS_LOGIN_CUSTOMER_ID");
+    // Never invents a manager to blame.
+    expect(h).not.toContain("under manager");
+  });
+
+  it("points at google-ads.yaml when the login was inherited but is unreadable", () => {
+    // A header WAS likely sent (the yaml tier), so neither blaming a specific id nor
+    // telling the operator to add one is right.
+    const h = remediationHint("User doesn't have permission to access customer", "111", {
+      kind: "yaml",
+    });
+    expect(h).toContain("login_customer_id in google-ads.yaml");
+    expect(h).not.toContain("under manager");
+    expect(h).not.toContain("GOOGLE_ADS_LOGIN_CUSTOMER_ID");
+  });
+});
+
+describe("managerPhrase / managerIdField", () => {
+  it("names the id when one is known", () => {
+    expect(managerPhrase({ kind: "id", id: "9999999999" })).toBe(" via manager 9999999999");
+    expect(managerIdField({ kind: "id", id: "9999999999" })).toBe("9999999999");
+  });
+
+  it("says 'no manager' only when no login header was sent", () => {
+    expect(managerPhrase({ kind: "none" })).toBe(" with no manager");
+    expect(managerIdField({ kind: "none" })).toBeNull();
+  });
+
+  it("credits google-ads.yaml when the login was inherited from it", () => {
+    // FR-008: an MCC-routed run must not be described as having used no manager.
+    expect(managerPhrase({ kind: "yaml" })).toContain("google-ads.yaml");
+    expect(managerPhrase({ kind: "yaml" })).not.toContain("no manager");
+    expect(managerIdField({ kind: "yaml" })).toBeNull();
   });
 });
 
