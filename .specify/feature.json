@@ -1,7 +1,7 @@
 {
-  "branch_name": "042-report-login-customer-id",
-  "feature_num": "042",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/042-report-login-customer-id",
-  "source_issue": 42,
-  "feature_directory": "specs/042-report-login-customer-id"
+  "branch_name": "044-psi-enum-string-mismatch",
+  "feature_num": "044",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/044-psi-enum-string-mismatch",
+  "source_issue": 40,
+  "feature_directory": "specs/044-psi-enum-string-mismatch"
 }

@@ -616,6 +616,35 @@ function negativesAndPromotions(
 // Quality Score layer.
 // ---------------------------------------------------------------------------
 
+/** Google's QualityScoreBucket enum, in wire order (0=UNSPECIFIED..4=ABOVE_AVERAGE). */
+const QUALITY_SCORE_BUCKETS = [
+  "UNSPECIFIED",
+  "UNKNOWN",
+  "BELOW_AVERAGE",
+  "AVERAGE",
+  "ABOVE_AVERAGE",
+] as const;
+
+/**
+ * Normalize one Quality Score component field to its canonical string bucket
+ * name. The google-ads-api client returns `post_click_quality_score`,
+ * `creative_quality_score`, and `search_predicted_ctr` as the raw
+ * QualityScoreBucket enum INTEGER (e.g. 2 = BELOW_AVERAGE) despite every other
+ * enum on the same client resolving to its string name (issue #40). Everything
+ * downstream — the PSI URL selector (`belowAverageFinalUrls`) and the Quality
+ * Score render sections (`renderQualityScoreSection`) — compares against the
+ * string form, so normalize once here, at the mapping boundary. An
+ * already-string value passes through unchanged; an out-of-range integer
+ * degrades to "UNKNOWN" rather than throwing; a missing value degrades to ""
+ * (unchanged from prior behavior).
+ */
+function qualityScoreBucket(value: string | number | null | undefined): string {
+  if (typeof value === "number") {
+    return QUALITY_SCORE_BUCKETS[value] ?? "UNKNOWN";
+  }
+  return value ?? "";
+}
+
 /**
  * {campaignId: [{keyword, qualityScore, landingPageExp, adRelevance, expectedCtr}]}
  * from the current-state Quality Score snapshot. Keywords with no score yet
@@ -644,9 +673,9 @@ export async function qualityScore(
         {
           keyword: r.ad_group_criterion.keyword.text,
           qualityScore: Math.trunc(score),
-          landingPageExp: qi.post_click_quality_score,
-          adRelevance: qi.creative_quality_score,
-          expectedCtr: qi.search_predicted_ctr,
+          landingPageExp: qualityScoreBucket(qi.post_click_quality_score),
+          adRelevance: qualityScoreBucket(qi.creative_quality_score),
+          expectedCtr: qualityScoreBucket(qi.search_predicted_ctr),
         },
       ];
     })

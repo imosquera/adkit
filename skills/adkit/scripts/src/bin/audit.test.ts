@@ -329,6 +329,49 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
     expect(result[1][0].keyword).toBe("scored");
   });
 
+  it("qualityScore: post_click_quality_score arriving as the raw enum integer normalizes to the string bucket (issue #40)", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        ad_group_criterion: {
+          keyword: { text: "int-enum" },
+          quality_info: {
+            quality_score: 3,
+            // google-ads-api returns these as raw QualityScoreBucket integers
+            // (2 = BELOW_AVERAGE), not their resolved string name.
+            post_click_quality_score: 2,
+            creative_quality_score: "AVERAGE",
+            search_predicted_ctr: "AVERAGE",
+          },
+        },
+      },
+    ];
+    const result = await qualityScore(fakeClient(() => rows), "123", [1]);
+    expect(result[1]).toHaveLength(1);
+    expect(result[1][0].landingPageExp).toBe("BELOW_AVERAGE");
+  });
+
+  it("qualityScore: creative_quality_score and search_predicted_ctr arriving as raw enum integers also normalize to string buckets (issue #40)", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        ad_group_criterion: {
+          keyword: { text: "int-enum-2" },
+          quality_info: {
+            quality_score: 3,
+            post_click_quality_score: "AVERAGE",
+            creative_quality_score: 2,
+            search_predicted_ctr: 2,
+          },
+        },
+      },
+    ];
+    const result = await qualityScore(fakeClient(() => rows), "123", [1]);
+    expect(result[1]).toHaveLength(1);
+    expect(result[1][0].adRelevance).toBe("BELOW_AVERAGE");
+    expect(result[1][0].expectedCtr).toBe("BELOW_AVERAGE");
+  });
+
   it("landingPageMobile: a URL with no metrics yields no findings, no throw", async () => {
     const rows = [
       {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runPsi } from "./audit.js";
+import { qualityScore, runPsi } from "./audit.js";
 import { renderPsi } from "../audit/render.js";
+import type { AdsClient } from "../lib/auth.js";
 import type { CampaignReport, QualityScoreEntry } from "../audit/types.js";
 
 const belowAvg: QualityScoreEntry = {
@@ -87,6 +88,53 @@ describe("runPsi", () => {
     }) as unknown as Response));
     const psi = await runPsi({ 1: [belowAvg] }, report("https://x.com"), "KEY");
     expect(psi.results[0]).toMatchObject({ ok: true, url: "https://x.com", lcpMs: 3100 });
+  });
+
+  it("end-to-end: a Quality Score row whose post_click_quality_score arrives as the raw enum integer still triggers PSI (issue #40 regression)", async () => {
+    // The Google Ads client returns post_click_quality_score as the raw
+    // QualityScoreBucket integer (2 = BELOW_AVERAGE), not its string name. Before
+    // the fix, qualityScore() passed that integer straight into
+    // landingPageExp, so belowAverageFinalUrls' `=== "BELOW_AVERAGE"` string
+    // comparison was always false and runPsi silently never ran.
+    const client: AdsClient = {
+      async search<Row = Record<string, unknown>>(): Promise<Row[]> {
+        return [] as Row[];
+      },
+      async searchStructured<Row = Record<string, unknown>>(): Promise<Row[]> {
+        return [
+          {
+            campaign: { id: 1 },
+            ad_group_criterion: {
+              keyword: { text: "int-enum" },
+              quality_info: {
+                quality_score: 3,
+                post_click_quality_score: 2,
+                creative_quality_score: "AVERAGE",
+                search_predicted_ctr: "AVERAGE",
+              },
+            },
+          },
+        ] as Row[];
+      },
+      async mutate() {
+        throw new Error("this test is read-only — no mutate calls expected");
+      },
+    };
+    const qualityScoreMap = await qualityScore(client, "123", [1]);
+    expect(qualityScoreMap[1][0].landingPageExp).toBe("BELOW_AVERAGE");
+
+    const fetchSpy = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ lighthouseResult: { audits: {} } }),
+    }) as unknown as Response);
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const psi = await runPsi(qualityScoreMap, report("https://x.com"), "KEY");
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(psi.skipped).toBeNull();
+    expect(psi.results).toHaveLength(1);
+    expect(psi.results[0]).toMatchObject({ ok: true, url: "https://x.com" });
   });
 });
 
