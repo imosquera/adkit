@@ -1,7 +1,7 @@
 ---
 name: adkit
-description: "Manage Google Ads search campaigns — create, audit, update, report, research, and GTM keyword/ad-copy generation. Usage: /adkit create | /adkit audit | /adkit update | /adkit report | /adkit research | /adkit gtm"
-argument-hint: "create | audit | update | report | research | gtm"
+description: "Manage Google Ads search campaigns — init project config, create, audit, update, report, research, and GTM keyword/ad-copy generation. Usage: /adkit init | /adkit create | /adkit audit | /adkit update | /adkit report | /adkit research | /adkit gtm"
+argument-hint: "init | create | audit | update | report | research | gtm"
 user-invocable: true
 ---
 
@@ -35,6 +35,7 @@ Read the [shared conventions](reference/conventions.md) once before any subcomma
 
 | Command | Category | Description | Reference |
 | --- | --- | --- | --- |
+| `init` | Setup | One-time interactive scaffold of `.adkit.yaml` (credentials + project preferences) | [reference/init.md](reference/init.md) |
 | `create` | Publishing | Publish a new search campaign from a processed idea markdown file | [reference/create.md](reference/create.md) |
 | `audit` | Analysis | Audit live ad strength and surface actionable fixes (read-only) | [reference/audit.md](reference/audit.md) |
 | `update` | Publishing | Apply headline/description rewrites and sitelink changes to live ads | [reference/update.md](reference/update.md) |
