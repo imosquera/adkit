@@ -61,10 +61,17 @@
  * Usage: ads.sh update plan.yaml [--apply]   (alias: ads.sh apply-fixes)
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { parse as yamlParse, YAMLParseError } from "yaml";
+import { z } from "zod";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
+import { ADBRIEFS_DIR, AdbriefsError, writeBrief } from "../adbriefs/store.js";
+import { diffBriefs, type BriefDiff } from "../adbriefs/diff.js";
+import { loadStateIndex } from "../adbriefs/state.js";
+import { applyPlanToBrief, resolvePlanGroups, type ResolvedPlanGroup } from "../adbriefs/apply-plan.js";
+import { parseBrief, type Brief } from "../lib/schema.js";
 
 import {
   createAdGroup,
@@ -403,7 +410,7 @@ export async function liveHeadlines(
 // ---------------------------------------------------------------------------
 
 /** The parsed fixes plan. All sections are optional. */
-interface FixesPlan extends Record<string, unknown> {
+export interface FixesPlan extends Record<string, unknown> {
   customerId?: unknown;
   loginCustomerId?: string | null;
   landingUrl?: string;
@@ -442,6 +449,139 @@ function section(plan: FixesPlan, key: keyof FixesPlan): Array<Record<string, un
 /** Format micros as a $X.XX dollar amount (Python `${x/1e6:.2f}`). */
 function dollars(micros: number): string {
   return `$${(micros / 1e6).toFixed(2)}`;
+}
+
+// ---------------------------------------------------------------------------
+// adbriefs staging (US1-US4) — resolve the plan's ids to their owning brief slug
+// (via the state-file reverse index), stage the already-computed changes into a
+// proposed copy of that brief, diff it against disk, and (on --apply, only after
+// the live mutation completes) persist it. No section here duplicates plan.ts's
+// change-list decisions — it only reuses their already-computed outputs.
+// ---------------------------------------------------------------------------
+
+/** Path to `adbriefs/<slug>.yaml`, given a slug already resolved via the state index. */
+function briefPathForSlug(root: string, slug: string): string {
+  return join(root, ADBRIEFS_DIR, `${slug}.yaml`);
+}
+
+/**
+ * Read + parse `adbriefs/<slug>.yaml`, or `null` if it doesn't exist. Mirrors
+ * `adbriefs/store.ts`'s brief-parse contract (throws {@link AdbriefsError} on bad
+ * YAML/schema) without needing a {@link Brief} in hand to derive the path — `update`
+ * already knows the slug from the state index, unlike `create` which derives it from a
+ * freshly-authored brief (store.ts's `loadBriefIfExists` is not reusable here for
+ * exactly that reason, and store.ts is otherwise unchanged by this feature).
+ */
+function loadBriefAtSlug(root: string, slug: string): Brief | null {
+  const path = briefPathForSlug(root, slug);
+  if (!existsSync(path)) {
+    return null;
+  }
+  let data: unknown;
+  try {
+    data = yamlParse(readFileSync(path, "utf8"));
+  } catch (exc) {
+    if (exc instanceof YAMLParseError) {
+      const where = exc.linePos?.[0] ? ` (line ${exc.linePos[0].line})` : "";
+      throw new AdbriefsError(`adbriefs brief is not valid YAML${where}: ${exc.message.split("\n")[0]}`);
+    }
+    throw exc;
+  }
+  try {
+    return parseBrief(data);
+  } catch (exc) {
+    if (exc instanceof z.ZodError) {
+      const lines = exc.errors.map((e) => `  - ${e.path.map((p) => String(p)).join(".")}: ${e.message}`);
+      throw new AdbriefsError(`adbriefs brief at ${path} failed validation:\n${lines.join("\n")}`);
+    }
+    throw exc;
+  }
+}
+
+/** One resolved slug's staged brief: the diff against disk, and why staging was skipped, if it was. */
+interface StagedBrief {
+  slug: string;
+  current: Brief | null;
+  proposed: Brief | null;
+  diff: BriefDiff | null;
+  /** null when staging succeeded; otherwise the reason no diff/write happened for this slug. */
+  skipReason: "collision" | "missing-brief" | null;
+  message?: string;
+}
+
+/**
+ * Stage every resolved plan group into its on-disk brief and diff it (FR-002, FR-003).
+ * A slug whose on-disk brief names a *different* campaign than the state index expects
+ * is refused (FR-007, mirrors `create`'s `assertNoForeignBrief`) rather than silently
+ * staged against the wrong campaign; a slug with a state file but no brief on disk
+ * (deleted by hand) is skipped with an explicit reason, never fabricated.
+ */
+function stageResolvedGroups(
+  root: string,
+  groups: ResolvedPlanGroup[],
+  computed: { defaultLandingUrl?: string; adGroupCreates: import("../fixes/plan.js").AdGroupCreatePlanEntry[] },
+): StagedBrief[] {
+  return groups
+    .filter((g) => g.slug !== "")
+    .map((group) => {
+      const current = loadBriefAtSlug(root, group.slug);
+      if (current === null) {
+        return { slug: group.slug, current: null, proposed: null, diff: null, skipReason: "missing-brief" as const };
+      }
+      if (current.campaign.name !== group.campaignName) {
+        return {
+          slug: group.slug,
+          current,
+          proposed: null,
+          diff: null,
+          skipReason: "collision" as const,
+          message:
+            `adbriefs collision: ${briefPathForSlug(root, group.slug)} already describes campaign ` +
+            `"${current.campaign.name}", but the plan's state index resolved it as "${group.campaignName}". ` +
+            "Refusing to stage — rename one campaign or move the brief.",
+        };
+      }
+      const proposed = applyPlanToBrief(current, group, computed);
+      const diff = diffBriefs(current, proposed);
+      return { slug: group.slug, current, proposed, diff, skipReason: null };
+    });
+}
+
+/**
+ * Slugs (deduped, order-preserving) that `ids` resolve to via a {@link StateIndex} id
+ * map — used to conservatively attribute a per-step/per-entry mutation failure to the
+ * brief(s) it touched, via the SAME reverse index already loaded for staging (no new
+ * query). An id with no record in `indexMap` (unresolved, or resolved to no brief)
+ * contributes nothing — a failure never gets attributed to a slug that was never
+ * staged in the first place.
+ */
+function slugsForIds(ids: ReadonlyArray<unknown>, indexMap: Map<string, { slug: string }>): string[] {
+  return [...new Set(ids.map((id) => indexMap.get(String(id))?.slug).filter((s): s is string => s !== undefined))];
+}
+
+/** One mutation step (or one entry within it) that failed — the error plus the brief slug(s)
+ * it's conservatively attributed to (possibly none, if none of its ids resolved to a brief). */
+interface StepFailure {
+  step: string;
+  error: unknown;
+  slugs: string[];
+}
+
+/** Envelope entry for one staged brief (FR-009). */
+function briefEnvelopeEntry(
+  root: string,
+  s: StagedBrief,
+  synced: boolean,
+  writtenPath: string | null,
+): Record<string, unknown> {
+  return {
+    slug: s.slug,
+    briefPath: writtenPath ?? (s.skipReason === null ? briefPathForSlug(root, s.slug) : null),
+    briefSynced: synced,
+    briefDiff: s.diff ? { changed: s.diff.changed, added: s.diff.added, removed: s.diff.removed } : null,
+    briefStagingSkipped: s.skipReason !== null,
+    briefStagingSkipReason: s.skipReason,
+  };
 }
 
 /**
@@ -575,22 +715,61 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return { campaignId: l.campaignId, addEnglish, remove };
   });
 
-  /**
-   * Surface the campaign/ad-group on/off plan (and the searchPartners toggle) as a
-   * machine-readable envelope so the changes/skips (and any live-spend/reach-increasing
-   * ENABLE) are never lost in narration.
-   */
-  const emitStatusEnvelope = (applied: boolean): void => {
-    if (
-      !(
-        section(plan, "campaignStatus").length > 0 ||
-        section(plan, "adGroupStatus").length > 0 ||
-        section(plan, "adStatus").length > 0 ||
-        section(plan, "searchPartners").length > 0
-      )
-    ) {
-      return;
+  // ----- adbriefs staging: resolve this plan's ids to their brief(s) via the state
+  // index, stage the already-computed changes above into a proposed copy, and diff
+  // against disk — on EVERY run, dry-run included (FR-001, FR-002, FR-003, FR-010).
+  const adbriefsRoot = process.cwd();
+  const stateIndex = loadStateIndex(adbriefsRoot);
+  const noStateFileAtAll =
+    stateIndex.byCampaignId.size === 0 && stateIndex.byAdGroupId.size === 0 && stateIndex.byAdId.size === 0;
+  const planGroups = resolvePlanGroups(plan, stateIndex);
+  const unresolvedIds = planGroups.find((g) => g.slug === "")?.unresolvedIds ?? [];
+  const staged = stageResolvedGroups(adbriefsRoot, planGroups, { defaultLandingUrl: defaultUrl, adGroupCreates: agCreates });
+
+  for (const s of staged) {
+    if (s.skipReason === "collision") {
+      console.log(`WARNING: ${s.message}`);
+      continue;
     }
+    if (s.skipReason === "missing-brief") {
+      console.log(
+        `WARNING: adbriefs/${s.slug}.state.yaml exists but adbriefs/${s.slug}.yaml does not — ` +
+          "skipping brief staging for this campaign",
+      );
+      continue;
+    }
+    const path = briefPathForSlug(adbriefsRoot, s.slug);
+    if (s.diff!.changed) {
+      console.log(`\nadbriefs brief ${path} (+${s.diff!.added}/-${s.diff!.removed}):`);
+      console.log(s.diff!.render);
+    } else {
+      console.log(`\nadbriefs brief ${path} unchanged`);
+    }
+  }
+  if (unresolvedIds.length > 0) {
+    console.log(
+      "\nWARNING: plan references id(s) with no record in any adbriefs/*.state.yaml " +
+        "(brief staging skipped for these; live mutation proceeds unaffected):",
+    );
+    for (const u of unresolvedIds) {
+      console.log(`  - ${u.kind} ${u.id}`);
+    }
+  }
+  const briefStagingSkipReason: "no-state-file" | "unresolvable-id" | "collision" | "missing-brief" | null =
+    unresolvedIds.length > 0
+      ? noStateFileAtAll
+        ? "no-state-file"
+        : "unresolvable-id"
+      : (staged.find((s) => s.skipReason !== null)?.skipReason ?? null);
+  const briefStagingSkipped = unresolvedIds.length > 0 || staged.some((s) => s.skipReason !== null);
+
+  /**
+   * Surface the campaign/ad-group on/off plan (and the searchPartners toggle), plus the
+   * adbriefs staging outcome, as a machine-readable envelope so the changes/skips (and
+   * any live-spend/reach-increasing ENABLE, or brief-staging skip) are never lost in
+   * narration (FR-009). Always emitted — brief-sync status must be reported on every run.
+   */
+  const emitStatusEnvelope = (applied: boolean, briefResults: Array<Record<string, unknown>>): void => {
     emitJson(
       ok({
         applied,
@@ -606,6 +785,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         searchPartnersChanges: spChanges,
         searchPartnersSkipped: spSkips,
         searchPartnersEnableIncreasesReach: spEnableChanges.map((c) => c.campaignId),
+        briefs: briefResults,
+        briefStagingSkipped,
+        briefStagingSkipReason,
+        unresolvedPlanIds: unresolvedIds,
       }),
     );
   };
@@ -702,153 +885,204 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
   if (!apply) {
     console.log("\nDry run. Re-run with --apply.");
-    emitStatusEnvelope(false);
+    // Dry-run NEVER writes adbriefs/ (FR-004) — every staged brief reports unsynced,
+    // carrying only the preview diff computed above.
+    emitStatusEnvelope(
+      false,
+      staged.map((s) => briefEnvelopeEntry(adbriefsRoot, s, false, null)),
+    );
     return 0;
   }
 
   // ===== mutation sequence (IO edge — imperative, print-as-you-go) =====
+  // Each numbered step (or, where a step already loops per section/campaign entry,
+  // each entry within it) runs in its OWN try/catch: a thrown/rejected mutation is
+  // caught, recorded against the brief slug(s) it's attributed to via `stateIndex`
+  // (the same reverse index staging already resolved against), and the sequence
+  // CONTINUES to the next independent step/entry rather than aborting the whole run.
+  // This isolates a failure to the campaign(s)/brief(s) it actually touches (FR-006,
+  // FR-010) instead of marking every staged brief across the whole run unsynced.
+  const stepFailures: StepFailure[] = [];
+  const recordFailure = (step: string, error: unknown, slugs: string[]): void => {
+    stepFailures.push({ step, error, slugs });
+    console.log(`  FAILED: ${step}: ${formatGoogleAdsError(error)}`);
+  };
 
-  // 1) RSA rewrites + appends
-  const adOps: AdsMutateOperation[] = [];
-  for (const rw of section(plan, "rewrites")) {
-    // A rewrite may carry headlines/descriptions, a finalUrl, a display path, or a mix.
-    // Absent asset arrays pass as null so a URL-only / path-only repoint leaves the live
-    // RSA copy untouched.
-    const hs = Array.isArray(rw.headlines) ? (rw.headlines as string[]) : null;
-    const ds = Array.isArray(rw.descriptions) ? (rw.descriptions as string[]) : null;
-    adOps.push(
-      rsaUpdateOp(customer, rw.adId, hs, ds, {
-        finalUrl: rw.finalUrl as string | undefined,
-        path1: rw.path1,
-        path2: rw.path2,
-      }),
-    );
-  }
-  for (const ap of section(plan, "appendHeadlines")) {
-    const cur = live.get(asId(ap.adId)) ?? [];
-    const add = Array.isArray(ap.add) ? (ap.add as string[]) : [];
-    const full = [...cur, ...add.filter((h) => !cur.includes(h))];
-    adOps.push(rsaUpdateOp(customer, ap.adId, full, null));
-  }
-  if (adOps.length > 0) {
-    for (const r of (await client.mutate(customer, adOps)).results) {
-      console.log("  mutated", r.resource_name);
+  // 1) RSA rewrites + appends — one batched mutate across every rewrite/append in the
+  // plan, so a failure here cannot be isolated below the whole step (documented
+  // conservative fallback): attribute it to every slug either section touches.
+  try {
+    const adOps: AdsMutateOperation[] = [];
+    for (const rw of section(plan, "rewrites")) {
+      // A rewrite may carry headlines/descriptions, a finalUrl, a display path, or a mix.
+      // Absent asset arrays pass as null so a URL-only / path-only repoint leaves the live
+      // RSA copy untouched.
+      const hs = Array.isArray(rw.headlines) ? (rw.headlines as string[]) : null;
+      const ds = Array.isArray(rw.descriptions) ? (rw.descriptions as string[]) : null;
+      adOps.push(
+        rsaUpdateOp(customer, rw.adId, hs, ds, {
+          finalUrl: rw.finalUrl as string | undefined,
+          path1: rw.path1,
+          path2: rw.path2,
+        }),
+      );
     }
+    for (const ap of section(plan, "appendHeadlines")) {
+      const cur = live.get(asId(ap.adId)) ?? [];
+      const add = Array.isArray(ap.add) ? (ap.add as string[]) : [];
+      const full = [...cur, ...add.filter((h) => !cur.includes(h))];
+      adOps.push(rsaUpdateOp(customer, ap.adId, full, null));
+    }
+    if (adOps.length > 0) {
+      for (const r of (await client.mutate(customer, adOps)).results) {
+        console.log("  mutated", r.resource_name);
+      }
+    }
+  } catch (exc) {
+    const ids = [
+      ...section(plan, "rewrites").map((r) => r.adId),
+      ...section(plan, "appendHeadlines").map((a) => a.adId),
+    ];
+    recordFailure("RSA rewrites/appendHeadlines", exc, slugsForIds(ids, stateIndex.byAdId));
   }
 
-  // 2) sitelinks
+  // 2) sitelinks — one campaign's sitelinks failing does not block another's.
   for (const sl of section(plan, "sitelinks")) {
-    const add = Array.isArray(sl.add) ? (sl.add as Array<Record<string, unknown>>) : [];
-    for (const s of add) {
-      const sitelinkAsset: Record<string, unknown> = { link_text: s.text };
-      if (s.description1) {
-        sitelinkAsset["description1"] = s.description1;
+    try {
+      const add = Array.isArray(sl.add) ? (sl.add as Array<Record<string, unknown>>) : [];
+      for (const s of add) {
+        const sitelinkAsset: Record<string, unknown> = { link_text: s.text };
+        if (s.description1) {
+          sitelinkAsset["description1"] = s.description1;
+        }
+        if (s.description2) {
+          sitelinkAsset["description2"] = s.description2;
+        }
+        const assetOp: AdsMutateOperation = {
+          entity: "asset",
+          operation: "create",
+          resource: { sitelink_asset: sitelinkAsset, final_urls: [(s.finalUrl as string) || (defaultUrl as string)] },
+        };
+        const arn = (await client.mutate(customer, [assetOp])).results[0]!.resource_name;
+        const linkOp: AdsMutateOperation = {
+          entity: "campaign_asset",
+          operation: "create",
+          resource: {
+            campaign: `customers/${customer}/campaigns/${pyStr(sl.campaignId)}`,
+            asset: arn,
+            field_type: enums.AssetFieldType.SITELINK,
+          },
+        };
+        await client.mutate(customer, [linkOp]);
+        console.log(`  sitelink ${pyRepr(s.text)} -> campaign ${pyStr(sl.campaignId)}`);
       }
-      if (s.description2) {
-        sitelinkAsset["description2"] = s.description2;
-      }
-      const assetOp: AdsMutateOperation = {
-        entity: "asset",
-        operation: "create",
-        resource: { sitelink_asset: sitelinkAsset, final_urls: [(s.finalUrl as string) || (defaultUrl as string)] },
-      };
-      const arn = (await client.mutate(customer, [assetOp])).results[0]!.resource_name;
-      const linkOp: AdsMutateOperation = {
-        entity: "campaign_asset",
-        operation: "create",
-        resource: {
-          campaign: `customers/${customer}/campaigns/${pyStr(sl.campaignId)}`,
-          asset: arn,
-          field_type: enums.AssetFieldType.SITELINK,
-        },
-      };
-      await client.mutate(customer, [linkOp]);
-      console.log(`  sitelink ${pyRepr(s.text)} -> campaign ${pyStr(sl.campaignId)}`);
+    } catch (exc) {
+      recordFailure(`sitelinks (campaign ${pyStr(sl.campaignId)})`, exc, slugsForIds([sl.campaignId], stateIndex.byCampaignId));
     }
   }
 
-  // 3) callouts
+  // 3) callouts — same per-campaign isolation as sitelinks.
   for (const co of section(plan, "callouts")) {
-    const add = Array.isArray(co.add) ? (co.add as string[]) : [];
-    for (const text of add) {
-      const assetOp: AdsMutateOperation = {
-        entity: "asset",
-        operation: "create",
-        resource: { callout_asset: { callout_text: text } },
-      };
-      const arn = (await client.mutate(customer, [assetOp])).results[0]!.resource_name;
-      const linkOp: AdsMutateOperation = {
-        entity: "campaign_asset",
-        operation: "create",
-        resource: {
-          campaign: `customers/${customer}/campaigns/${pyStr(co.campaignId)}`,
-          asset: arn,
-          field_type: enums.AssetFieldType.CALLOUT,
-        },
-      };
-      await client.mutate(customer, [linkOp]);
-      console.log(`  callout ${pyRepr(text)} -> campaign ${pyStr(co.campaignId)}`);
+    try {
+      const add = Array.isArray(co.add) ? (co.add as string[]) : [];
+      for (const text of add) {
+        const assetOp: AdsMutateOperation = {
+          entity: "asset",
+          operation: "create",
+          resource: { callout_asset: { callout_text: text } },
+        };
+        const arn = (await client.mutate(customer, [assetOp])).results[0]!.resource_name;
+        const linkOp: AdsMutateOperation = {
+          entity: "campaign_asset",
+          operation: "create",
+          resource: {
+            campaign: `customers/${customer}/campaigns/${pyStr(co.campaignId)}`,
+            asset: arn,
+            field_type: enums.AssetFieldType.CALLOUT,
+          },
+        };
+        await client.mutate(customer, [linkOp]);
+        console.log(`  callout ${pyRepr(text)} -> campaign ${pyStr(co.campaignId)}`);
+      }
+    } catch (exc) {
+      recordFailure(`callouts (campaign ${pyStr(co.campaignId)})`, exc, slugsForIds([co.campaignId], stateIndex.byCampaignId));
     }
   }
 
   // 4) negative keywords (dedup against live, then add as campaign criteria)
   for (const ng of section(plan, "negatives")) {
     const cid = ng.campaignId;
-    const kws = newNegatives(ng, liveNeg);
-    if (kws.length === 0) {
-      console.log(`  negatives campaign ${pyStr(cid)}: all ${lenOf(ng.add)} already present, skipped`);
-      continue;
+    try {
+      const kws = newNegatives(ng, liveNeg);
+      if (kws.length === 0) {
+        console.log(`  negatives campaign ${pyStr(cid)}: all ${lenOf(ng.add)} already present, skipped`);
+        continue;
+      }
+      const ops = buildNegativeKeywordOps(`customers/${customer}/campaigns/${pyStr(cid)}`, kws);
+      await client.mutate(customer, ops);
+      console.log(
+        `  +${kws.length} negative keywords -> campaign ${pyStr(cid)}: ` +
+          kws.map((k) => `${k.text}[${k.matchType[0]}]`).join(", "),
+      );
+    } catch (exc) {
+      recordFailure(`negatives (campaign ${pyStr(cid)})`, exc, slugsForIds([cid], stateIndex.byCampaignId));
     }
-    const ops = buildNegativeKeywordOps(`customers/${customer}/campaigns/${pyStr(cid)}`, kws);
-    await client.mutate(customer, ops);
-    console.log(
-      `  +${kws.length} negative keywords -> campaign ${pyStr(cid)}: ` +
-        kws.map((k) => `${k.text}[${k.matchType[0]}]`).join(", "),
-    );
   }
 
   // 4b) positive keyword edits (add / remove / pause on ad-group criteria)
   for (const kb of section(plan, "keywords")) {
     const agid = kb.adGroupId;
-    const adds = newPositiveKeywords(kb, livePos);
-    const liveKeys = livePos.get(asId(agid)) ?? new Map<string, string>();
-    const rn = (item: unknown): string => {
-      const [kw] = coerceKeyword(item);
-      return liveKeys.get(keyStr(posKey(kw!.text, kw!.matchType)))!;
-    };
-    const removeRns = (Array.isArray(kb.remove) ? kb.remove : []).map(rn);
-    const pauseRns = (Array.isArray(kb.pause) ? kb.pause : []).map(rn);
-    const ops = buildKeywordOps(`customers/${customer}/adGroups/${pyStr(agid)}`, adds, removeRns, pauseRns);
-    if (ops.length === 0) {
-      console.log(`  keywords adGroup ${pyStr(agid)}: nothing to do (all adds already present)`);
-      continue;
+    try {
+      const adds = newPositiveKeywords(kb, livePos);
+      const liveKeys = livePos.get(asId(agid)) ?? new Map<string, string>();
+      const rn = (item: unknown): string => {
+        const [kw] = coerceKeyword(item);
+        return liveKeys.get(keyStr(posKey(kw!.text, kw!.matchType)))!;
+      };
+      const removeRns = (Array.isArray(kb.remove) ? kb.remove : []).map(rn);
+      const pauseRns = (Array.isArray(kb.pause) ? kb.pause : []).map(rn);
+      const ops = buildKeywordOps(`customers/${customer}/adGroups/${pyStr(agid)}`, adds, removeRns, pauseRns);
+      if (ops.length === 0) {
+        console.log(`  keywords adGroup ${pyStr(agid)}: nothing to do (all adds already present)`);
+        continue;
+      }
+      await client.mutate(customer, ops);
+      console.log(
+        `  keywords adGroup ${pyStr(agid)}: +${adds.length} add, -${removeRns.length} remove, ~${pauseRns.length} pause`,
+      );
+    } catch (exc) {
+      recordFailure(`keywords (adGroup ${pyStr(agid)})`, exc, slugsForIds([agid], stateIndex.byAdGroupId));
     }
-    await client.mutate(customer, ops);
-    console.log(
-      `  keywords adGroup ${pyStr(agid)}: +${adds.length} add, -${removeRns.length} remove, ~${pauseRns.length} pause`,
-    );
   }
 
   // 5) budgets (guardrail already enforced in validate)
   for (const b of section(plan, "budgets")) {
     const cid = b.campaignId;
-    const op: AdsMutateOperation = {
-      entity: "campaign_budget",
-      operation: "update",
-      resource: {
-        resource_name: budgets.get(asId(cid))!.resource,
-        amount_micros: b.dailyMicros,
-      },
-    };
-    await client.mutate(customer, [op]);
-    console.log(`  budget campaign ${pyStr(cid)} -> ${dollars(b.dailyMicros as number)}/day`);
+    try {
+      const op: AdsMutateOperation = {
+        entity: "campaign_budget",
+        operation: "update",
+        resource: {
+          resource_name: budgets.get(asId(cid))!.resource,
+          amount_micros: b.dailyMicros,
+        },
+      };
+      await client.mutate(customer, [op]);
+      console.log(`  budget campaign ${pyStr(cid)} -> ${dollars(b.dailyMicros as number)}/day`);
+    } catch (exc) {
+      recordFailure(`budgets (campaign ${pyStr(cid)})`, exc, slugsForIds([cid], stateIndex.byCampaignId));
+    }
   }
 
   // 6) campaign on/off. No-op flips were already filtered into statusSkips and never
   // reach the mutate (idempotent). PAUSE is always safe; ENABLE was surfaced loudly.
   for (const c of statusChanges) {
-    await setCampaignStatus(client, customer, String(c.campaignId), c.status as "ENABLED" | "PAUSED");
-    console.log(`  campaign ${pyStr(c.campaignId)}: status ${pyStr(c.current)} -> ${pyStr(c.status)}`);
+    try {
+      await setCampaignStatus(client, customer, String(c.campaignId), c.status as "ENABLED" | "PAUSED");
+      console.log(`  campaign ${pyStr(c.campaignId)}: status ${pyStr(c.current)} -> ${pyStr(c.status)}`);
+    } catch (exc) {
+      recordFailure(`campaignStatus (campaign ${pyStr(c.campaignId)})`, exc, slugsForIds([c.campaignId], stateIndex.byCampaignId));
+    }
   }
   for (const c of statusSkips) {
     console.log(`  campaign ${pyStr(c.campaignId)}: status already ${pyStr(c.status)}, skipped`);
@@ -856,8 +1090,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   // 7) ad group on/off. Same idempotent + loud-ENABLE contract, one level down.
   for (const g of agStatusChanges) {
-    await setAdGroupStatus(client, customer, String(g.adGroupId), g.status as "ENABLED" | "PAUSED");
-    console.log(`  adGroup ${pyStr(g.adGroupId)}: status ${pyStr(g.current)} -> ${pyStr(g.status)}`);
+    try {
+      await setAdGroupStatus(client, customer, String(g.adGroupId), g.status as "ENABLED" | "PAUSED");
+      console.log(`  adGroup ${pyStr(g.adGroupId)}: status ${pyStr(g.current)} -> ${pyStr(g.status)}`);
+    } catch (exc) {
+      recordFailure(`adGroupStatus (adGroup ${pyStr(g.adGroupId)})`, exc, slugsForIds([g.adGroupId], stateIndex.byAdGroupId));
+    }
   }
   for (const g of agStatusSkips) {
     console.log(`  adGroup ${pyStr(g.adGroupId)}: status already ${pyStr(g.status)}, skipped`);
@@ -866,9 +1104,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // 7b) individual ad on/off. Resolve the parent adGroupId from live state (the
   // ad_group_ad resource name needs both ids). Same idempotent + loud-ENABLE contract.
   for (const a of adStatusChanges) {
-    const adGroupId = liveAdSt.adGroup.get(asId(a.adId));
-    await setAdGroupAdStatus(client, customer, String(adGroupId), String(a.adId), a.status as "ENABLED" | "PAUSED");
-    console.log(`  ad ${pyStr(a.adId)}: status ${pyStr(a.current)} -> ${pyStr(a.status)}`);
+    try {
+      const adGroupId = liveAdSt.adGroup.get(asId(a.adId));
+      await setAdGroupAdStatus(client, customer, String(adGroupId), String(a.adId), a.status as "ENABLED" | "PAUSED");
+      console.log(`  ad ${pyStr(a.adId)}: status ${pyStr(a.current)} -> ${pyStr(a.status)}`);
+    } catch (exc) {
+      recordFailure(`adStatus (ad ${pyStr(a.adId)})`, exc, slugsForIds([a.adId], stateIndex.byAdId));
+    }
   }
   for (const a of adStatusSkips) {
     console.log(`  ad ${pyStr(a.adId)}: status already ${pyStr(a.status)}, skipped`);
@@ -877,8 +1119,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // 8) search partners on/off. No-op flips were already filtered into spSkips and
   // never reach the mutate (idempotent). OFF is always safe; ON was surfaced loudly.
   for (const c of spChanges) {
-    await setSearchPartners(client, customer, String(c.campaignId), c.enabled as boolean);
-    console.log(`  campaign ${pyStr(c.campaignId)}: search partners ${pyStr(c.current)} -> ${pyStr(c.enabled)}`);
+    try {
+      await setSearchPartners(client, customer, String(c.campaignId), c.enabled as boolean);
+      console.log(`  campaign ${pyStr(c.campaignId)}: search partners ${pyStr(c.current)} -> ${pyStr(c.enabled)}`);
+    } catch (exc) {
+      recordFailure(`searchPartners (campaign ${pyStr(c.campaignId)})`, exc, slugsForIds([c.campaignId], stateIndex.byCampaignId));
+    }
   }
   for (const c of spSkips) {
     console.log(`  campaign ${pyStr(c.campaignId)}: search partners already ${pyStr(c.enabled)}, skipped`);
@@ -887,15 +1133,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // 8c) language targeting: make each listed campaign English-only. Idempotent — an
   // already-English campaign yields no ops and is reported skipped.
   for (const l of languageActions) {
-    const ops = buildLanguageOps(`customers/${customer}/campaigns/${pyStr(l.campaignId)}`, l.addEnglish, l.remove);
-    if (ops.length === 0) {
-      console.log(`  languages campaign ${pyStr(l.campaignId)}: already English only, skipped`);
-      continue;
+    try {
+      const ops = buildLanguageOps(`customers/${customer}/campaigns/${pyStr(l.campaignId)}`, l.addEnglish, l.remove);
+      if (ops.length === 0) {
+        console.log(`  languages campaign ${pyStr(l.campaignId)}: already English only, skipped`);
+        continue;
+      }
+      await client.mutate(customer, ops);
+      console.log(
+        `  languages campaign ${pyStr(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`,
+      );
+    } catch (exc) {
+      recordFailure(`languages (campaign ${pyStr(l.campaignId)})`, exc, slugsForIds([l.campaignId], stateIndex.byCampaignId));
     }
-    await client.mutate(customer, ops);
-    console.log(
-      `  languages campaign ${pyStr(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`,
-    );
   }
 
   // 9) new ad groups. A name already live in the campaign was filtered into
@@ -904,19 +1154,80 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // (PAUSED) -> keywords (ENABLED). The PAUSED ad means the group cannot serve until
   // its ad is enabled, so adding a group to a live campaign starts no spend on its own.
   for (const g of agCreates) {
-    const campaignRn = `customers/${customer}/campaigns/${pyStr(g.campaignId)}`;
-    const agRn = await createAdGroup(client, customer, g.adGroup, campaignRn);
-    await createResponsiveSearchAd(client, customer, g.adGroup, agRn);
-    const kwRns = await createKeywords(client, customer, g.adGroup, agRn);
-    console.log(
-      `  + ad group ${pyRepr(g.name)} -> campaign ${pyStr(g.campaignId)}: ` +
-        `RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,
-    );
+    try {
+      const campaignRn = `customers/${customer}/campaigns/${pyStr(g.campaignId)}`;
+      const agRn = await createAdGroup(client, customer, g.adGroup, campaignRn);
+      await createResponsiveSearchAd(client, customer, g.adGroup, agRn);
+      const kwRns = await createKeywords(client, customer, g.adGroup, agRn);
+      console.log(
+        `  + ad group ${pyRepr(g.name)} -> campaign ${pyStr(g.campaignId)}: ` +
+          `RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,
+      );
+    } catch (exc) {
+      recordFailure(`adGroups (new group in campaign ${pyStr(g.campaignId)})`, exc, slugsForIds([g.campaignId], stateIndex.byCampaignId));
+    }
   }
   for (const g of agCreateSkips) {
     console.log(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
   }
-  emitStatusEnvelope(true);
+
+  // Persist each staged brief ONLY after the live mutation sequence above completed
+  // (FR-005) — mutate-then-write. A slug touched by ANY step's failure (`failedSlugs`)
+  // is left unwritten and reported unsynced (FR-006); a slug untouched by any failure
+  // is written/reported synced independently, even in the SAME run as a failing slug
+  // (FR-010 — one campaign's failure never blocks another's brief from syncing). A
+  // no-op diff is never rewritten (FR-011).
+  const failedSlugs = new Set(stepFailures.flatMap((f) => f.slugs));
+  const briefResults = staged.map((s) => {
+    if (s.skipReason !== null || s.diff === null || failedSlugs.has(s.slug)) {
+      return briefEnvelopeEntry(adbriefsRoot, s, false, null);
+    }
+    if (!s.diff.changed) {
+      return briefEnvelopeEntry(adbriefsRoot, s, true, null);
+    }
+    const path = writeBrief(adbriefsRoot, s.proposed!);
+    return briefEnvelopeEntry(adbriefsRoot, s, true, path);
+  });
+
+  if (stepFailures.length > 0) {
+    console.log(
+      "\nWARNING: local adbriefs brief(s) and the live account have diverged — " +
+        `${stepFailures.length} mutation step(s) failed partway through this run:`,
+    );
+    for (const f of stepFailures) {
+      console.log(`  - ${f.step}: ${formatGoogleAdsError(f.error)}`);
+      if (f.slugs.length > 0) {
+        console.log(`    affected brief(s): ${f.slugs.join(", ")}`);
+      }
+    }
+    for (const s of staged) {
+      if (s.skipReason === null && s.diff && s.diff.changed && failedSlugs.has(s.slug)) {
+        console.log(`  - adbriefs/${s.slug}.yaml NOT updated (would have changed +${s.diff.added}/-${s.diff.removed})`);
+      }
+    }
+    const syncedSlugs = staged
+      .filter((s) => s.skipReason === null && s.diff !== null && !failedSlugs.has(s.slug))
+      .map((s) => s.slug);
+    if (syncedSlugs.length > 0) {
+      console.log(`  brief(s) synced successfully despite the above failure(s): ${syncedSlugs.join(", ")}`);
+    }
+    emitJson(
+      errorEnvelope(stepFailures.map((f) => `${f.step}: ${formatGoogleAdsError(f.error)}`).join("; "), {
+        briefs: briefResults,
+        briefStagingSkipped: true,
+        briefStagingSkipReason: briefStagingSkipReason ?? "live-mutation-failed",
+        unresolvedPlanIds: unresolvedIds,
+        errors: stepFailures.map((f) => ({
+          step: f.step,
+          message: formatGoogleAdsError(f.error),
+          slugs: f.slugs,
+        })),
+      }),
+    );
+    return 1;
+  }
+
+  emitStatusEnvelope(true, briefResults);
   return 0;
 }
 
