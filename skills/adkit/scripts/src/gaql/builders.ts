@@ -130,7 +130,7 @@ function campaignScope(
 // ===========================================================================
 
 export function campaignTotalsQuery(start: string, end: string): SearchArgs {
-  return reportQuery("campaign", ["campaign.id", "campaign.name", "campaign.status"], start, end);
+  return reportQuery("campaign", ["campaign.id", "campaign.name"], start, end);
 }
 
 export function campaignDailyQuery(start: string, end: string): SearchArgs {

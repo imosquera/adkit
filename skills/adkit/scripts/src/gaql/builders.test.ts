@@ -120,14 +120,6 @@ describe("applyPositiveKeywordsQuery", () => {
   });
 });
 
-describe("campaignDailyQuery", () => {
-  it("selects campaign.status even though it isn't a dimension, since the shared WHERE filters on it (#43)", () => {
-    const q = campaignDailyQuery("2026-06-08", "2026-06-21");
-    expect(q.conditions).toContain("campaign.status = 'ENABLED'");
-    expect(q.fields).toContain("campaign.status");
-  });
-});
-
 describe("every report query's SELECT covers its own WHERE + ORDER BY fields (#43)", () => {
   const reportQueries: Record<string, (start: string, end: string) => ReturnType<typeof campaignTotalsQuery>> = {
     campaignTotalsQuery,
