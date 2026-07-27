@@ -9,6 +9,8 @@ import {
   configPath,
   configToValueMap,
   CREDENTIAL_FIELDS,
+  ensureGitignoreEntry,
+  GITIGNORE_ENTRY,
   loadConfig,
   parseConfig,
   PREFERENCE_FIELDS,
@@ -152,6 +154,32 @@ describe("configPath / configExists / loadConfig (temp cwd)", () => {
   it("loadConfig returns {} for unreadable/malformed yaml rather than throwing", () => {
     writeFileSync(configPath(), "not: [valid: yaml");
     expect(loadConfig()).toEqual({});
+  });
+});
+
+describe("ensureGitignoreEntry", () => {
+  it("appends the entry to an empty .gitignore", () => {
+    expect(ensureGitignoreEntry("", GITIGNORE_ENTRY)).toBe("/.adkit.yaml\n");
+  });
+
+  it("appends the entry after a blank-line separator when content already exists", () => {
+    expect(ensureGitignoreEntry("node_modules/\n", GITIGNORE_ENTRY)).toBe("node_modules/\n\n/.adkit.yaml\n");
+  });
+
+  it("is a no-op when the entry is already present", () => {
+    const content = "node_modules/\n/.adkit.yaml\n";
+    expect(ensureGitignoreEntry(content, GITIGNORE_ENTRY)).toBe(content);
+  });
+
+  it("matches an existing entry regardless of surrounding whitespace", () => {
+    const content = "node_modules/\n  /.adkit.yaml  \n";
+    expect(ensureGitignoreEntry(content, GITIGNORE_ENTRY)).toBe(content);
+  });
+
+  it("does not match a different entry sharing a substring", () => {
+    expect(ensureGitignoreEntry("skills/.adkit.yaml\n", GITIGNORE_ENTRY)).toBe(
+      "skills/.adkit.yaml\n\n/.adkit.yaml\n",
+    );
   });
 });
 

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { doneLine, existsLine, main, promptFor } from "./init.js";
+import { doneLine, existsLine, gitignoredLine, main, promptFor } from "./init.js";
 
 describe("promptFor", () => {
   it("shows the default inline when one is present", () => {
@@ -16,11 +16,12 @@ describe("promptFor", () => {
 });
 
 describe("messages", () => {
-  it("formats the completion and already-exists lines", () => {
+  it("formats the completion, already-exists, and gitignored lines", () => {
     expect(doneLine("/a/.adkit.yaml")).toBe("wrote /a/.adkit.yaml\n");
     expect(existsLine("/a/.adkit.yaml")).toBe(
       "/a/.adkit.yaml already exists — leaving it in place. Edit it directly, or delete it and rerun init.\n",
     );
+    expect(gitignoredLine("/a/.gitignore")).toBe("added /.adkit.yaml to /a/.gitignore\n");
   });
 });
 
@@ -93,5 +94,32 @@ describe("main (temp cwd)", () => {
     expect(code).toBe(0);
     expect(readFileSync(join(dir, ".adkit.yaml"), "utf8")).toBe('secrets_project: "already-here"\n');
     expect(createInterface).not.toHaveBeenCalled();
+  });
+
+  it("creates .gitignore with the entry when none exists", async () => {
+    mockAnswers(["", "", "", "", "", "", "", "", "", "", ""]);
+    await main();
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("/.adkit.yaml\n");
+  });
+
+  it("appends the entry to an existing .gitignore missing it", async () => {
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\n");
+    mockAnswers(["", "", "", "", "", "", "", "", "", "", ""]);
+    await main();
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n\n/.adkit.yaml\n");
+  });
+
+  it("leaves an already-protecting .gitignore untouched", async () => {
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\n/.adkit.yaml\n");
+    mockAnswers(["", "", "", "", "", "", "", "", "", "", ""]);
+    await main();
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n/.adkit.yaml\n");
+  });
+
+  it("retrofits gitignore protection even when the config already exists", async () => {
+    writeFileSync(join(dir, ".adkit.yaml"), 'secrets_project: "already-here"\n');
+    mockAnswers([]);
+    await main();
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("/.adkit.yaml\n");
   });
 });

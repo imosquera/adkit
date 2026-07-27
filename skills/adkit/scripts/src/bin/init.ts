@@ -9,15 +9,21 @@
  * `ads.sh render-yaml` afterward refreshes just the credential fields from
  * Secret Manager without disturbing the preferences entered here.
  *
+ * Every run also makes sure `.gitignore` excludes `.adkit.yaml` — the file
+ * carries real credentials, so this happens unconditionally (not only on a
+ * fresh write), in case the file or an unprotected `.gitignore` predates this
+ * command.
+ *
  * The IO (terminal prompts, fs) is isolated at the edges; the prompt text and the
  * yaml body come from pure functions in `lib/config.ts`.
  */
 
 import { createInterface, type Interface } from "node:readline";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { isMainModule } from "../cli/entry.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
-import { buildConfigYamlBody, configExists, configPath, CONFIG_FIELDS } from "../lib/config.js";
+import { buildConfigYamlBody, configExists, configPath, CONFIG_FIELDS, ensureGitignoreEntry, GITIGNORE_ENTRY } from "../lib/config.js";
 
 /** The prompt text for a field, showing its default inline. Pure. */
 export function promptFor(label: string, defaultValue: string): string {
@@ -32,6 +38,33 @@ export function doneLine(path: string): string {
 /** The message printed when a config file already exists (init refuses to overwrite it). Pure. */
 export function existsLine(path: string): string {
   return `${path} already exists — leaving it in place. Edit it directly, or delete it and rerun init.\n`;
+}
+
+/** The line printed when a `.gitignore` entry is added. Pure. */
+export function gitignoredLine(path: string): string {
+  return `added ${GITIGNORE_ENTRY} to ${path}\n`;
+}
+
+/**
+ * Ensure the repo's `.gitignore` (alongside `.adkit.yaml`, same directory) excludes
+ * it, so a file carrying real credentials never gets committed by accident — even
+ * if it already existed before this run. Writes only when the entry is missing;
+ * a fresh `.gitignore` is created if none exists yet. Returns whether it wrote.
+ */
+function ensureGitignored(configDir: string): boolean {
+  const gitignorePath = join(configDir, ".gitignore");
+  let existing = "";
+  try {
+    existing = readFileSync(gitignorePath, "utf8");
+  } catch {
+    // No .gitignore yet — ensureGitignoreEntry starts one.
+  }
+  const updated = ensureGitignoreEntry(existing, GITIGNORE_ENTRY);
+  if (updated === existing) {
+    return false;
+  }
+  writeFileSync(gitignorePath, updated);
+  return true;
 }
 
 /**
@@ -96,6 +129,9 @@ export async function promptAll(): Promise<Map<string, string>> {
  */
 export async function main(): Promise<number> {
   const target = configPath();
+  if (ensureGitignored(dirname(target))) {
+    process.stdout.write(gitignoredLine(join(dirname(target), ".gitignore")));
+  }
   if (configExists()) {
     process.stdout.write(existsLine(target));
     return 0;

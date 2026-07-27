@@ -82,6 +82,25 @@ export function configExists(): boolean {
   return existsSync(configPath());
 }
 
+/** The `.gitignore` entry protecting `.adkit.yaml` from ever being committed with real credentials in it. */
+export const GITIGNORE_ENTRY = "/.adkit.yaml";
+
+/**
+ * Add {@link GITIGNORE_ENTRY} to a `.gitignore`'s content, unless a line already
+ * matches it exactly (ignoring surrounding whitespace). Pure: returns `content`
+ * unchanged when the entry is already present, otherwise appends it after a
+ * blank-line separator (none needed when `content` is empty).
+ */
+export function ensureGitignoreEntry(content: string, entry: string): string {
+  const alreadyPresent = content.split("\n").some((line) => line.trim() === entry);
+  if (alreadyPresent) {
+    return content;
+  }
+  const trimmed = content.replace(/\n+$/, "");
+  const prefix = trimmed.length > 0 ? `${trimmed}\n\n` : "";
+  return `${prefix}${entry}\n`;
+}
+
 /**
  * Serialize resolved field values into the yaml body text (trailing newline
  * included). Pure: fields absent from `values` (or blank) are skipped. Always

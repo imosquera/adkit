@@ -50,7 +50,9 @@ Machine-readable subcommands return a single JSON object on **stdout**:
   per-machine, never commit it**. Secrets themselves are seeded in Google Secret
   Manager (project `your-project-prod`).
 - `ads.sh init` scaffolds it with a one-time interactive prompt — **create-if-missing**;
-  it never overwrites an existing file.
+  it never overwrites an existing file. Every run also makes sure `.gitignore`
+  excludes `.adkit.yaml` (adding the entry if missing), whether or not the config
+  file itself already existed — a `.gitignore` predating this command is retrofitted.
 - `ads.sh render-yaml` pulls the credential fields from Secret Manager and **merges**
   them in, leaving any preferences `init` (or a hand-edit) already set untouched. One-time
   seed of the secrets themselves: `ads.sh bootstrap-secrets`.
