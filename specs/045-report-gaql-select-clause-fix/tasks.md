@@ -104,6 +104,7 @@ Wave 3 (parallel): T004, T005      (both depend on T003)
 - No new files are created; every task touches `src/gaql/builders.ts` and/or
   `src/gaql/builders.test.ts`, both already tracked.
 - `segments.date` (the other WHERE-referenced field, from the date-range
-  condition) is deliberately excluded from the fix's SELECT guarantee — see
-  plan.md's Phase 1 Design section for why (the live error never cited it, and
-  `campaignTotalsQuery` already omits it from SELECT and works today).
+  condition) is included in the fix's SELECT guarantee alongside
+  `campaign.status` — see plan.md's Phase 1 Design "Revision" note: an earlier
+  version of this plan excluded it based on an unverified assumption that a
+  PR reviewer correctly caught (#43).

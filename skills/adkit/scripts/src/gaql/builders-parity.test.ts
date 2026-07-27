@@ -32,20 +32,23 @@ import { toGaql } from "./search-args.js";
  * Golden-string parity for the string→SearchArgs builder migration. Each expected
  * value is the EXACT GAQL string the builder emitted before the refactor (verified
  * byte-identical against the pre-refactor `builders.ts` for all 27 cases), with one
- * deliberate exception: the 7 report-query cases (`campaignDailyQuery` through
- * `geoRegionQuery`) now expect `campaign.status` in SELECT, since that's the exact
- * bug `reportQuery()` fixes (#43) — those queries' WHERE always filtered on
- * `campaign.status` but their SELECT omitted it. If a builder's decomposed
- * `SearchArgs` ever drifts otherwise — a dropped condition, reordered field, lost
- * ORDER BY — `toGaql(builder(...))` stops matching and this fails. This is the core
- * protection that the read migration didn't change what the API runs.
+ * deliberate exception: all 8 report-query cases (`campaignTotalsQuery` through
+ * `geoRegionQuery`) now expect `campaign.status` AND `segments.date` in SELECT,
+ * since that's the exact bug `reportQuery()` fixes (#43) — those queries' WHERE
+ * always filters on both fields (`_whereConds`: `campaign.status = 'ENABLED' AND
+ * segments.date BETWEEN …`), but 7 of the 8 omitted `campaign.status` and all but
+ * `campaignDailyQuery` omitted `segments.date` from SELECT. If a builder's
+ * decomposed `SearchArgs` ever drifts otherwise — a dropped condition, reordered
+ * field, lost ORDER BY — `toGaql(builder(...))` stops matching and this fails.
+ * This is the core protection that the read migration didn't change what the API
+ * runs.
  */
 const IDS = ["12345", "67890"];
 
 const CASES: ReadonlyArray<[string, string]> = [
   [
     toGaql(campaignTotalsQuery("2026-06-08", "2026-06-21")),
-    "SELECT campaign.id, campaign.name, campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM campaign WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
+    "SELECT campaign.id, campaign.name, campaign.status, segments.date, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM campaign WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
   ],
   [
     toGaql(campaignDailyQuery("2026-06-08", "2026-06-21")),
@@ -53,27 +56,27 @@ const CASES: ReadonlyArray<[string, string]> = [
   ],
   [
     toGaql(adGroupQuery("2026-06-08", "2026-06-21")),
-    "SELECT campaign.id, ad_group.id, ad_group.name, campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM ad_group WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
+    "SELECT campaign.id, ad_group.id, ad_group.name, campaign.status, segments.date, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM ad_group WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
   ],
   [
     toGaql(adQuery("2026-06-08", "2026-06-21")),
-    "SELECT campaign.id, ad_group.id, ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.type, ad_group_ad.ad_strength, campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM ad_group_ad WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
+    "SELECT campaign.id, ad_group.id, ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.type, ad_group_ad.ad_strength, campaign.status, segments.date, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM ad_group_ad WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
   ],
   [
     toGaql(keywordQuery("2026-06-08", "2026-06-21")),
-    "SELECT campaign.id, ad_group.id, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM keyword_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
+    "SELECT campaign.id, ad_group.id, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.status, segments.date, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM keyword_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
   ],
   [
     toGaql(searchTermQuery("2026-06-08", "2026-06-21")),
-    "SELECT campaign.id, ad_group.id, search_term_view.search_term, campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM search_term_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
+    "SELECT campaign.id, ad_group.id, search_term_view.search_term, campaign.status, segments.date, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM search_term_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
   ],
   [
     toGaql(geoQuery("2026-06-08", "2026-06-21")),
-    "SELECT campaign.id, geographic_view.country_criterion_id, campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM geographic_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
+    "SELECT campaign.id, geographic_view.country_criterion_id, campaign.status, segments.date, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM geographic_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
   ],
   [
     toGaql(geoRegionQuery("2026-06-08", "2026-06-21")),
-    "SELECT campaign.id, segments.geo_target_region, campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM geographic_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
+    "SELECT campaign.id, segments.geo_target_region, campaign.status, segments.date, metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion FROM geographic_view WHERE campaign.status = 'ENABLED' AND segments.date BETWEEN '2026-06-08' AND '2026-06-21'",
   ],
   [
     toGaql(auditKeywordsQuery(IDS)),

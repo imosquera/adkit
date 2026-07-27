@@ -133,9 +133,10 @@ describe("every report query's SELECT covers its own WHERE + ORDER BY fields (#4
   };
 
   for (const [name, build] of Object.entries(reportQueries)) {
-    it(`${name}: fields ⊇ {campaign.status, ...orderings}`, () => {
+    it(`${name}: fields ⊇ {campaign.status, segments.date, ...orderings}`, () => {
       const q = build("2026-06-08", "2026-06-21");
       expect(q.fields).toContain("campaign.status");
+      expect(q.fields).toContain("segments.date");
       for (const field of q.orderings ?? []) {
         expect(q.fields).toContain(field);
       }

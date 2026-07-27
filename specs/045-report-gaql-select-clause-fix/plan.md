@@ -119,15 +119,17 @@ SELECT clause is missing a field its own WHERE clause requires — the exact
 class of bug FR-002/FR-003 target.
 
 **Fix** (in `reportQuery()`, not in any individual query function): compute
-`fields` as the union of `dims`, the fixed `campaign.status` field that
-`_whereConds` always filters on, and any `orderings` fields — deduplicated,
-preserving `dims` order, with `_METRICS` appended last. Concretely:
+`fields` as the union of `dims`, the two fixed fields `_whereConds` always
+filters on (`campaign.status`, `segments.date`), and any `orderings` fields —
+deduplicated, preserving `dims` order, with `_METRICS` appended last.
+Concretely:
 
 ```ts
 const _STATUS_FIELD = "campaign.status"; // mirrors _ENABLED's field, named once
+const _DATE_FIELD = "segments.date"; // mirrors _whereConds' date-range field
 
 function reportQuery(resource, dims, start, end, orderings?): SearchArgs {
-  const required = new Set([...dims, _STATUS_FIELD, ...(orderings ?? [])]);
+  const required = new Set([...dims, _STATUS_FIELD, _DATE_FIELD, ...(orderings ?? [])]);
   return {
     resource,
     fields: [...required, ..._METRICS],
@@ -139,18 +141,28 @@ function reportQuery(resource, dims, start, end, orderings?): SearchArgs {
 
 This guarantees FR-002 (SELECT ⊇ WHERE/ORDER-BY fields) for every current and
 future call through `reportQuery` — a caller cannot forget to add
-`campaign.status` because the factory adds it, satisfying FR-003 (enforced at
-the shared layer, not per-callsite). `campaignTotalsQuery`, which already
-lists `campaign.status` in `dims`, is unaffected by the `Set` dedup (FR-004 —
-no output change for already-correct queries). `segments.date` (the other
-field referenced in WHERE, via the date-range condition) is deliberately left
-out of this guarantee: the live error only ever cited `campaign.status`, and
-`campaignTotalsQuery` (which omits `segments.date` from SELECT) already runs
-successfully today, so the Google Ads API does not require date-range
-predicate fields to be SELECTed the way it requires equality/status
-predicates. Widening the fix to force `segments.date` into every query's
-SELECT would change existing output shape (violating FR-004) to fix something
-that isn't broken.
+`campaign.status` or `segments.date` because the factory adds both, satisfying
+FR-003 (enforced at the shared layer, not per-callsite).
+
+**Revision**: an earlier version of this plan deliberately excluded
+`segments.date` from the guarantee, reasoning that "the live error only ever
+cited `campaign.status`, and `campaignTotalsQuery` already omits
+`segments.date` from SELECT and runs successfully today." That reasoning was
+never actually verified against a live account (no credentials were available
+in the implementing environment) — it was an inference from a single error
+report, not a confirmed fact, and a PR reviewer correctly flagged it as
+unverified speculation: `_whereConds` always adds a `segments.date BETWEEN …`
+condition, so by the same FR-002 rule applied to `campaign.status`,
+`segments.date` belongs in SELECT for every report query too. The fix now
+includes both fields unconditionally. This changes the SELECT clause (and
+therefore the exact GAQL string) for all 8 report queries, not 7 — `campaign.status`
+was already correct in `campaignTotalsQuery` alone, but `segments.date` was
+missing from every report query except `campaignDailyQuery` (which already
+lists it as a dimension). FR-004 ("no behavior change for already-correct
+queries") is unaffected in spirit: no report query had both fields correctly
+selected before this fix, so there was no "already-correct" case being
+disturbed — only `campaignDailyQuery`'s SELECT clause is unchanged by this
+revision, since it already selected `segments.date`.
 
 **Data model**: no entities — this is a stateless query-string construction
 fix. `SearchArgs` (`src/gaql/search-args.ts`) is the only relevant type and is
