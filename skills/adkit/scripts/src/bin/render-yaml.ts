@@ -9,7 +9,8 @@
  * `read_backend`, or output-dir preferences (set by `ads.sh init`, or hand-edited)
  * survive a re-render; only the credential fields are replaced. Required secrets
  * that are missing abort (the `gcloud` call throws); the optional
- * `target_customer_id` is skipped when absent. The file is written atomically
+ * `target_customer_id` and `psi_api_key` fields are skipped when absent. The file
+ * is written atomically
  * (temp file + rename) with 0600 perms so the plaintext credentials never briefly
  * exist world-readable.
  *
@@ -48,6 +49,9 @@ export const SECRETS: readonly SecretSpec[] = [
   { field: "refresh_token", secret: "google-ads-refresh-token", required: true },
   { field: "login_customer_id", secret: "google-ads-login-customer-id", required: true },
   { field: "target_customer_id", secret: "google-ads-target-customer-id", required: false },
+  // Optional, like target_customer_id: not every operator has PSI access, and
+  // audit's PSI diagnosis degrades gracefully (skips with a reason) without it.
+  { field: "psi_api_key", secret: "google-pagespeed-api-key", required: false },
 ];
 
 /**

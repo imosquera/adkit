@@ -70,8 +70,9 @@ describe("main (temp cwd)", () => {
 
   it("writes the config from prompted answers when no file exists", async () => {
     // developer_token, client_id, client_secret, refresh_token, login_customer_id,
-    // target_customer_id, secrets_project, read_backend, reports_dir, briefs_dir, ideas_dir
-    mockAnswers(["dev-tok", "cid", "csecret", "rtok", "1234567890", "", "proj-x", "", "", "", ""]);
+    // target_customer_id, psi_api_key, secrets_project, read_backend, reports_dir,
+    // briefs_dir, ideas_dir
+    mockAnswers(["dev-tok", "cid", "csecret", "rtok", "1234567890", "", "", "proj-x", "", "", "", ""]);
     const code = await main();
     expect(code).toBe(0);
     const written = readFileSync(join(dir, ".adkit.yaml"), "utf8");
@@ -85,6 +86,15 @@ describe("main (temp cwd)", () => {
     expect(written).toContain('reports_dir: "ads/output/reports"');
     expect(written).toContain("use_proto_plus: true");
     expect(written).not.toContain("target_customer_id");
+    expect(written).not.toContain("psi_api_key");
+  });
+
+  it("writes psi_api_key when answered (issue #40: PSI key sourceable via init)", async () => {
+    mockAnswers(["dev-tok", "cid", "csecret", "rtok", "1234567890", "", "psi-key-value", "proj-x", "", "", "", ""]);
+    const code = await main();
+    expect(code).toBe(0);
+    const written = readFileSync(join(dir, ".adkit.yaml"), "utf8");
+    expect(written).toContain('psi_api_key: "psi-key-value"');
   });
 
   it("leaves an existing config file untouched", async () => {
@@ -97,21 +107,21 @@ describe("main (temp cwd)", () => {
   });
 
   it("creates .gitignore with the entry when none exists", async () => {
-    mockAnswers(["", "", "", "", "", "", "", "", "", "", ""]);
+    mockAnswers(["", "", "", "", "", "", "", "", "", "", "", ""]);
     await main();
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("/.adkit.yaml\n");
   });
 
   it("appends the entry to an existing .gitignore missing it", async () => {
     writeFileSync(join(dir, ".gitignore"), "node_modules/\n");
-    mockAnswers(["", "", "", "", "", "", "", "", "", "", ""]);
+    mockAnswers(["", "", "", "", "", "", "", "", "", "", "", ""]);
     await main();
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n\n/.adkit.yaml\n");
   });
 
   it("leaves an already-protecting .gitignore untouched", async () => {
     writeFileSync(join(dir, ".gitignore"), "node_modules/\n/.adkit.yaml\n");
-    mockAnswers(["", "", "", "", "", "", "", "", "", "", ""]);
+    mockAnswers(["", "", "", "", "", "", "", "", "", "", "", ""]);
     await main();
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n/.adkit.yaml\n");
   });

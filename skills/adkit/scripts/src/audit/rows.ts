@@ -13,7 +13,12 @@
  * field to a `Raw*Row` and the compiler forces the matching `normalize*` to account
  * for it.
  *
- * Enum fields arrive as their STRING name already (no `.name`).
+ * Enum fields arrive as their STRING name already (no `.name`) — with one
+ * confirmed exception: `quality_info.post_click_quality_score`,
+ * `.creative_quality_score`, and `.search_predicted_ctr` arrive as the raw
+ * QualityScoreBucket enum INTEGER instead (issue #40). Those three are
+ * normalized to their string bucket name in `bin/audit.ts`'s `qualityScore()`,
+ * not here — see that module for the conversion.
  */
 
 // ---------------------------------------------------------------------------
@@ -85,9 +90,13 @@ export interface QualityScoreRow {
     keyword: { text: string };
     quality_info: {
       quality_score: number;
-      post_click_quality_score: string;
-      creative_quality_score: string;
-      search_predicted_ctr: string;
+      // The google-ads-api client returns these three QualityScoreBucket fields as
+      // the raw enum INTEGER (e.g. 2 = BELOW_AVERAGE), unlike every other enum on
+      // this client, which resolves to its string name — see issue #40. Callers
+      // must normalize via bin/audit.ts's `qualityScoreBucket()` before comparing.
+      post_click_quality_score: string | number;
+      creative_quality_score: string | number;
+      search_predicted_ctr: string | number;
     };
   };
 }

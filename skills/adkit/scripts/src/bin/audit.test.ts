@@ -28,6 +28,7 @@ import {
   qualityScore,
   resolveAuditCustomer,
   resolveCampaign,
+  resolvePsiKey,
   searchTerms,
 } from "./audit.js";
 
@@ -329,6 +330,49 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
     expect(result[1][0].keyword).toBe("scored");
   });
 
+  it("qualityScore: post_click_quality_score arriving as the raw enum integer normalizes to the string bucket (issue #40)", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        ad_group_criterion: {
+          keyword: { text: "int-enum" },
+          quality_info: {
+            quality_score: 3,
+            // google-ads-api returns these as raw QualityScoreBucket integers
+            // (2 = BELOW_AVERAGE), not their resolved string name.
+            post_click_quality_score: 2,
+            creative_quality_score: "AVERAGE",
+            search_predicted_ctr: "AVERAGE",
+          },
+        },
+      },
+    ];
+    const result = await qualityScore(fakeClient(() => rows), "123", [1]);
+    expect(result[1]).toHaveLength(1);
+    expect(result[1][0].landingPageExp).toBe("BELOW_AVERAGE");
+  });
+
+  it("qualityScore: creative_quality_score and search_predicted_ctr arriving as raw enum integers also normalize to string buckets (issue #40)", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        ad_group_criterion: {
+          keyword: { text: "int-enum-2" },
+          quality_info: {
+            quality_score: 3,
+            post_click_quality_score: "AVERAGE",
+            creative_quality_score: 2,
+            search_predicted_ctr: 2,
+          },
+        },
+      },
+    ];
+    const result = await qualityScore(fakeClient(() => rows), "123", [1]);
+    expect(result[1]).toHaveLength(1);
+    expect(result[1][0].adRelevance).toBe("BELOW_AVERAGE");
+    expect(result[1][0].expectedCtr).toBe("BELOW_AVERAGE");
+  });
+
   it("landingPageMobile: a URL with no metrics yields no findings, no throw", async () => {
     const rows = [
       {
@@ -438,5 +482,28 @@ describe("landingPagePolicy", () => {
     expect(result[1]).toHaveLength(1);
     expect(result[1][0].url).toBe("https://example.com/broken");
     expect(result[1][0].issue).toBe("destination_not_working");
+  });
+});
+
+describe("resolvePsiKey (issue #40: PSI key sourceable from .adkit.yaml / Secret Manager)", () => {
+  it("prefers the --psi-key flag over env and config", () => {
+    expect(resolvePsiKey("flag-key", "env-key", "config-key")).toBe("flag-key");
+  });
+
+  it("prefers PAGESPEED_API_KEY env over config when no flag is passed", () => {
+    expect(resolvePsiKey(undefined, "env-key", "config-key")).toBe("env-key");
+  });
+
+  it("falls back to the config value (psi_api_key, sourced from Secret Manager via render-yaml) when flag and env are both absent", () => {
+    expect(resolvePsiKey(undefined, undefined, "config-key")).toBe("config-key");
+  });
+
+  it("returns null when no tier has a value", () => {
+    expect(resolvePsiKey(undefined, undefined, undefined)).toBeNull();
+  });
+
+  it("treats a blank/whitespace-only tier as absent, falling through to the next", () => {
+    expect(resolvePsiKey("  ", undefined, "config-key")).toBe("config-key");
+    expect(resolvePsiKey(undefined, "   ", "config-key")).toBe("config-key");
   });
 });

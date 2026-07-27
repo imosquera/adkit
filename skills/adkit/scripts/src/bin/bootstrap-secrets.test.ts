@@ -19,6 +19,7 @@ describe("SECRETS", () => {
       "google-ads-refresh-token",
       "google-ads-login-customer-id",
       "google-ads-target-customer-id",
+      "google-pagespeed-api-key",
     ]);
   });
 });
@@ -34,6 +35,10 @@ describe("isSensitive", () => {
     expect(isSensitive("google-ads-developer-token")).toBe(true);
     expect(isSensitive("google-ads-client-secret")).toBe(true);
     expect(isSensitive("google-ads-refresh-token")).toBe(true);
+  });
+
+  it("treats the PSI API key as sensitive (issue #40)", () => {
+    expect(isSensitive("google-pagespeed-api-key")).toBe(true);
   });
 });
 
