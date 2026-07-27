@@ -243,6 +243,71 @@ describe("applyPlanToBrief", () => {
     expect(result.adGroups.map((ag) => ag.name)).toEqual(["widgets", "new-group"]);
   });
 
+  it("adGroups create is trusted from computed.adGroupCreates even when a same-name (case-insensitive) ad group already sits in the on-disk brief (staging-drift regression)", () => {
+    // Regression: the old code filtered computed.adGroupCreates against the ON-DISK
+    // BRIEF's existing ad-group names, a DIFFERENT source of truth than the LIVE names
+    // addAdGroupsPlan already filtered against. A stale/hand-edited brief name that
+    // doesn't exist live must not cause the genuinely-new live ad group to be silently
+    // dropped from staging.
+    const brief = baseBrief({
+      adGroups: [
+        ...baseBrief().adGroups,
+        {
+          name: "Stale Group",
+          defaultBidMicros: 1_000_000,
+          responsiveSearchAd: {
+            headlines: Array.from({ length: 15 }, (_, i) => ({ text: `stale headline ${i}` })),
+            descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `stale description ${i}` })),
+            finalUrl: "https://example.com/stale",
+          },
+          keywords: [{ text: "stale keyword", matchType: "PHRASE" }],
+          aiMax: false,
+        },
+      ],
+    });
+    const plan = { adGroups: [{ campaignId: "100", adGroup: { name: "placeholder" } }] };
+    const created: AdGroupCreatePlanEntry = {
+      campaignId: "100",
+      name: "stale group", // case-insensitively matches the brief's existing "Stale Group"
+      adGroup: {
+        name: "stale group",
+        defaultBidMicros: 2_000_000,
+        responsiveSearchAd: {
+          headlines: Array.from({ length: 15 }, (_, i) => ({ text: `h${i}` })),
+          descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `d${i}` })),
+          finalUrl: "https://example.com/y",
+        },
+        keywords: [{ text: "kw", matchType: "PHRASE" }],
+        aiMax: false,
+      },
+    };
+    const computed: ApplyPlanComputed = { adGroupCreates: [created] };
+    const result = applyPlanToBrief(brief, groupFor(plan), computed);
+    // Pre-fix: the brief-name filter would have dropped the create, leaving only 1.
+    expect(result.adGroups.filter((ag) => ag.name.toLowerCase() === "stale group")).toHaveLength(2);
+  });
+
+  it("two rewrite blocks targeting the same ad group: the staged brief reflects the LAST block (mirrors live's last-wins mutation order)", () => {
+    const plan = {
+      rewrites: [
+        {
+          adId: "1111",
+          headlines: Array.from({ length: 15 }, (_, i) => `first headline ${i}`),
+          descriptions: Array.from({ length: 4 }, (_, i) => `first description ${i}`),
+        },
+        {
+          adId: "1111",
+          headlines: Array.from({ length: 15 }, (_, i) => `second headline ${i}`),
+          descriptions: Array.from({ length: 4 }, (_, i) => `second description ${i}`),
+        },
+      ],
+    };
+    const result = applyPlanToBrief(baseBrief(), groupFor(plan));
+    expect(result.adGroups[0]!.responsiveSearchAd.headlines.map((h) => h.text)).toEqual(
+      Array.from({ length: 15 }, (_, i) => `second headline ${i}`),
+    );
+  });
+
   it("a no-op change-list leaves the result serialization-identical to base (FR-011)", () => {
     const brief = baseBrief();
     const plan = {}; // touches nothing

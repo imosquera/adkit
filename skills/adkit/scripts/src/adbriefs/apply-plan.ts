@@ -243,9 +243,13 @@ function dedupeBy<T>(values: T[], key: (v: T) => string): T[] {
  */
 export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed: ApplyPlanComputed = {}): Brief {
   const adGroups = base.adGroups.map((ag) => {
-    const rewrite = group.sections.rewrites.find((r) => r.adGroupName === ag.name);
-    const append = group.sections.appendHeadlines.find((a) => a.adGroupName === ag.name);
-    const kwBlock = group.sections.keywords.find((k) => k.adGroupName === ag.name);
+    // findLast (not find): when two blocks in the same section target the same ad
+    // group, the live imperative mutation loop in apply-fixes.ts applies both in
+    // order and "last one wins" — staging must reflect the SAME last block, not the
+    // first, or live and staged silently diverge.
+    const rewrite = group.sections.rewrites.findLast((r) => r.adGroupName === ag.name);
+    const append = group.sections.appendHeadlines.findLast((a) => a.adGroupName === ag.name);
+    const kwBlock = group.sections.keywords.findLast((k) => k.adGroupName === ag.name);
 
     let rsa = ag.responsiveSearchAd;
     if (rewrite) {
@@ -290,12 +294,16 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
     return rsa === ag.responsiveSearchAd && keywords === ag.keywords ? ag : { ...ag, responsiveSearchAd: rsa, keywords };
   });
 
-  const existingNames = new Set(adGroups.map((ag) => ag.name.toLowerCase()));
+  // `computed.adGroupCreates` is already filtered against LIVE ad-group names by
+  // `addAdGroupsPlan` (fixes/plan.ts) — the only source of truth for "does this ad
+  // group already exist". Re-filtering against the ON-DISK BRIEF's existing names
+  // here would silently drop a genuinely-new ad group whenever the brief has a
+  // stale/hand-edited name absent from live: the live mutation still creates it
+  // (agCreates says it's new), but the brief would never gain a record of it.
   const groupCampaignIds = new Set(group.sections.adGroups.map((e) => String(e.block["campaignId"])));
   const newAdGroups: AdGroup[] = (computed.adGroupCreates ?? [])
     .filter((c) => groupCampaignIds.has(String(c.campaignId)))
-    .map((c) => c.adGroup)
-    .filter((ag) => !existingNames.has(ag.name.toLowerCase()));
+    .map((c) => c.adGroup);
 
   const campaign = base.campaign;
   const existingSitelinkTexts = new Set(campaign.sitelinks.map((s) => s.text.toLowerCase()));

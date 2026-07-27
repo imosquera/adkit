@@ -70,7 +70,12 @@ import { formatGoogleAdsError } from "../ads/errors.js";
 import { ADBRIEFS_DIR, AdbriefsError, writeBrief } from "../adbriefs/store.js";
 import { diffBriefs, type BriefDiff } from "../adbriefs/diff.js";
 import { loadStateIndex } from "../adbriefs/state.js";
-import { applyPlanToBrief, resolvePlanGroups, type ResolvedPlanGroup } from "../adbriefs/apply-plan.js";
+import {
+  applyPlanToBrief,
+  resolvePlanGroups,
+  type ApplyPlanComputed,
+  type ResolvedPlanGroup,
+} from "../adbriefs/apply-plan.js";
 import { parseBrief, type Brief } from "../lib/schema.js";
 
 import {
@@ -498,6 +503,9 @@ function loadBriefAtSlug(root: string, slug: string): Brief | null {
   }
 }
 
+/** Every reason brief staging can be skipped for a resolved slug, never a silent drop. */
+type BriefStagingSkipReason = "collision" | "missing-brief" | "invalid-brief" | "invalid-result";
+
 /** One resolved slug's staged brief: the diff against disk, and why staging was skipped, if it was. */
 interface StagedBrief {
   slug: string;
@@ -505,7 +513,7 @@ interface StagedBrief {
   proposed: Brief | null;
   diff: BriefDiff | null;
   /** null when staging succeeded; otherwise the reason no diff/write happened for this slug. */
-  skipReason: "collision" | "missing-brief" | null;
+  skipReason: BriefStagingSkipReason | null;
   message?: string;
 }
 
@@ -514,17 +522,38 @@ interface StagedBrief {
  * A slug whose on-disk brief names a *different* campaign than the state index expects
  * is refused (FR-007, mirrors `create`'s `assertNoForeignBrief`) rather than silently
  * staged against the wrong campaign; a slug with a state file but no brief on disk
- * (deleted by hand) is skipped with an explicit reason, never fabricated.
+ * (deleted by hand) is skipped with an explicit reason, never fabricated. A slug whose
+ * on-disk brief fails to parse (corrupt YAML / schema violation) is skipped the same
+ * way rather than crashing the whole run — an unrelated resolved campaign in the same
+ * plan must still get staged. The `applyPlanToBrief` result is re-parsed through
+ * `parseBrief` before it is trusted: `store.ts`'s `writeBrief` does NOT re-validate
+ * before writing, so a proposed brief that would violate `BriefSchema` (e.g. more than
+ * 15 headlines after a dedup-survives append, or an empty `keywords` after a
+ * remove-only edit) must never reach the diff/write path — it is skipped instead of
+ * silently corrupting `adbriefs/<slug>.yaml`.
  */
-function stageResolvedGroups(
-  root: string,
-  groups: ResolvedPlanGroup[],
-  computed: { defaultLandingUrl?: string; adGroupCreates: import("../fixes/plan.js").AdGroupCreatePlanEntry[] },
-): StagedBrief[] {
+function stageResolvedGroups(root: string, groups: ResolvedPlanGroup[], computed: ApplyPlanComputed): StagedBrief[] {
   return groups
     .filter((g) => g.slug !== "")
     .map((group) => {
-      const current = loadBriefAtSlug(root, group.slug);
+      let current: Brief | null;
+      try {
+        current = loadBriefAtSlug(root, group.slug);
+      } catch (exc) {
+        if (exc instanceof AdbriefsError) {
+          return {
+            slug: group.slug,
+            current: null,
+            proposed: null,
+            diff: null,
+            skipReason: "invalid-brief" as const,
+            message:
+              `adbriefs brief ${briefPathForSlug(root, group.slug)} could not be parsed — ` +
+              `${exc.message.split("\n")[0]}. Skipping brief staging for this campaign.`,
+          };
+        }
+        throw exc;
+      }
       if (current === null) {
         return { slug: group.slug, current: null, proposed: null, diff: null, skipReason: "missing-brief" as const };
       }
@@ -541,7 +570,26 @@ function stageResolvedGroups(
             "Refusing to stage — rename one campaign or move the brief.",
         };
       }
-      const proposed = applyPlanToBrief(current, group, computed);
+      const candidate = applyPlanToBrief(current, group, computed);
+      let proposed: Brief;
+      try {
+        proposed = parseBrief(candidate);
+      } catch (exc) {
+        if (exc instanceof z.ZodError) {
+          const lines = exc.errors.map((e) => `  - ${e.path.map((p) => String(p)).join(".")}: ${e.message}`);
+          return {
+            slug: group.slug,
+            current,
+            proposed: null,
+            diff: null,
+            skipReason: "invalid-result" as const,
+            message:
+              `adbriefs staging for ${briefPathForSlug(root, group.slug)} produced a brief that violates its ` +
+              `schema:\n${lines.join("\n")}\nSkipping — nothing written for this campaign.`,
+          };
+        }
+        throw exc;
+      }
       const diff = diffBriefs(current, proposed);
       return { slug: group.slug, current, proposed, diff, skipReason: null };
     });
@@ -738,6 +786,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       );
       continue;
     }
+    if (s.skipReason === "invalid-brief" || s.skipReason === "invalid-result") {
+      console.log(`WARNING: ${s.message}`);
+      continue;
+    }
     const path = briefPathForSlug(adbriefsRoot, s.slug);
     if (s.diff!.changed) {
       console.log(`\nadbriefs brief ${path} (+${s.diff!.added}/-${s.diff!.removed}):`);
@@ -755,7 +807,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       console.log(`  - ${u.kind} ${u.id}`);
     }
   }
-  const briefStagingSkipReason: "no-state-file" | "unresolvable-id" | "collision" | "missing-brief" | null =
+  const briefStagingSkipReason: "no-state-file" | "unresolvable-id" | BriefStagingSkipReason | null =
     unresolvedIds.length > 0
       ? noStateFileAtAll
         ? "no-state-file"
@@ -1178,6 +1230,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // (FR-010 — one campaign's failure never blocks another's brief from syncing). A
   // no-op diff is never rewritten (FR-011).
   const failedSlugs = new Set(stepFailures.flatMap((f) => f.slugs));
+  // Each write runs in its OWN try/catch: writeBrief can throw (foreign-brief race,
+  // AdbriefsError, EACCES/ENOSPC/etc), and a thrown write for one slug must never
+  // abort this .map() — every OTHER slug's already-successful mutation still needs
+  // to be written and reported, or the operator loses the whole envelope (not just
+  // the one failing slug) while debugging a live run. A write failure is recorded via
+  // `recordFailure` (same mechanism as a mutation-step failure) so it surfaces in the
+  // "diverged" warning and the error envelope alongside any mutation failures.
+  const writeFailedSlugs = new Set<string>();
   const briefResults = staged.map((s) => {
     if (s.skipReason !== null || s.diff === null || failedSlugs.has(s.slug)) {
       return briefEnvelopeEntry(adbriefsRoot, s, false, null);
@@ -1185,9 +1245,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     if (!s.diff.changed) {
       return briefEnvelopeEntry(adbriefsRoot, s, true, null);
     }
-    const path = writeBrief(adbriefsRoot, s.proposed!);
-    return briefEnvelopeEntry(adbriefsRoot, s, true, path);
+    try {
+      const path = writeBrief(adbriefsRoot, s.proposed!);
+      return briefEnvelopeEntry(adbriefsRoot, s, true, path);
+    } catch (exc) {
+      writeFailedSlugs.add(s.slug);
+      recordFailure(`writeBrief (adbriefs/${s.slug}.yaml)`, exc, [s.slug]);
+      return briefEnvelopeEntry(adbriefsRoot, s, false, null);
+    }
   });
+  const allFailedSlugs = new Set([...failedSlugs, ...writeFailedSlugs]);
 
   if (stepFailures.length > 0) {
     console.log(
@@ -1201,12 +1268,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       }
     }
     for (const s of staged) {
-      if (s.skipReason === null && s.diff && s.diff.changed && failedSlugs.has(s.slug)) {
+      if (s.skipReason === null && s.diff && s.diff.changed && allFailedSlugs.has(s.slug)) {
         console.log(`  - adbriefs/${s.slug}.yaml NOT updated (would have changed +${s.diff.added}/-${s.diff.removed})`);
       }
     }
     const syncedSlugs = staged
-      .filter((s) => s.skipReason === null && s.diff !== null && !failedSlugs.has(s.slug))
+      .filter((s) => s.skipReason === null && s.diff !== null && !allFailedSlugs.has(s.slug))
       .map((s) => s.slug);
     if (syncedSlugs.length > 0) {
       console.log(`  brief(s) synced successfully despite the above failure(s): ${syncedSlugs.join(", ")}`);
