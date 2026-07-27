@@ -1,28 +1,33 @@
 /**
- * Render the google-ads.yaml credentials file from GCP Secret Manager.
+ * Pull the Google Ads API credentials from GCP Secret Manager into `.adkit.yaml`.
  *
- * Faithful port of `ads_skill/bin/render_yaml.py`. Each field is pulled from
- * Secret Manager via `gcloud secrets versions access latest`, then serialized to
- * a local yaml at {@link credentialsPath}. Required secrets that are missing abort
- * (the `gcloud` call throws); the optional `target_customer_id` is skipped when
- * absent. The file is written atomically (temp file + rename) with 0600 perms so
- * the plaintext credentials never briefly exist world-readable.
+ * Faithful port of `ads_skill/bin/render_yaml.py`'s secret-fetching, retargeted at
+ * the combined `.adkit.yaml` (see {@link "../lib/config.js"}) rather than a
+ * dedicated `google-ads.yaml`. Each field is pulled via `gcloud secrets versions
+ * access latest`, then **merged** into whatever config already exists at
+ * {@link "../lib/config.js".configPath} — an operator's `secrets_project`,
+ * `read_backend`, or output-dir preferences (set by `ads.sh init`, or hand-edited)
+ * survive a re-render; only the credential fields are replaced. Required secrets
+ * that are missing abort (the `gcloud` call throws); the optional
+ * `target_customer_id` is skipped when absent. The file is written atomically
+ * (temp file + rename) with 0600 perms so the plaintext credentials never briefly
+ * exist world-readable.
  *
  * The project defaults to `your-project-prod`, overridable via the
- * `GOOGLE_ADS_SECRETS_PROJECT` env var.
+ * `GOOGLE_ADS_SECRETS_PROJECT` env var or the config's `secrets_project`.
  *
- * The IO (child_process/fs) is isolated at the edges; the yaml body is built by
- * the pure {@link buildYamlBody} from an already-resolved secrets map.
+ * The IO (child_process/fs) is isolated at the edges; the merge and the yaml body
+ * are built by pure functions in `lib/config.ts`.
  */
 
 import { execFileSync } from "node:child_process";
 import { isMainModule } from "../cli/entry.js";
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { credentialsPath } from "../lib/auth.js";
+import { buildConfigYamlBody, configPath, configToValueMap, loadConfig, resolveTier } from "../lib/config.js";
 
-/** GCP project holding the secrets; env-overridable, mirroring the Python default. */
-export const PROJECT = process.env["GOOGLE_ADS_SECRETS_PROJECT"] ?? "your-project-prod";
+/** GCP project holding the secrets: env var, then the project config, then the Python-mirroring default. */
+export const PROJECT = resolveTier(null, process.env["GOOGLE_ADS_SECRETS_PROJECT"], loadConfig().secrets_project, "your-project-prod")!;
 
 /**
  * One credential field: the yaml key, its Secret Manager secret name, and whether
@@ -35,7 +40,7 @@ export interface SecretSpec {
   required: boolean;
 }
 
-/** The credential fields, in yaml-emit order. Secret names are load-bearing. */
+/** The credential fields, in fetch order. Secret names are load-bearing; must match `lib/config.ts`'s CREDENTIAL_FIELDS keys. */
 export const SECRETS: readonly SecretSpec[] = [
   { field: "developer_token", secret: "google-ads-developer-token", required: true },
   { field: "client_id", secret: "google-ads-client-id", required: true },
@@ -51,33 +56,6 @@ export const SECRETS: readonly SecretSpec[] = [
  */
 export function accessSecretArgs(secret: string, project: string): string[] {
   return ["secrets", "versions", "access", "latest", "--project", project, "--secret", secret];
-}
-
-/**
- * Serialize a resolved secrets map into the yaml body text (a trailing newline
- * included). Pure: takes an already-fetched `field -> value` map keyed in
- * {@link SECRETS} order and emits the two header comment lines, one `field: "value"`
- * line per present field (double-quotes in values escaped), then
- * `use_proto_plus: true`.
- *
- * Fields absent from `values` are skipped (mirroring the optional
- * `target_customer_id` being dropped when its secret is missing).
- */
-export function buildYamlBody(values: ReadonlyMap<string, string>, project: string): string {
-  const header: string[] = [
-    `# Rendered by adkit render-yaml from Secret Manager project ${project}.`,
-    "# Do not commit. Regenerate whenever secrets rotate.",
-  ];
-  const fieldLines = SECRETS.flatMap((spec) => {
-    const value = values.get(spec.field);
-    if (value === undefined) {
-      return [];
-    }
-    const escaped = value.replace(/"/g, '\\"');
-    return [`${spec.field}: "${escaped}"`];
-  });
-  const lines = [...header, ...fieldLines, "use_proto_plus: true"];
-  return lines.join("\n") + "\n";
 }
 
 /**
@@ -114,22 +92,35 @@ function readAllSecrets(): Map<string, string> {
 function writeAtomic(target: string, body: string): void {
   const dir = dirname(target);
   mkdirSync(dir, { recursive: true });
-  const tmpPath = join(dir, `google-ads-${process.pid}-${Date.now()}.yaml`);
+  const tmpPath = join(dir, `adkit-${process.pid}-${Date.now()}.yaml`);
   writeFileSync(tmpPath, body, { mode: 0o600 });
   chmodSync(tmpPath, 0o600);
   renameSync(tmpPath, target);
 }
 
 /**
- * Render the yaml from Secret Manager and write it to {@link credentialsPath}.
- * Returns the process exit code. Emits `wrote <path>` to stdout on success,
- * matching the Python.
+ * Fetch every secret from Secret Manager and merge it into the existing config
+ * (fresh credential values win; every other field — `secrets_project`,
+ * `read_backend`, the output dirs — is carried over unchanged). Pure given an
+ * already-fetched secrets map and the existing config.
+ */
+export function mergeSecretsIntoConfig(existing: ReturnType<typeof loadConfig>, secrets: ReadonlyMap<string, string>): Map<string, string> {
+  const merged = configToValueMap(existing);
+  for (const [field, value] of secrets) {
+    merged.set(field, value);
+  }
+  return merged;
+}
+
+/**
+ * Render the credentials from Secret Manager and merge them into
+ * {@link configPath}. Returns the process exit code. Emits `wrote <path>` to
+ * stdout on success, matching the Python.
  */
 export function main(): number {
-  const target = credentialsPath();
-  const values = readAllSecrets();
-  const body = buildYamlBody(values, PROJECT);
-  writeAtomic(target, body);
+  const target = configPath();
+  const merged = mergeSecretsIntoConfig(loadConfig(), readAllSecrets());
+  writeAtomic(target, buildConfigYamlBody(merged));
   process.stdout.write(`wrote ${target}\n`);
   return 0;
 }
