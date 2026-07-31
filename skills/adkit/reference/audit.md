@@ -103,6 +103,21 @@ ads.sh audit --customer <10-digit> --campaign <id>
 
 Surface, per campaign: the findings, the **path-to-EXCELLENT per ad**, the impression-share recommendation (and why), and any cannibalization/cold-start flags. End with the next step: **to apply the fixes, run `/adkit update`** (you author the copy; `ads.sh update` validates + mutates). Note anything you'd deliberately leave alone (e.g. a converting POOR ad).
 
+## Visualize
+
+After the text report, always publish the audit as a self-contained HTML dashboard via the **Artifact** tool. Load the `artifact-design` skill first (this is a utilitarian dashboard treatment — KPI strip, tables, grids — not an editorial page), and `dataviz` for chart/stat-tile/heatmap conventions.
+
+Build the dashboard from the same run's JSON — no new queries:
+
+- **KPI strip** — search impression share, ad strength distribution, wasted spend (sum of `addNegatives` cost), keyword CPC spread (min/max across `keywordCpc`).
+- **Impression-share breakdown** — per-campaign `searchImpressionShare`, `lostISBudget`, `lostISRank`, with the `budget_constrained`/`rank_constrained` recommendation.
+- **Ad-strength / RSA-coverage grid** — one cell per ad: current strength, headline/description counts vs the 15/4 target, keyword-inclusion and pinning flags.
+- **Quality-score table** — per-keyword CTR, ad relevance, landing-page experience from `qualityScore`.
+- **Keyword cluster split** — `clusterSplits` (max/min CPC, ratio, expensive/cheap groups) as the reputation-split visualization.
+- **Search-term waste / promote-candidate lists** — `addNegatives` (priciest-waste first) and `promoteKeywords` (strongest-first).
+
+**Stable URL**: before publishing, check this conversation/session for a prior audit artifact for the same campaign(s). If one exists, republish to that same `file_path` (and pass the existing artifact's `url` to the `Artifact` tool) so the link doesn't change between runs; otherwise mint a new one.
+
 ## Landing page health
 
 `ads.sh audit`'s JSON already carries `landingPageHealth` (URL/redirect policy findings + windowed mobile/AMP/speed findings) and `qualityScore` (per-keyword CTR/relevance/landing-page-experience). Per SKILL.md's "use subagents aggressively" rule, **spawn a subagent** to do this analysis in parallel with the rest of the report: hand it [`reference/audit-landing-page.md`](audit-landing-page.md) plus the run's `landingPageHealth` and `qualityScore` slices, and fold its output into the final report as the landing-page-health section. See that file for the full detection table, the Quality-Score-driven prioritization rules, and the write-up format.
