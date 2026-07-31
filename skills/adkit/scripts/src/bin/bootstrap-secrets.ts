@@ -16,9 +16,10 @@ import { execFileSync } from "node:child_process";
 import { isMainModule } from "../cli/entry.js";
 import { createInterface } from "node:readline";
 import { emitJson, errorEnvelope } from "../cli/output.js";
+import { loadConfig, resolveTier } from "../lib/config.js";
 
-/** GCP project the secrets live in; env-overridable, mirroring the Python default. */
-export const PROJECT = process.env["GOOGLE_ADS_SECRETS_PROJECT"] ?? "your-project-prod";
+/** GCP project the secrets live in: env var, then the project config, then the Python-mirroring default. */
+export const PROJECT = resolveTier(null, process.env["GOOGLE_ADS_SECRETS_PROJECT"], loadConfig().secrets_project, "your-project-prod")!;
 
 /** The secret names to seed, in prompt order. Load-bearing — must match render-yaml. */
 export const SECRETS: readonly string[] = [
@@ -28,6 +29,10 @@ export const SECRETS: readonly string[] = [
   "google-ads-refresh-token",
   "google-ads-login-customer-id",
   "google-ads-target-customer-id",
+  // Optional — enables `audit`'s PSI landing-page diagnosis (issue #40). A blank
+  // answer here still creates/updates the secret with an empty value; render-yaml
+  // treats it as an optional field, same as google-ads-target-customer-id.
+  "google-pagespeed-api-key",
 ];
 
 /**

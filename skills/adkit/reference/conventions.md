@@ -18,7 +18,7 @@ ads.sh <subcommand> [args…]
 
 - `ads.sh` resolves `node` (Node ≥ 24, https://nodejs.org), ensures the npm deps are installed on first run (`npm ci`, falling back to `npm install`), then runs the entry point directly from TypeScript via `tsx` (`node_modules/.bin/tsx src/bin/<cmd>.ts`). No build step and no `dist/` — `tsx` transpiles on the fly, so a source edit takes effect on the next run.
 - **No persistent server, no MCP** — every invocation is a single Node process.
-- Subcommands: `preflight`, `create`, `audit`, `update`, `keyword-ideas`, `report`, `render-yaml`, `bootstrap-secrets` (`apply-fixes` is a deprecated alias for `update`).
+- Subcommands: `init`, `preflight`, `create`, `audit`, `update`, `keyword-ideas`, `report`, `render-yaml`, `bootstrap-secrets` (`apply-fixes` is a deprecated alias for `update`).
 
 ## Customer-id vs login-customer-id
 
@@ -39,10 +39,26 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 - Human-readable summaries (tables, progress) go to **stderr** — redirect stdout (`> /tmp/out.json`) when you want only the payload.
 - Non-zero exit always pairs with an `ok:false` / `failure` payload that names the failing step.
 
-## Credentials & preflight
+## Credentials, project config, & preflight
 
-- Credentials live in `~/.config/google-ads/google-ads.yaml` (or the `GOOGLE_ADS_CREDENTIALS` env). Secrets are in Google Secret Manager (project `your-project-prod`).
-- If the yaml is missing, render it once: `ads.sh render-yaml` (one-time seed of the secrets: `ads.sh bootstrap-secrets`).
+- Everything local lives in one file: `.adkit.yaml` at the repo root (or the
+  `ADKIT_CONFIG` / legacy `GOOGLE_ADS_CREDENTIALS` path). It carries both the Google
+  Ads API **credentials** (`developer_token`, `client_id`, `client_secret`,
+  `refresh_token`, `login_customer_id`, `target_customer_id`) and non-secret
+  **project preferences** (the Secret Manager project, the read backend, the
+  `create`/`report` output directories). It contains real secrets — **git-ignored,
+  per-machine, never commit it**. Secrets themselves are seeded in Google Secret
+  Manager (project `your-project-prod`).
+- `ads.sh init` scaffolds it with a one-time interactive prompt — **create-if-missing**;
+  it never overwrites an existing file. Every run also makes sure `.gitignore`
+  excludes `.adkit.yaml` (adding the entry if missing), whether or not the config
+  file itself already existed — a `.gitignore` predating this command is retrofitted.
+- `ads.sh render-yaml` pulls the credential fields from Secret Manager and **merges**
+  them in, leaving any preferences `init` (or a hand-edit) already set untouched. One-time
+  seed of the secrets themselves: `ads.sh bootstrap-secrets`.
+- Precedence for every field: an explicit flag, then the matching env var, then
+  `.adkit.yaml`, then a hardcoded default — the same flag→env→yaml tiering as
+  customer-id resolution above. See `lib/config.ts`'s `resolveTier`.
 - Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
 
 ## Read backend (SDK vs google-ads-mcp)

@@ -25,6 +25,7 @@ import { readFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 import { parseArgs } from "node:util";
+import { loadConfig, resolveTier } from "../lib/config.js";
 
 import {
   IS_OPPORTUNITY,
@@ -616,6 +617,35 @@ function negativesAndPromotions(
 // Quality Score layer.
 // ---------------------------------------------------------------------------
 
+/** Google's QualityScoreBucket enum, in wire order (0=UNSPECIFIED..4=ABOVE_AVERAGE). */
+const QUALITY_SCORE_BUCKETS = [
+  "UNSPECIFIED",
+  "UNKNOWN",
+  "BELOW_AVERAGE",
+  "AVERAGE",
+  "ABOVE_AVERAGE",
+] as const;
+
+/**
+ * Normalize one Quality Score component field to its canonical string bucket
+ * name. The google-ads-api client returns `post_click_quality_score`,
+ * `creative_quality_score`, and `search_predicted_ctr` as the raw
+ * QualityScoreBucket enum INTEGER (e.g. 2 = BELOW_AVERAGE) despite every other
+ * enum on the same client resolving to its string name (issue #40). Everything
+ * downstream — the PSI URL selector (`belowAverageFinalUrls`) and the Quality
+ * Score render sections (`renderQualityScoreSection`) — compares against the
+ * string form, so normalize once here, at the mapping boundary. An
+ * already-string value passes through unchanged; an out-of-range integer
+ * degrades to "UNKNOWN" rather than throwing; a missing value degrades to ""
+ * (unchanged from prior behavior).
+ */
+function qualityScoreBucket(value: string | number | null | undefined): string {
+  if (typeof value === "number") {
+    return QUALITY_SCORE_BUCKETS[value] ?? "UNKNOWN";
+  }
+  return value ?? "";
+}
+
 /**
  * {campaignId: [{keyword, qualityScore, landingPageExp, adRelevance, expectedCtr}]}
  * from the current-state Quality Score snapshot. Keywords with no score yet
@@ -644,9 +674,9 @@ export async function qualityScore(
         {
           keyword: r.ad_group_criterion.keyword.text,
           qualityScore: Math.trunc(score),
-          landingPageExp: qi.post_click_quality_score,
-          adRelevance: qi.creative_quality_score,
-          expectedCtr: qi.search_predicted_ctr,
+          landingPageExp: qualityScoreBucket(qi.post_click_quality_score),
+          adRelevance: qualityScoreBucket(qi.creative_quality_score),
+          expectedCtr: qualityScoreBucket(qi.search_predicted_ctr),
         },
       ];
     })
@@ -702,7 +732,8 @@ export async function runPsi(
   }
   if (!apiKey) {
     return {
-      skipped: "no credential — set PAGESPEED_API_KEY or pass --psi-key to diagnose low landing-page scores",
+      skipped:
+        "no credential — set PAGESPEED_API_KEY, pass --psi-key, or run `ads.sh bootstrap-secrets` + `ads.sh render-yaml` to source psi_api_key from .adkit.yaml / Secret Manager, to diagnose low landing-page scores",
       results: [],
     };
   }
@@ -846,12 +877,27 @@ interface ParsedArgs {
   days: number;
   noServing: boolean;
   profile: DifferentiationProfile;
-  /** Operator-supplied PageSpeed Insights API key (--psi-key overrides env). */
+  /** Operator-supplied PageSpeed Insights API key — see {@link resolvePsiKey} for the flag → env → config resolution order. */
   psiKey: string | null;
 }
 
 /** Only 7/14/30 are valid windows, mirroring argparse `choices=[7, 14, 30]`. */
 const VALID_DAYS = new Set([7, 14, 30]);
+
+/**
+ * Resolve the PageSpeed Insights API key: `--psi-key` flag → `PAGESPEED_API_KEY`
+ * env → `.adkit.yaml`'s `psi_api_key` (populated via `bootstrap-secrets` +
+ * `render-yaml` from GCP Secret Manager's `google-pagespeed-api-key`, the same
+ * pipeline the Google Ads credentials already flow through) → `null` (PSI degrades
+ * gracefully — see {@link runPsi}). Pure given the three already-read tiers.
+ */
+export function resolvePsiKey(
+  flag: string | null | undefined,
+  envValue: string | undefined,
+  configValue: string | undefined,
+): string | null {
+  return resolveTier(flag, envValue, configValue) ?? null;
+}
 
 /**
  * Parse argv into typed values once. The differentiation profile is read+parsed
@@ -893,7 +939,7 @@ function parseAudarArgs(argv: string[]): ParsedArgs {
     days,
     noServing: values["no-serving"] ?? false,
     profile,
-    psiKey: values["psi-key"] ?? process.env.PAGESPEED_API_KEY ?? null,
+    psiKey: resolvePsiKey(values["psi-key"], process.env.PAGESPEED_API_KEY, loadConfig().psi_api_key),
   };
 }
 
@@ -959,8 +1005,8 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     emitJson(errorEnvelope("Provide --customer or export GOOGLE_ADS_CUSTOMER_ID (or set a target/login id in yaml)"));
     return 2;
   }
-  requireDigits("customer", customer);
-  requireDigits("login-customer-id", args.loginCustomerId);
+  requireDigits("--customer", customer);
+  requireDigits("--login-customer-id", args.loginCustomerId);
   const client = loadReadClient(args.loginCustomerId);
 
   // --campaign accepts an id (digits) or a name substring; resolve the name to an id once.
@@ -973,7 +1019,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     }
     campaignId = resolved;
   }
-  requireDigits("campaign", campaignId);
+  requireDigits("--campaign", campaignId);
 
   const camps = await campaigns(client, customer, !args.all, campaignId);
   const campIds = camps.map((c) => c.campaign.id);

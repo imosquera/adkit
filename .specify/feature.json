@@ -1,7 +1,7 @@
 {
-  "branch_name": "043-adbrief-stage-update",
-  "feature_num": "043",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/043-adbrief-stage-update",
-  "source_issue": 41,
-  "feature_directory": "specs/043-adbrief-stage-update"
+  "branch_name": "045-report-gaql-select-clause-fix",
+  "feature_num": "045",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/045-report-gaql-select-clause-fix",
+  "source_issue": 43,
+  "feature_directory": "specs/045-report-gaql-select-clause-fix"
 }

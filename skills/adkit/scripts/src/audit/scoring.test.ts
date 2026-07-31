@@ -370,11 +370,11 @@ describe("keywordAlignment", () => {
 
 describe("requireDigits", () => {
   it("accepts digits and null", () => {
-    expect(() => requireDigits("customer", "1111111111")).not.toThrow();
-    expect(() => requireDigits("campaign", null)).not.toThrow(); // absent is fine
+    expect(() => requireDigits("--customer", "1111111111")).not.toThrow();
+    expect(() => requireDigits("--campaign", null)).not.toThrow(); // absent is fine
   });
 
   it("rejects injection", () => {
-    expect(() => requireDigits("campaign", "1 OR 1=1")).toThrow();
+    expect(() => requireDigits("--campaign", "1 OR 1=1")).toThrow();
   });
 });

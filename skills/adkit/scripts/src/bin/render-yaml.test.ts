@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accessSecretArgs, buildYamlBody, SECRETS } from "./render-yaml.js";
+import { accessSecretArgs, mergeSecretsIntoConfig, SECRETS } from "./render-yaml.js";
 
 describe("SECRETS", () => {
   it("has the exact secret names and required flags in emit order", () => {
@@ -10,6 +10,7 @@ describe("SECRETS", () => {
       ["refresh_token", "google-ads-refresh-token", true],
       ["login_customer_id", "google-ads-login-customer-id", true],
       ["target_customer_id", "google-ads-target-customer-id", false],
+      ["psi_api_key", "google-pagespeed-api-key", false],
     ]);
   });
 });
@@ -29,44 +30,28 @@ describe("accessSecretArgs", () => {
   });
 });
 
-describe("buildYamlBody", () => {
-  const full = new Map<string, string>([
-    ["developer_token", "dev-tok"],
-    ["client_id", "cid"],
-    ["client_secret", "csecret"],
-    ["refresh_token", "rtok"],
-    ["login_customer_id", "1234567890"],
-    ["target_customer_id", "0987654321"],
-  ]);
-
-  it("emits the header comments, quoted fields in order, and use_proto_plus", () => {
-    expect(buildYamlBody(full, "proj-x")).toBe(
-      [
-        "# Rendered by adkit render-yaml from Secret Manager project proj-x.",
-        "# Do not commit. Regenerate whenever secrets rotate.",
-        'developer_token: "dev-tok"',
-        'client_id: "cid"',
-        'client_secret: "csecret"',
-        'refresh_token: "rtok"',
-        'login_customer_id: "1234567890"',
-        'target_customer_id: "0987654321"',
-        "use_proto_plus: true",
-        "",
-      ].join("\n"),
-    );
+describe("mergeSecretsIntoConfig", () => {
+  it("overwrites credential fields with the freshly fetched secrets", () => {
+    const existing = { developer_token: "stale-tok", secrets_project: "proj-x" };
+    const secrets = new Map([
+      ["developer_token", "fresh-tok"],
+      ["client_id", "cid"],
+    ]);
+    const merged = mergeSecretsIntoConfig(existing, secrets);
+    expect(merged.get("developer_token")).toBe("fresh-tok");
+    expect(merged.get("client_id")).toBe("cid");
   });
 
-  it("skips fields absent from the map (optional target_customer_id)", () => {
-    const partial = new Map(full);
-    partial.delete("target_customer_id");
-    const body = buildYamlBody(partial, "p");
-    expect(body).not.toContain("target_customer_id");
-    expect(body).toContain('login_customer_id: "1234567890"');
-    expect(body.endsWith("use_proto_plus: true\n")).toBe(true);
+  it("carries over non-credential preferences untouched", () => {
+    const existing = { secrets_project: "proj-x", read_backend: "mcp", reports_dir: "custom/reports" };
+    const merged = mergeSecretsIntoConfig(existing, new Map([["developer_token", "tok"]]));
+    expect(merged.get("secrets_project")).toBe("proj-x");
+    expect(merged.get("read_backend")).toBe("mcp");
+    expect(merged.get("reports_dir")).toBe("custom/reports");
   });
 
-  it("escapes double quotes in values", () => {
-    const values = new Map<string, string>([["developer_token", 'a"b']]);
-    expect(buildYamlBody(values, "p")).toContain('developer_token: "a\\"b"');
+  it("starts from an empty config with no preferences set", () => {
+    const merged = mergeSecretsIntoConfig({}, new Map([["developer_token", "tok"]]));
+    expect(merged).toEqual(new Map([["developer_token", "tok"]]));
   });
 });
