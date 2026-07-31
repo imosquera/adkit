@@ -115,9 +115,23 @@ Each campaign persists as **two sibling files** under `adbriefs/`, written by `/
 - **`adbriefs/<slug>.yaml`** — the **intent brief**: names + copy only, the account-independent source of truth. Portable and replayable; it deliberately carries **no live ids**.
 - **`adbriefs/<slug>.state.yaml`** — the **state file**: the `name ↔ live id` map (`campaignId`, per-ad-group `adGroupId`/`adId`) Google assigned at publish time. This is what lets an id-keyed update plan be resolved back to the brief entity it names, with **no extra live queries**.
 
-See `reference/conventions.md` → *`adbriefs/` — the local source of truth + diff-before-apply gate* for the format and the write-brief → diff → apply flow. The review-the-change gate for an update is the **`--dry-run` (default) → `--apply`** two-step below: dry-run shows the planned actions and mutates nothing; `--apply` performs the live change. After a successful apply, restage the campaign's brief so `adbriefs/<slug>.yaml` reflects the new live state (re-run `/adkit create` from the updated brief, or edit the brief to match), keeping the local record in sync.
+See `reference/conventions.md` → *`adbriefs/` — the local source of truth + diff-before-apply gate* for the format and the write-brief → diff → apply flow. `ads.sh update` **stages every run** — dry-run and `--apply` alike — mirroring `create`'s review gate:
 
-> **In flight:** teaching `ads.sh update` to *consume* the state file — resolve a plan's ids to brief entities, stage the change into `adbriefs/<slug>.yaml`, and print the *brief diff* automatically (so the update-side gate mirrors `create`'s) — is the next increment. The state file it needs now exists (written by `create`; see `src/adbriefs/state.ts`), alongside the shared `store.ts`/`diff.ts` machinery. Until update-side staging lands, use the `--dry-run` → `--apply` gate and keep the brief in sync by hand.
+1. **Resolve.** Every `adId`/`adGroupId`/`campaignId` the plan touches is resolved back to its owning `adbriefs/<slug>.yaml` via that campaign's `<slug>.state.yaml` (the reverse id index) — **no extra live queries**. A plan touching more than one campaign resolves to more than one slug; each gets its own independent diff and (on `--apply`) its own independent write — never one combined diff across campaigns.
+2. **Stage + diff.** The plan's already-computed changes (rewrites, `appendHeadlines` — merged with a **case-sensitive exact-match dedup** against the brief's existing headlines — negatives, keywords, sitelinks, callouts, budgets) are applied to a proposed in-memory copy of the resolved brief and diffed against what's on disk with `diffBriefs`. The diff is printed on **every run**, before the planned-actions narration. A no-op plan shows an empty diff and is never rewritten.
+3. **Apply.** On `--apply`, the live mutation runs first, exactly as before this feature; only once it completes successfully is the staged brief written to `adbriefs/<slug>.yaml`. A failed or partial `--apply` leaves every affected brief **byte-for-byte unchanged** and the JSON envelope reports `briefSynced: false` for it, plus an explicit "diverged" warning naming what didn't apply — the brief is never left asserting a state the live account doesn't actually have.
+
+Several degrade paths, all loud, never silent — every one reports through the envelope as `briefStagingSkipped: true` with a `briefStagingSkipReason` naming which:
+
+- **`"unresolvable-id"`** — an id the state file has no record of (a stale ad, or one created outside `adkit`) skips staging only for that entity, with a `WARNING:` line naming the unresolvable id; every other entity in the same plan that *does* resolve is still staged and diffed normally, and the live mutation for the unresolved entity proceeds unaffected.
+- **`"no-state-file"`** — a campaign with no `adbriefs/<slug>.state.yaml` at all (predates this feature) skips brief staging entirely for that campaign — the live mutation still runs to completion as it always did.
+- **`"collision"`** — the on-disk `adbriefs/<slug>.yaml` names a *different* campaign than the state index resolved (FR-007); staging is refused for that slug so it is never overwritten with the wrong campaign's data.
+- **`"missing-brief"`** — a `<slug>.state.yaml` exists but its `adbriefs/<slug>.yaml` was deleted by hand; staging is skipped rather than fabricated, and live mutation still proceeds for that entity.
+- **`"invalid-brief"`** — the on-disk `adbriefs/<slug>.yaml` fails to parse (corrupt YAML or a schema violation); staging is skipped for that campaign alone, an unrelated resolved campaign in the same plan is unaffected.
+- **`"invalid-result"`** — staging the plan's changes onto the on-disk brief would itself produce a brief violating `BriefSchema` (e.g. more than 15 headlines after a dedup-survives append, or an empty `keywords` list after a remove-only edit); the result is never diffed or written, only skipped.
+- **`"live-mutation-failed"`** — used specifically when a live-mutation step (or a subsequent brief write) throws; see `reference/conventions.md` → *Per-slug failure isolation* for exactly which slug(s) it's attributed to.
+
+The envelope also carries a `briefs: [{ slug, briefPath, briefSynced, briefDiff }]` array — one entry per resolved slug, for both dry-run and apply.
 
 ## 3. Dry-run, then apply
 
@@ -132,7 +146,7 @@ ads.sh update plan.yaml --apply     # mutate live
 
 ## 4. Report
 
-Surface, per campaign: what you changed, and what you deliberately left (e.g. a converting POOR ad — never pause a converting ad to chase ad strength; enrich it). If you flipped any campaign to `ENABLED`, call out that it now spends. All edits are live-account mutations — the account and Google's change history are the record; there are no local record files to update.
+Surface, per campaign: what you changed, and what you deliberately left (e.g. a converting POOR ad — never pause a converting ad to chase ad strength; enrich it). If you flipped any campaign to `ENABLED`, call out that it now spends. `--apply` auto-syncs `adbriefs/<slug>.yaml` for every resolved brief (see §2), so `git status` should show exactly the brief changes the plan implies — call out any slug the envelope reports as unsynced (`briefSynced: false` or `briefStagingSkipped: true`) so the operator knows the local brief still needs attention.
 
 ## Notes
 

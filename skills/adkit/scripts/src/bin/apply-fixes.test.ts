@@ -10,13 +10,15 @@
  * Ported from ads_skill/bin/apply_fixes_test.py.
  */
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { parse as yamlParseForTest } from "yaml";
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 import type { SearchArgs } from "../gaql/search-args.js";
+import { parseBrief } from "../lib/schema.js";
 
 // The shell resolves its client via loadClient; the test swaps in a fake (mirrors the
 // Python monkeypatch of `af.load_client`). `currentClient` is what loadClient returns.
@@ -24,6 +26,24 @@ let currentClient: AdsClient;
 vi.mock("../lib/auth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/auth.js")>();
   return { ...actual, loadClient: () => currentClient };
+});
+
+// A test can set this to a campaign name to simulate that campaign's writeBrief call
+// throwing (foreign-brief race, EACCES/ENOSPC/etc) — every other slug's writeBrief
+// call still goes through the real implementation, so the surrounding test asserts
+// that one slug's write failure never blocks another's write/report (item 3 fix).
+let failWriteForCampaignName: string | null = null;
+vi.mock("../adbriefs/store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../adbriefs/store.js")>();
+  return {
+    ...actual,
+    writeBrief: (root: string, brief: Parameters<typeof actual.writeBrief>[1]) => {
+      if (failWriteForCampaignName !== null && brief.campaign.name === failWriteForCampaignName) {
+        throw new Error("simulated writeBrief failure");
+      }
+      return actual.writeBrief(root, brief);
+    },
+  };
 });
 
 const { main, loadPlan, livePositiveKeywords, liveNegatives, rsaUpdateOp } = await import("./apply-fixes.js");
@@ -113,6 +133,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  failWriteForCampaignName = null;
 });
 
 /** Write a campaignStatus-only plan and return its path. */
@@ -846,5 +867,651 @@ campaignStatus:
     // Spot-check the value the validator downstream depends on survived the parse.
     expect(fromYaml.customerId).toBe("1111111111");
     expect(fromYaml.negatives?.[0]?.add).toEqual(["free", { text: "talk to ai", matchType: "PHRASE" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adbriefs staging (043-adbrief-stage-update): resolve the plan's ids via the
+// campaign's state file, stage into the on-disk brief, diff/write it around the
+// (unchanged) live-mutation sequence. These tests chdir into a scratch "repo root"
+// containing adbriefs/<slug>.yaml + adbriefs/<slug>.state.yaml, mirroring how
+// create.test.ts exercises create's own adbriefs/ persist gate.
+// ---------------------------------------------------------------------------
+
+const STAGING_SLUG = "demo-search";
+
+/** A minimal valid brief YAML for the staging campaign (one ad group: "buyers"). */
+function stagingBriefYaml(): string {
+  const headlines = Array.from({ length: 15 }, (_, i) => `        - text: "Headline number ${i + 1}"`).join("\n");
+  const descriptions = Array.from({ length: 4 }, (_, i) => `        - text: "Description number ${i + 1} ok"`).join(
+    "\n",
+  );
+  return [
+    'name: "demo-search"',
+    "version: 1",
+    "campaign:",
+    '  name: "Demo Search"',
+    "  budgetMicros: 25000000",
+    "adGroups:",
+    "  - name: buyers",
+    "    defaultBidMicros: 1500000",
+    "    keywords:",
+    '      - text: "buy widgets"',
+    "    responsiveSearchAd:",
+    '      finalUrl: "https://www.example.com/ideas/widget"',
+    "      headlines:",
+    headlines,
+    "      descriptions:",
+    descriptions,
+    "",
+  ].join("\n");
+}
+
+/** The matching `<slug>.state.yaml`: campaign 500, ad group 600, ad 700. */
+function stagingStateYaml(): string {
+  return [
+    "campaign:",
+    '  name: "Demo Search"',
+    '  campaignId: "500"',
+    "  budgetId: null",
+    "adGroups:",
+    "  - name: buyers",
+    '    adGroupId: "600"',
+    '    adId: "700"',
+    "",
+  ].join("\n");
+}
+
+/** Fake client: no live-state reads needed for a rewrites/budgets-only plan (both
+ * short-circuit to an empty query when their id list would be []; budgets always
+ * queries). `failOn` lets a test simulate one mutate batch throwing mid-sequence. */
+function stagingClient(
+  budgetRows: unknown[] = [],
+  failOn?: (op: AdsMutateOperation) => boolean,
+): { client: AdsClient; mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> } {
+  const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    async search<Row = unknown>(): Promise<Row[]> {
+      return [] as Row[];
+    },
+    async searchStructured<Row = unknown>(): Promise<Row[]> {
+      return budgetRows as Row[];
+    },
+    async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+      if (failOn && operations.some(failOn)) {
+        throw new Error("simulated Google Ads API failure");
+      }
+      mutations.push({ customerId, operations });
+      return { results: operations.map(() => ({ resource_name: "customers/1111111111/x" })) };
+    },
+  };
+  return { client, mutations };
+}
+
+describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)", () => {
+  let root: string;
+  let prevCwd: string;
+
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "apply-fixes-staging-")));
+    prevCwd = process.cwd();
+    process.chdir(root);
+    mkdirSync(join(root, "adbriefs"), { recursive: true });
+    writeFileSync(join(root, "adbriefs", `${STAGING_SLUG}.yaml`), stagingBriefYaml());
+    writeFileSync(join(root, "adbriefs", `${STAGING_SLUG}.state.yaml`), stagingStateYaml());
+  });
+
+  afterEach(() => {
+    process.chdir(prevCwd);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function briefPath(): string {
+    return join(root, "adbriefs", `${STAGING_SLUG}.yaml`);
+  }
+
+  function onDiskBrief() {
+    return parseBrief(yamlParseForTest(readFileSync(briefPath(), "utf8")));
+  }
+
+  function rewritePlan(): string {
+    const p = join(root, "plan.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        customerId: "1111111111",
+        rewrites: [
+          {
+            adId: "700",
+            headlines: Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
+            descriptions: Array.from({ length: 4 }, (_, i) => `staged description ${i}`),
+          },
+        ],
+      }),
+    );
+    return p;
+  }
+
+  it("dry-run (T009): stages + prints a non-empty brief diff and writes NO file under adbriefs/", async () => {
+    const { client } = stagingClient();
+    currentClient = client;
+    const before = readFileSync(briefPath(), "utf8");
+
+    const cap = captureStdout();
+    const code = await main([rewritePlan()]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    expect(out).toContain(`adbriefs brief ${briefPath()}`);
+    expect(out).toContain("staged headline 0");
+    expect(readFileSync(briefPath(), "utf8")).toBe(before); // untouched (FR-004)
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.briefs[0].briefSynced).toBe(false);
+    expect(payload.briefs[0].briefDiff.changed).toBe(true);
+  });
+
+  it("apply (T015): writes the staged brief matching the dry-run diff and reports briefSynced true", async () => {
+    const { client: dryClient } = stagingClient();
+    currentClient = dryClient;
+    const dryCap = captureStdout();
+    await main([rewritePlan()]);
+    const dryPayload = JSON.parse(dryCap.text().slice(dryCap.text().indexOf("{")));
+
+    const { client } = stagingClient();
+    currentClient = client;
+    const cap = captureStdout();
+    const code = await main([rewritePlan(), "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.briefs[0].briefSynced).toBe(true);
+    expect(payload.briefs[0].briefPath).toBe(briefPath());
+    expect(payload.briefs[0].briefDiff.added).toBe(dryPayload.briefs[0].briefDiff.added);
+
+    const persisted = onDiskBrief();
+    expect(persisted.adGroups[0]!.responsiveSearchAd.headlines.map((h: { text: string }) => h.text)).toEqual(
+      Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
+    );
+  });
+
+  it("partial failure (T016): a mutation failure leaves the brief byte-for-byte unchanged and reports briefSynced false", async () => {
+    // Budgets query returns a live budget for campaign 500 so validate's guardrail passes;
+    // the budgets mutate step is made to throw, simulating a live API rejection AFTER the
+    // rewrite step's mutate has already gone out.
+    const budgetRows = [{ campaign: { id: 500 }, campaign_budget: { resource_name: "customers/1/campaignBudgets/9", amount_micros: 25_000_000 } }];
+    const { client } = stagingClient(budgetRows, (op) => op.entity === "campaign_budget");
+    currentClient = client;
+
+    const p = join(root, "plan.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        customerId: "1111111111",
+        rewrites: [
+          {
+            adId: "700",
+            headlines: Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
+            descriptions: Array.from({ length: 4 }, (_, i) => `staged description ${i}`),
+          },
+        ],
+        budgets: [{ campaignId: 500, dailyMicros: 30_000_000 }],
+      }),
+    );
+
+    const before = readFileSync(briefPath(), "utf8");
+    const cap = captureStdout();
+    const code = await main([p, "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(1);
+    expect(out).toContain("diverged");
+    expect(readFileSync(briefPath(), "utf8")).toBe(before); // byte-for-byte unchanged
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.ok).toBe(false);
+    expect(payload.briefs[0].briefSynced).toBe(false);
+  });
+
+  it("no state file (T020): live mutation still applies; no adbriefs/ file is created or modified; envelope reports the skip", async () => {
+    rmSync(join(root, "adbriefs", `${STAGING_SLUG}.state.yaml`));
+    rmSync(join(root, "adbriefs", `${STAGING_SLUG}.yaml`));
+    // No adbriefs/ contents at all for this campaign — the plan's adId cannot resolve.
+    const { client, mutations } = stagingClient();
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([rewritePlan(), "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    expect(mutations.length).toBeGreaterThan(0); // live mutation still ran (unaffected by the skip)
+    expect(existsSync(join(root, "adbriefs", `${STAGING_SLUG}.yaml`))).toBe(false);
+    expect(existsSync(join(root, "adbriefs", `${STAGING_SLUG}.state.yaml`))).toBe(false);
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.briefStagingSkipped).toBe(true);
+    expect(payload.briefStagingSkipReason).toBe("no-state-file");
+  });
+
+  it("missing-brief: a state file exists but its adbriefs/<slug>.yaml was deleted; live mutation still proceeds for that entity", async () => {
+    rmSync(join(root, "adbriefs", `${STAGING_SLUG}.yaml`)); // state file stays — the id still resolves
+    const { client, mutations } = stagingClient();
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([rewritePlan(), "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    expect(mutations.some((m) => m.operations.some((o) => o.entity === "ad"))).toBe(true); // live mutation still ran
+    expect(out).toContain("WARNING");
+    expect(out).toContain(`${STAGING_SLUG}.state.yaml exists but`);
+    expect(existsSync(join(root, "adbriefs", `${STAGING_SLUG}.yaml`))).toBe(false); // never fabricated
+
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    const briefEntry = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG);
+    expect(briefEntry.briefStagingSkipReason).toBe("missing-brief");
+    expect(briefEntry.briefSynced).toBe(false);
+  });
+
+  it("FR-007 collision: an on-disk brief naming a different campaign than the plan resolves is refused in both dry-run and --apply, without blocking an unrelated slug", async () => {
+    // Overwrite campaign A's on-disk brief so its campaign.name no longer matches
+    // what the state index says this slug's campaignId (500) resolves to ("Demo
+    // Search") — simulating a hand-edited/renamed brief.
+    const collidingBrief = stagingBriefYaml().replace('name: "Demo Search"', 'name: "Some Other Campaign"');
+    writeFileSync(briefPath(), collidingBrief);
+    writeFileSync(briefPathB(), stagingBriefYamlB());
+    writeFileSync(join(root, "adbriefs", `${STAGING_SLUG_B}.state.yaml`), stagingStateYamlB());
+
+    const budgetRows = [
+      { campaign: { id: 501 }, campaign_budget: { resource_name: "customers/1/campaignBudgets/9", amount_micros: 25_000_000 } },
+    ];
+    const p = join(root, "plan.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        customerId: "1111111111",
+        rewrites: [
+          {
+            adId: "700",
+            headlines: Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
+            descriptions: Array.from({ length: 4 }, (_, i) => `staged description ${i}`),
+          },
+        ],
+        budgets: [{ campaignId: 501, dailyMicros: 30_000_000 }],
+      }),
+    );
+    const beforeA = readFileSync(briefPath(), "utf8");
+
+    // Dry-run refuses to stage the colliding slug ...
+    {
+      const { client } = stagingClient(budgetRows);
+      currentClient = client;
+      const cap = captureStdout();
+      const code = await main([p]);
+      const out = cap.text();
+      expect(code).toBe(0);
+      expect(out).toContain("adbriefs collision");
+      const payload = JSON.parse(out.slice(out.indexOf("{")));
+      const briefA = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG);
+      const briefB = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG_B);
+      expect(briefA.briefStagingSkipReason).toBe("collision");
+      expect(briefB.briefDiff).not.toBeNull(); // unrelated slug still staged normally
+      expect(readFileSync(briefPath(), "utf8")).toBe(beforeA);
+    }
+
+    // ... and --apply refuses the same way, still never touching campaign A's brief,
+    // while campaign B (unrelated) is staged and written normally.
+    {
+      const { client, mutations } = stagingClient(budgetRows);
+      currentClient = client;
+      const beforeB = readFileSync(briefPathB(), "utf8");
+      const cap = captureStdout();
+      const code = await main([p, "--apply"]);
+      const out = cap.text();
+      expect(mutations.length).toBeGreaterThan(0); // live mutation proceeds regardless of the collision
+      expect(out).toContain("adbriefs collision");
+      const payload = JSON.parse(out.slice(out.indexOf("{")));
+      const briefA = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG);
+      const briefB = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG_B);
+      expect(briefA.briefStagingSkipReason).toBe("collision");
+      expect(briefA.briefSynced).toBe(false);
+      expect(readFileSync(briefPath(), "utf8")).toBe(beforeA); // never overwritten
+      expect(briefB.briefSynced).toBe(true); // unrelated slug unaffected
+      expect(readFileSync(briefPathB(), "utf8")).not.toBe(beforeB);
+      void code;
+    }
+  });
+
+  it("FR-011 no-op at the main() integration level: a plan whose edits already match the on-disk brief leaves briefDiff.changed false, briefPath unwritten, and the file byte-for-byte unchanged", async () => {
+    // The staging brief's campaign.budgetMicros is already 25_000_000 (stagingBriefYaml);
+    // a budgets block asking for that SAME value is a no-op for staging purposes (the
+    // live mutate step still runs, as it always did before this feature).
+    const budgetRows = [
+      { campaign: { id: 500 }, campaign_budget: { resource_name: "customers/1/campaignBudgets/1", amount_micros: 25_000_000 } },
+    ];
+    const { client } = stagingClient(budgetRows);
+    currentClient = client;
+
+    const p = join(root, "plan.json");
+    writeFileSync(p, JSON.stringify({ customerId: "1111111111", budgets: [{ campaignId: 500, dailyMicros: 25_000_000 }] }));
+
+    const before = readFileSync(briefPath(), "utf8");
+    const cap = captureStdout();
+    const code = await main([p, "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    const briefEntry = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG);
+    expect(briefEntry.briefDiff.changed).toBe(false);
+    // briefPath reports the resolved-slug's existing on-disk path (staging was never
+    // skipped) — the load-bearing assertion for "no-op, never rewritten" is the
+    // byte-for-byte file check below, not this field.
+    expect(briefEntry.briefPath).toBe(briefPath());
+    expect(briefEntry.briefSynced).toBe(true);
+    expect(readFileSync(briefPath(), "utf8")).toBe(before); // byte-for-byte unchanged
+  });
+
+  // -------------------------------------------------------------------------
+  // Multi-campaign partial failure: a single run touching two independent
+  // campaigns/briefs, where one campaign's mutation succeeds and the other's
+  // throws, must isolate the failure to the brief it actually touched (FR-006,
+  // FR-010 edge case) — NOT mark every staged brief in the run unsynced.
+  // -------------------------------------------------------------------------
+
+  const STAGING_SLUG_B = "demo-search-b";
+
+  /** A second campaign's brief, independent of STAGING_SLUG (campaign A). */
+  function stagingBriefYamlB(): string {
+    const headlines = Array.from({ length: 15 }, (_, i) => `        - text: "B headline number ${i + 1}"`).join(
+      "\n",
+    );
+    const descriptions = Array.from(
+      { length: 4 },
+      (_, i) => `        - text: "B description number ${i + 1} ok"`,
+    ).join("\n");
+    return [
+      'name: "demo-search-b"',
+      "version: 1",
+      "campaign:",
+      '  name: "Demo Search B"',
+      "  budgetMicros: 25000000",
+      "adGroups:",
+      "  - name: sellers",
+      "    defaultBidMicros: 1500000",
+      "    keywords:",
+      '      - text: "sell gadgets"',
+      "    responsiveSearchAd:",
+      '      finalUrl: "https://www.example.com/ideas/gadget"',
+      "      headlines:",
+      headlines,
+      "      descriptions:",
+      descriptions,
+      "",
+    ].join("\n");
+  }
+
+  /** The matching `<slug>.state.yaml` for campaign B: campaign 501, ad group 601. */
+  function stagingStateYamlB(): string {
+    return [
+      "campaign:",
+      '  name: "Demo Search B"',
+      '  campaignId: "501"',
+      "  budgetId: null",
+      "adGroups:",
+      "  - name: sellers",
+      '    adGroupId: "601"',
+      "    adId: null",
+      "",
+    ].join("\n");
+  }
+
+  function briefPathB(): string {
+    return join(root, "adbriefs", `${STAGING_SLUG_B}.yaml`);
+  }
+
+  it("multi-campaign partial failure: campaign A's mutation succeeds and is synced while campaign B's fails and is left unsynced", async () => {
+    writeFileSync(briefPathB(), stagingBriefYamlB());
+    writeFileSync(join(root, "adbriefs", `${STAGING_SLUG_B}.state.yaml`), stagingStateYamlB());
+
+    // Campaign A (STAGING_SLUG, campaignId 500) gets a rewrite; campaign B (campaignId
+    // 501) gets a budget change whose mutate is made to throw. Both campaigns' budget
+    // queries must resolve for `validate`'s guardrail, so the fake client's budgetRows
+    // covers both campaignIds.
+    const budgetRows = [
+      { campaign: { id: 501 }, campaign_budget: { resource_name: "customers/1/campaignBudgets/9", amount_micros: 25_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(budgetRows, (op) => op.entity === "campaign_budget");
+    currentClient = client;
+
+    const p = join(root, "plan.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        customerId: "1111111111",
+        rewrites: [
+          {
+            adId: "700",
+            headlines: Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
+            descriptions: Array.from({ length: 4 }, (_, i) => `staged description ${i}`),
+          },
+        ],
+        budgets: [{ campaignId: 501, dailyMicros: 30_000_000 }],
+      }),
+    );
+
+    const beforeA = readFileSync(briefPath(), "utf8");
+    const beforeB = readFileSync(briefPathB(), "utf8");
+
+    const cap = captureStdout();
+    const code = await main([p, "--apply"]);
+    const out = cap.text();
+
+    // The run as a whole still reports failure (a step failed) ...
+    expect(code).toBe(1);
+    expect(out).toContain("diverged");
+    // ... the rewrite mutate for campaign A still went out despite campaign B's failure ...
+    expect(mutations.some((m) => m.operations.some((o) => o.entity === "ad"))).toBe(true);
+
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    const briefA = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG);
+    const briefB = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG_B);
+    expect(briefA).toBeDefined();
+    expect(briefB).toBeDefined();
+
+    // ... campaign A's brief is written and reported synced ...
+    expect(briefA.briefSynced).toBe(true);
+    expect(briefA.briefPath).toBe(briefPath());
+    expect(readFileSync(briefPath(), "utf8")).not.toBe(beforeA);
+    const persistedA = onDiskBrief();
+    expect(persistedA.adGroups[0]!.responsiveSearchAd.headlines.map((h: { text: string }) => h.text)).toEqual(
+      Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
+    );
+
+    // ... campaign B's brief is left byte-for-byte unchanged and reported unsynced.
+    expect(briefB.briefSynced).toBe(false);
+    expect(readFileSync(briefPathB(), "utf8")).toBe(beforeB);
+  });
+
+  // -------------------------------------------------------------------------
+  // invalid-result (fix #1): applyPlanToBrief can propose a Brief that violates
+  // BriefSchema (e.g. an appendHeadlines that pushes a 15-headline ad group over
+  // 15). store.ts's writeBrief does not re-validate before writing, so the staged
+  // result must be re-parsed and, on failure, skipped rather than corrupting the
+  // on-disk brief.
+  // -------------------------------------------------------------------------
+
+  /** Live headline reader returning 14 headlines distinct from the on-disk brief's
+   * 15 — so validate()'s appendHeadlines guardrail (must land on exactly 15 live)
+   * passes, while the BRIEF-side dedup (against the brief's own stored headlines,
+   * not live) lets the appended headline through, producing 16 in the brief. */
+  function invalidResultClient(): {
+    client: AdsClient;
+    mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }>;
+  } {
+    const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+    const client: AdsClient = {
+      async search<Row = unknown>(): Promise<Row[]> {
+        return [] as Row[];
+      },
+      async searchStructured<Row = unknown>(): Promise<Row[]> {
+        return [
+          {
+            ad_group_ad: {
+              ad: {
+                id: 700,
+                responsive_search_ad: {
+                  headlines: Array.from({ length: 14 }, (_, i) => ({ text: `live headline ${i}` })),
+                },
+              },
+            },
+          },
+        ] as Row[];
+      },
+      async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+        mutations.push({ customerId, operations });
+        return { results: operations.map(() => ({ resource_name: "customers/1111111111/x" })) };
+      },
+    };
+    return { client, mutations };
+  }
+
+  it("invalid-result: an appendHeadlines plan that would push a 15-headline ad group over 15 is skipped, not written to disk", async () => {
+    const { client, mutations } = invalidResultClient();
+    currentClient = client;
+
+    const p = join(root, "plan.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        customerId: "1111111111",
+        appendHeadlines: [{ adId: 700, add: ["Brand New Headline"] }],
+      }),
+    );
+
+    const before = readFileSync(briefPath(), "utf8");
+    const cap = captureStdout();
+    const code = await main([p, "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(0); // the live mutation itself succeeds; only brief staging is skipped
+    expect(mutations.some((m) => m.operations.some((o) => o.entity === "ad"))).toBe(true);
+    expect(out.toLowerCase()).toContain("schema");
+    expect(readFileSync(briefPath(), "utf8")).toBe(before); // never written — would have been invalid
+
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    const briefEntry = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG);
+    expect(briefEntry.briefSynced).toBe(false);
+    expect(briefEntry.briefStagingSkipReason).toBe("invalid-result");
+  });
+
+  // -------------------------------------------------------------------------
+  // invalid-brief (fix #6): a corrupt/invalid adbriefs/<slug>.yaml must not crash
+  // the whole run — it should skip staging for its own slug only, while an
+  // unrelated resolved campaign in the same plan is unaffected.
+  // -------------------------------------------------------------------------
+
+  it("invalid-brief: a corrupt adbriefs/<slug>.yaml for one campaign does not prevent an unrelated resolved campaign in the same plan from being staged", async () => {
+    writeFileSync(briefPathB(), stagingBriefYamlB());
+    writeFileSync(join(root, "adbriefs", `${STAGING_SLUG_B}.state.yaml`), stagingStateYamlB());
+    // Corrupt campaign A's on-disk brief (unterminated YAML flow sequence). Its state
+    // file is untouched, so the plan's adId still resolves to this slug via the
+    // reverse index — loadBriefAtSlug must not crash the whole run when parsing it.
+    writeFileSync(briefPath(), "adGroups: [this is not valid yaml");
+
+    const budgetRows = [
+      { campaign: { id: 501 }, campaign_budget: { resource_name: "customers/1/campaignBudgets/9", amount_micros: 25_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(budgetRows);
+    currentClient = client;
+
+    const p = join(root, "plan.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        customerId: "1111111111",
+        rewrites: [
+          {
+            adId: "700",
+            headlines: Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
+            descriptions: Array.from({ length: 4 }, (_, i) => `staged description ${i}`),
+          },
+        ],
+        budgets: [{ campaignId: 501, dailyMicros: 30_000_000 }],
+      }),
+    );
+
+    const beforeB = readFileSync(briefPathB(), "utf8");
+    const cap = captureStdout();
+    const code = await main([p, "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(0); // both mutations succeed live; only A's brief staging is skipped
+    expect(mutations.length).toBeGreaterThan(0);
+
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    const briefA = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG);
+    const briefB = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG_B);
+    expect(briefA.briefStagingSkipReason).toBe("invalid-brief");
+    expect(briefA.briefSynced).toBe(false);
+
+    // Campaign B, wholly unrelated to A's corrupt brief, still stages/diffs/writes normally.
+    expect(briefB.briefSynced).toBe(true);
+    expect(readFileSync(briefPathB(), "utf8")).not.toBe(beforeB);
+  });
+
+  // -------------------------------------------------------------------------
+  // Unguarded writeBrief in the persist loop (fix #3): a write failure for one
+  // slug must not prevent another slug's already-mutated brief from being written
+  // and reported in the same run.
+  // -------------------------------------------------------------------------
+
+  it("a writeBrief failure for one slug still lets another slug in the same run write and report normally", async () => {
+    writeFileSync(briefPathB(), stagingBriefYamlB());
+    writeFileSync(join(root, "adbriefs", `${STAGING_SLUG_B}.state.yaml`), stagingStateYamlB());
+    failWriteForCampaignName = "Demo Search"; // campaign A's writeBrief call throws
+
+    const budgetRows = [
+      { campaign: { id: 501 }, campaign_budget: { resource_name: "customers/1/campaignBudgets/9", amount_micros: 25_000_000 } },
+    ];
+    const { client } = stagingClient(budgetRows);
+    currentClient = client;
+
+    const p = join(root, "plan.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        customerId: "1111111111",
+        rewrites: [
+          {
+            adId: "700",
+            headlines: Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
+            descriptions: Array.from({ length: 4 }, (_, i) => `staged description ${i}`),
+          },
+        ],
+        budgets: [{ campaignId: 501, dailyMicros: 30_000_000 }],
+      }),
+    );
+
+    const beforeA = readFileSync(briefPath(), "utf8");
+    const beforeB = readFileSync(briefPathB(), "utf8");
+    const cap = captureStdout();
+    const code = await main([p, "--apply"]);
+    const out = cap.text();
+
+    // A write failure surfaces the same way a mutation-step failure would — the run
+    // reports failure overall, but crucially the .map() still completed for every slug.
+    expect(code).toBe(1);
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    const briefA = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG);
+    const briefB = payload.briefs.find((b: { slug: string }) => b.slug === STAGING_SLUG_B);
+
+    // Campaign A's write failed: left unchanged on disk, reported unsynced.
+    expect(briefA.briefSynced).toBe(false);
+    expect(readFileSync(briefPath(), "utf8")).toBe(beforeA);
+
+    // Campaign B's write still went through despite A's failure.
+    expect(briefB.briefSynced).toBe(true);
+    expect(readFileSync(briefPathB(), "utf8")).not.toBe(beforeB);
   });
 });
