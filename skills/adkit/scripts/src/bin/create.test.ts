@@ -37,8 +37,10 @@ afterEach(() => {
 
 /** A minimal valid brief YAML round-trippable through readBrief. */
 function validBriefYaml(): string {
-  const headlines = Array.from({ length: 15 }, (_, i) => `        - text: Headline number ${i + 1}`).join("\n");
-  const descriptions = Array.from({ length: 4 }, (_, i) => `        - text: Description number ${i + 1} ok`).join("\n");
+  const headlines = Array.from({ length: 15 }, (_, i) => `          - text: Headline number ${i + 1}`).join("\n");
+  const descriptions = Array.from({ length: 4 }, (_, i) => `          - text: Description number ${i + 1} ok`).join("\n");
+  const headlines2 = Array.from({ length: 15 }, (_, i) => `          - text: Alt headline number ${i + 1}`).join("\n");
+  const descriptions2 = Array.from({ length: 4 }, (_, i) => `          - text: Alt description number ${i + 1} ok`).join("\n");
   return [
     "name: widget-launch",
     "version: 1",
@@ -50,12 +52,17 @@ function validBriefYaml(): string {
     "    defaultBidMicros: 1500000",
     "    keywords:",
     "      - text: buy widgets",
-    "    responsiveSearchAd:",
-    "      finalUrl: https://www.example.com/ideas/widget",
-    "      headlines:",
+    "    responsiveSearchAds:",
+    "      - finalUrl: https://www.example.com/ideas/widget",
+    "        headlines:",
     headlines,
-    "      descriptions:",
+    "        descriptions:",
     descriptions,
+    "      - finalUrl: https://www.example.com/ideas/widget",
+    "        headlines:",
+    headlines2,
+    "        descriptions:",
+    descriptions2,
     "",
   ].join("\n");
 }
@@ -161,22 +168,32 @@ describe("buildSkeleton", () => {
     ]);
   });
 
-  it("emits the full 15-headline / 4-description RSA slots with TODO placeholders", () => {
-    const rsa = skeleton.adGroups[0]!.responsiveSearchAd as {
+  it("emits exactly 2 RSAs, each with 15 headlines / 4 descriptions and TODO placeholders", () => {
+    const rsas = skeleton.adGroups[0]!.responsiveSearchAds as Array<{
       headlines: Array<{ text: string }>;
       descriptions: Array<{ text: string }>;
       finalUrl: string;
-    };
-    expect(rsa.headlines).toHaveLength(15);
-    expect(rsa.descriptions).toHaveLength(4);
-    expect(rsa.headlines[0]!.text).toContain("TODO headline 1");
-    expect(rsa.finalUrl).toContain("TODO-published-slug");
+    }>;
+    expect(rsas).toHaveLength(2);
+    for (const rsa of rsas) {
+      expect(rsa.headlines).toHaveLength(15);
+      expect(rsa.descriptions).toHaveLength(4);
+      expect(rsa.finalUrl).toContain("TODO-published-slug");
+    }
   });
 
-  it("omits the optional path1/path2 (a leftover placeholder is rejected at validation)", () => {
-    const rsa = skeleton.adGroups[0]!.responsiveSearchAd as Record<string, unknown>;
-    expect(rsa).not.toHaveProperty("path1");
-    expect(rsa).not.toHaveProperty("path2");
+  it("labels the 2 RSAs with distinct strategic angles, not reworded twins", () => {
+    const rsas = skeleton.adGroups[0]!.responsiveSearchAds as Array<{ headlines: Array<{ text: string }> }>;
+    expect(rsas[0]!.headlines[0]!.text).toContain("benefit-led");
+    expect(rsas[1]!.headlines[0]!.text).toContain("comparison-led");
+  });
+
+  it("omits the optional path1/path2 on every RSA (a leftover placeholder is rejected at validation)", () => {
+    const rsas = skeleton.adGroups[0]!.responsiveSearchAds as Array<Record<string, unknown>>;
+    for (const rsa of rsas) {
+      expect(rsa).not.toHaveProperty("path1");
+      expect(rsa).not.toHaveProperty("path2");
+    }
   });
 
   it("seeds campaign negatives and omits the optional priceAsset/structuredSnippet blocks", () => {
@@ -208,13 +225,15 @@ describe("buildSkeleton", () => {
     const filled = structuredClone(skeleton) as {
       campaign: { sitelinks: Array<{ text: string; finalUrl: string }>; callouts: string[] };
       adGroups: Array<{
-        responsiveSearchAd: { headlines: Array<{ text: string }>; descriptions: Array<{ text: string }>; finalUrl: string };
+        responsiveSearchAds: Array<{ headlines: Array<{ text: string }>; descriptions: Array<{ text: string }>; finalUrl: string }>;
       }>;
     };
     for (const ag of filled.adGroups) {
-      ag.responsiveSearchAd.headlines = ag.responsiveSearchAd.headlines.map((_, i) => ({ text: `Headline number ${i + 1}` }));
-      ag.responsiveSearchAd.descriptions = ag.responsiveSearchAd.descriptions.map((_, i) => ({ text: `Description number ${i + 1} ok` }));
-      ag.responsiveSearchAd.finalUrl = "https://www.example.com/ideas/widget";
+      for (const rsa of ag.responsiveSearchAds) {
+        rsa.headlines = rsa.headlines.map((_, i) => ({ text: `Headline number ${i + 1}` }));
+        rsa.descriptions = rsa.descriptions.map((_, i) => ({ text: `Description number ${i + 1} ok` }));
+        rsa.finalUrl = "https://www.example.com/ideas/widget";
+      }
     }
     filled.campaign.sitelinks = filled.campaign.sitelinks.map((_, i) => ({
       text: `Sitelink ${i + 1}`,
@@ -255,12 +274,12 @@ describe("readBrief", () => {
     // A realistic RSA line: "Protect earned trust: start free ...". Double-quoted,
     // the colon is safe and the brief parses.
     const yaml = validBriefYaml().replace(
-      "        - text: Description number 1 ok",
-      '        - text: "Protect earned trust: start free today"',
+      "          - text: Description number 1 ok",
+      '          - text: "Protect earned trust: start free today"',
     );
     const path = writeTemp("colon.yaml", yaml);
     const brief = readBrief(path);
-    expect(brief.adGroups[0]!.responsiveSearchAd.descriptions[0]!.text).toBe(
+    expect(brief.adGroups[0]!.responsiveSearchAds[0]!.descriptions[0]!.text).toBe(
       "Protect earned trust: start free today",
     );
   });
@@ -269,8 +288,8 @@ describe("readBrief", () => {
     // Same line WITHOUT quotes → YAMLParseError ("nested mappings"). readBrief must
     // catch it and tell the operator to quote the value, not leak the raw trace.
     const yaml = validBriefYaml().replace(
-      "        - text: Description number 1 ok",
-      "        - text: Protect earned trust: start free today",
+      "          - text: Description number 1 ok",
+      "          - text: Protect earned trust: start free today",
     );
     const path = writeTemp("bad-colon.yaml", yaml);
     const writes: string[] = [];
@@ -341,7 +360,7 @@ describe("create wires the adbriefs/ persist + diff gate (main)", () => {
       priceAssetResourceNames: [],
       structuredSnippetResourceNames: [],
       adGroups: [
-        { name: "widgets", adGroupId: "333", responsiveSearchAdId: "444", keywordResourceNames: [] },
+        { name: "widgets", adGroupId: "333", responsiveSearchAdIds: ["444", "445"], keywordResourceNames: [] },
       ],
     };
   }
@@ -376,11 +395,17 @@ describe("create wires the adbriefs/ persist + diff gate (main)", () => {
   it("dry-run reports the brief path + diff and writes NO file live", async () => {
     const cap = captureStdout();
     const code = await main([briefFile(), "--dry-run", "--skip-url-check"]);
-    const out = JSON.parse(cap.text()) as { briefPath: string; briefDiff: { changed: boolean }; willWriteBrief: string };
+    const out = JSON.parse(cap.text()) as {
+      briefPath: string;
+      briefDiff: { changed: boolean };
+      willWriteBrief: string;
+      willPublish: string;
+    };
     expect(code).toBe(0);
     expect(out.briefPath.endsWith(join(...SLUG_PATH))).toBe(true);
     expect(out.briefDiff.changed).toBe(true); // new campaign → all-added
     expect(existsSync(join(root, ...SLUG_PATH))).toBe(false); // dry-run persists nothing
+    expect(out.willPublish).toContain("2x RSA");
   });
 
   it("a real publish persists the brief to adbriefs/ and reports briefSynced", async () => {
@@ -405,7 +430,7 @@ describe("create wires the adbriefs/ persist + diff gate (main)", () => {
     const state = parseState(parseYaml(readFileSync(statePath, "utf8")));
     expect(state.campaign.campaignId).toBe("222");
     expect(state.campaign.budgetId).toBe("111");
-    expect(state.adGroups).toEqual([{ name: "widgets", adGroupId: "333", adId: "444" }]);
+    expect(state.adGroups).toEqual([{ name: "widgets", adGroupId: "333", adIds: ["444", "445"] }]);
   });
 
   it("dry-run announces willWriteState but writes NO state file", async () => {

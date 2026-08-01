@@ -25,7 +25,7 @@
  *   "campaignStatus": [{"campaignId": "456", "status": "ENABLED"}],  // flip a campaign on/off
  *   "adGroupStatus": [{"adGroupId": "789", "status": "PAUSED"}],     // flip an ad group on/off
  *   "adStatus": [{"adId": "123", "status": "ENABLED"}],             // flip a single ad on/off (e.g. enable a new group's PAUSED ad)
- *   "adGroups":  [{"campaignId": 456, "adGroup": {<brief ad group: name, defaultBidMicros, responsiveSearchAd, keywords>}}],  // add a new ad group
+ *   "adGroups":  [{"campaignId": 456, "adGroup": {<brief ad group: name, defaultBidMicros, responsiveSearchAds (exactly 2), keywords>}}],  // add a new ad group
  *   "languages": [{"campaignId": 456}]                               // make the campaign English-only
  * }
  *
@@ -1202,18 +1202,30 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   // 9) new ad groups. A name already live in the campaign was filtered into
   // agCreateSkips (idempotent — never a duplicate group). Each create mirrors the
-  // /adkit create sequence one ad group at a time: ad group (ENABLED) -> RSA
-  // (PAUSED) -> keywords (ENABLED). The PAUSED ad means the group cannot serve until
-  // its ad is enabled, so adding a group to a live campaign starts no spend on its own.
+  // /adkit create sequence one ad group at a time: ad group (ENABLED) -> RSAs
+  // (PAUSED) -> keywords (ENABLED). The PAUSED ads mean the group cannot serve until
+  // they're enabled, so adding a group to a live campaign starts no spend on its own.
   for (const g of agCreates) {
     try {
       const campaignRn = `customers/${customer}/campaigns/${pyStr(g.campaignId)}`;
       const agRn = await createAdGroup(client, customer, g.adGroup, campaignRn);
-      await createResponsiveSearchAd(client, customer, g.adGroup, agRn);
+      // allSettled (not Promise.all): if one RSA create fails after the other
+      // already succeeded live in Ads, still let the surviving id be created —
+      // Promise.all would abort/discard on the first rejection, and since a rerun
+      // always re-creates RSAs (no findExisting for them, unlike the ad group), a
+      // silently-dropped success would mean the next run creates yet another RSA
+      // on top of the orphan, drifting past RSAS_PER_AD_GROUP. See publish.ts.
+      const rsaOutcomes = await Promise.allSettled(
+        g.adGroup.responsiveSearchAds.map((rsa) => createResponsiveSearchAd(client, customer, rsa, agRn)),
+      );
+      const failedRsa = rsaOutcomes.find((o): o is PromiseRejectedResult => o.status === "rejected");
+      if (failedRsa) {
+        throw failedRsa.reason;
+      }
       const kwRns = await createKeywords(client, customer, g.adGroup, agRn);
       console.log(
         `  + ad group ${pyRepr(g.name)} -> campaign ${pyStr(g.campaignId)}: ` +
-          `RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,
+          `${g.adGroup.responsiveSearchAds.length}x RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,
       );
     } catch (exc) {
       recordFailure(`adGroups (new group in campaign ${pyStr(g.campaignId)})`, exc, slugsForIds([g.campaignId], stateIndex.byCampaignId));

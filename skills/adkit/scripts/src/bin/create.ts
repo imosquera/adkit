@@ -123,22 +123,30 @@ export function buildSkeleton(
   const range = (start: number, end: number): number[] =>
     Array.from({ length: end - start }, (_, i) => start + i);
 
+  // RSAS_PER_AD_GROUP (2) distinct strategic angles per ad group — a serving
+  // fallback plus angle-level diversity, not reworded twins. See
+  // reference/create.md for the full authoring guidance (conquest ad groups:
+  // "direct comparison" + "switch & save").
+  const rsaAngleLabels = ["benefit-led", "comparison-led"] as const;
+
+  const rsaSkeleton = (angle: (typeof rsaAngleLabels)[number]) => ({
+    headlines: range(1, 16).map((i) => ({ text: `TODO ${angle} headline ${i} (≤30 chars)` })),
+    descriptions: range(1, 5).map((i) => ({ text: `TODO ${angle} description ${i} (≤90 chars, end with CTA)` })),
+    // Landing pages publish under /ideas/<published-slug> (clean URL, no .html).
+    // The published slug is the timestamped name from `Idea HTML`, not this
+    // processed-file slug — fill it in. The pre-publish URL check rejects a
+    // leftover TODO because it 404s.
+    finalUrl: "https://www.example.com/ideas/TODO-published-slug",
+    // Optional display-URL "pretty URL" paths (path1/path2) are intentionally
+    // omitted from the scaffold — a leftover placeholder is rejected at
+    // validation, so an untouched brief would fail. See the commented
+    // OPTIONAL ADD-ONS template appended below the brief to add them.
+  });
+
   const adGroups = themes.map(([themeNameStr, kws]) => ({
     name: themeNameStr, // STAG: ad group IS the keyword theme (gtm ### Keyword Themes)
     defaultBidMicros: 1_500_000,
-    responsiveSearchAd: {
-      headlines: range(1, 16).map((i) => ({ text: `TODO headline ${i} (≤30 chars)` })),
-      descriptions: range(1, 5).map((i) => ({ text: `TODO description ${i} (≤90 chars, end with CTA)` })),
-      // Landing pages publish under /ideas/<published-slug> (clean URL, no .html).
-      // The published slug is the timestamped name from `Idea HTML`, not this
-      // processed-file slug — fill it in. The pre-publish URL check rejects a
-      // leftover TODO because it 404s.
-      finalUrl: "https://www.example.com/ideas/TODO-published-slug",
-      // Optional display-URL "pretty URL" paths (path1/path2) are intentionally
-      // omitted from the scaffold — a leftover placeholder is rejected at
-      // validation, so an untouched brief would fail. See the commented
-      // OPTIONAL ADD-ONS template appended below the brief to add them.
-    },
+    responsiveSearchAds: rsaAngleLabels.map(rsaSkeleton),
     // All theme keywords as PHRASE — close-variant matching + AI Max cover
     // plurals/typos/synonyms, so the SKAG-era PHRASE+EXACT pair is redundant.
     keywords: kws.map((kw) => ({ text: kw, matchType: "PHRASE" })),
@@ -204,7 +212,7 @@ export const COMMENTED_OPTIONAL_ASSETS = `
 #     header: SERVICE_CATALOG
 #     values: ["Value one", "Value two", "Value three"]   # 3–10, unique
 #
-# Under an ad group's responsiveSearchAd:: keyword-rich display-URL segments
+# Under an ad group's responsiveSearchAds[]:: keyword-rich display-URL segments
 # (each ≤15 chars, no spaces or "/"). path2 requires path1.
 #     path1: keyword
 #     path2: segment
@@ -448,7 +456,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         willPublish:
           `budget → campaign(PAUSED) → ${brief.campaign.sitelinks.length} sitelinks → ` +
           `${brief.campaign.callouts.length} callouts → ${agNames.length}x ` +
-          `(ad-group → RSA(PAUSED) → keywords). Existing campaign of the same name is reused.`,
+          `(ad-group → 2x RSA(PAUSED) → keywords). Existing campaign of the same name is reused.`,
       });
       return 0;
     }

@@ -32,18 +32,56 @@ import type { Brief } from "../lib/schema.js";
 /** Suffix of a state file, e.g. `close-assistant.state.yaml`. */
 const STATE_SUFFIX = ".state.yaml";
 
-const idString = z.string().regex(/^[0-9]+$/, { message: "must be a numeric id" });
+// Trailing numeric segment of a full Ads resource name, e.g.
+// "customers/123/campaigns/456" -> "456", or "customers/123/adGroupAds/456~789"
+// -> "789" (the ad's own id, not the ad-group prefix before "~").
+const RESOURCE_ID_SUFFIX = /[/~]([0-9]+)$/;
 
-/** One ad group's live ids: its `adGroupId` and the id of the RSA (`adId`, null if none). */
-export const AdGroupStateSchema = z
+/**
+ * Accepts either a bare numeric id ("456") or a full Ads resource name whose
+ * trailing segment (after the last "/" or "~") is numeric — the format
+ * `/adkit create` wrote before it switched to bare ids (real historical state
+ * files, e.g. `simple-invoice-search.state.yaml`, still carry it). Normalizes to
+ * the bare numeric id at parse time so every downstream consumer (the id index,
+ * `buildState`, GAQL id-matching) only ever sees one shape.
+ */
+const idString = z.string().transform((val, ctx) => {
+  if (/^[0-9]+$/.test(val)) {
+    return val;
+  }
+  const match = RESOURCE_ID_SUFFIX.exec(val);
+  if (match) {
+    return match[1]!;
+  }
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: "must be a numeric id or a resource name ending in one",
+  });
+  return z.NEVER;
+});
+
+/**
+ * One ad group's live ids: its `adGroupId` and the ids of its RSAs (`adIds` —
+ * RSAS_PER_AD_GROUP entries on a freshly-created ad group, empty for a reused ad
+ * group that got no freshly-created RSA). A state file written before the 2-RSA
+ * change carries the old singular `adId` (nullable) key instead; the preprocess
+ * below normalizes it to a 0-or-1-element `adIds` array so both shapes parse.
+ */
+const AdGroupStateObjectSchema = z
   .object({
     name: z.string().min(1),
     adGroupId: idString,
-    // Reused ad groups carry no freshly-created RSA, so the ad id can be absent.
-    adId: idString.nullable(),
+    adIds: z.array(idString),
   })
   .strict();
-export type AdGroupState = z.infer<typeof AdGroupStateSchema>;
+export const AdGroupStateSchema = z.preprocess((raw) => {
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw) && "adId" in raw && !("adIds" in raw)) {
+    const { adId, ...rest } = raw as Record<string, unknown>;
+    return { ...rest, adIds: adId === null || adId === undefined ? [] : [adId] };
+  }
+  return raw;
+}, AdGroupStateObjectSchema);
+export type AdGroupState = z.infer<typeof AdGroupStateObjectSchema>;
 
 /** The live-id state for one published campaign — the `<slug>.state.yaml` payload. */
 export const CampaignStateSchema = z
@@ -88,7 +126,7 @@ export function buildState(brief: Brief, results: ExecResults): CampaignState {
     adGroups: results.adGroups.map((ag) => ({
       name: ag.name,
       adGroupId: String(ag.adGroupId),
-      adId: ag.responsiveSearchAdId === null ? null : String(ag.responsiveSearchAdId),
+      adIds: ag.responsiveSearchAdIds.map(String),
     })),
   };
 }
@@ -121,9 +159,20 @@ export interface StateLocator {
   campaignName: string;
 }
 
-/** An ad-group-level locator also carries the ad group's brief name. */
+/**
+ * An ad-group-level locator also carries the ad group's brief name. A locator
+ * reached via `byAdId` also carries `rsaIndex` — the position of the matched id
+ * within that ad group's `adIds` (state) / `responsiveSearchAds` (brief) arrays,
+ * so a staged rewrite/append knows WHICH of the ad group's RSAS_PER_AD_GROUP
+ * brief entries the live ad id names. `buildState` records ids in the same order
+ * `publishV1`/`apply-fixes` create the RSAs in (index-for-index with the brief's
+ * `responsiveSearchAds`), so the position is a reliable correspondence even
+ * though the intent brief itself carries no ids. Absent for a `byAdGroupId` /
+ * `byCampaignId` locator, which names no particular RSA.
+ */
 export interface AdGroupLocator extends StateLocator {
   adGroupName: string;
+  rsaIndex?: number;
 }
 
 /**
@@ -158,9 +207,7 @@ export function loadStateIndex(root: string): StateIndex {
     for (const ag of state.adGroups) {
       const loc: AdGroupLocator = { slug, campaignName: state.campaign.name, adGroupName: ag.name };
       acc.byAdGroupId.set(ag.adGroupId, loc);
-      if (ag.adId !== null) {
-        acc.byAdId.set(ag.adId, loc);
-      }
+      ag.adIds.forEach((adId, rsaIndex) => acc.byAdId.set(adId, { ...loc, rsaIndex }));
     }
     return acc;
   }, index);

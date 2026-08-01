@@ -12,6 +12,7 @@ import {
   createCallouts,
   createNegativeKeywords,
   createPriceAsset,
+  createResponsiveSearchAd,
   createSearchCampaign,
   createSitelinks,
   createStructuredSnippet,
@@ -51,11 +52,18 @@ function briefFixture(campaignOverrides: Record<string, unknown>): ReturnType<ty
       {
         name: "Ag",
         defaultBidMicros: 1_500_000,
-        responsiveSearchAd: {
-          headlines: Array.from({ length: 15 }, (_, i) => ({ text: `H${i}` })),
-          descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `D${i}` })),
-          finalUrl: "https://www.example.com/x",
-        },
+        responsiveSearchAds: [
+          {
+            headlines: Array.from({ length: 15 }, (_, i) => ({ text: `H${i}` })),
+            descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `D${i}` })),
+            finalUrl: "https://www.example.com/x",
+          },
+          {
+            headlines: Array.from({ length: 15 }, (_, i) => ({ text: `H2-${i}` })),
+            descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `D2-${i}` })),
+            finalUrl: "https://www.example.com/x",
+          },
+        ],
         keywords: [{ text: "kw", matchType: "PHRASE" }],
       },
     ],
@@ -91,6 +99,32 @@ describe("createAdGroup", () => {
     await createAdGroup(client, "123", ag, CAMPAIGN_RN);
     const setting = calls[0]!.ops[0]!.resource["ai_max_ad_group_setting"] as { disable_search_term_matching: boolean };
     expect(setting.disable_search_term_matching).toBe(false);
+  });
+});
+
+describe("createResponsiveSearchAd", () => {
+  it("takes a single RSA (not the whole ad group) and creates one ad_group_ad", async () => {
+    const { client, calls } = makeFake();
+    const [rsa1, rsa2] = briefFixture({}).adGroups[0]!.responsiveSearchAds;
+    await createResponsiveSearchAd(client, "123", rsa1!, "customers/123/adGroups/9");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.ops[0]!.entity).toBe("ad_group_ad");
+    expect(calls[0]!.ops[0]!.resource["ad"]).toMatchObject({
+      responsive_search_ad: { headlines: rsa1!.headlines.map((h) => ({ text: h.text })) },
+    });
+
+    await createResponsiveSearchAd(client, "123", rsa2!, "customers/123/adGroups/9");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.ops[0]!.resource["ad"]).toMatchObject({
+      responsive_search_ad: { headlines: rsa2!.headlines.map((h) => ({ text: h.text })) },
+    });
+  });
+
+  it("creates the ad PAUSED", async () => {
+    const { client, calls } = makeFake();
+    const rsa = briefFixture({}).adGroups[0]!.responsiveSearchAds[0]!;
+    await createResponsiveSearchAd(client, "123", rsa, "customers/123/adGroups/9");
+    expect(calls[0]!.ops[0]!.resource["status"]).toBe(enums.AdGroupAdStatus.PAUSED);
   });
 });
 
