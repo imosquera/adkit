@@ -356,6 +356,16 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
       ? (lastBidding["cpcBidCeilingMicros"] as number)
       : undefined
     : campaign.cpcBidCeilingMicros;
+  const targetCpaMicros = lastBidding
+    ? typeof lastBidding["targetCpaMicros"] === "number"
+      ? (lastBidding["targetCpaMicros"] as number)
+      : undefined
+    : campaign.targetCpaMicros;
+  const targetRoas = lastBidding
+    ? typeof lastBidding["targetRoas"] === "number"
+      ? (lastBidding["targetRoas"] as number)
+      : undefined
+    : campaign.targetRoas;
 
   const campaignChanged =
     newSitelinks.length > 0 ||
@@ -363,7 +373,9 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
     newNegatives.length > 0 ||
     budgetMicros !== campaign.budgetMicros ||
     bidStrategy !== campaign.bidStrategy ||
-    cpcBidCeilingMicros !== campaign.cpcBidCeilingMicros;
+    cpcBidCeilingMicros !== campaign.cpcBidCeilingMicros ||
+    targetCpaMicros !== campaign.targetCpaMicros ||
+    targetRoas !== campaign.targetRoas;
 
   return {
     ...base,
@@ -376,11 +388,14 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
           negativeKeywords: [...campaign.negativeKeywords, ...newNegatives],
           budgetMicros,
           bidStrategy,
-          // Explicit key (not a conditional spread): a bidding block that switches
-          // away from maximize-clicks must CLEAR a previously staged ceiling, not
-          // inherit it from `...campaign` above — an inherited ceiling alongside a
-          // non-maximize-clicks strategy would fail CampaignSchema's re-parse.
+          // Explicit keys (not conditional spreads): a bidding block that switches
+          // strategy must CLEAR whichever companion field(s) belonged to the
+          // PREVIOUS strategy, not inherit them from `...campaign` above — an
+          // inherited ceiling/target alongside a mismatched strategy would fail
+          // CampaignSchema's re-parse.
           cpcBidCeilingMicros,
+          targetCpaMicros,
+          targetRoas,
         }
       : campaign,
   };

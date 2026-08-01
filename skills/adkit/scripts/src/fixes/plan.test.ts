@@ -4,6 +4,7 @@ import {
   addAdGroupsPlan,
   adGroupStatusPlan,
   adStatusPlan,
+  biddingPlan,
   campaignStatusPlan,
   coerceKeyword,
   CONVERSION_GUARD_THRESHOLD,
@@ -295,7 +296,7 @@ const bidding = (conversions30d: number) => ({
 describe("bidding guardrail", () => {
   it("refuses an unsupported or malformed strategy before ever checking live state", () => {
     const unsupported = validate(
-      { bidding: [{ campaignId: 5, strategy: "target-cpa" }] },
+      { bidding: [{ campaignId: 5, strategy: "manual-cpc" }] },
       {},
       {},
       undefined,
@@ -303,9 +304,7 @@ describe("bidding guardrail", () => {
       undefined,
       bidding(0),
     );
-    expect(unsupported.some((e) => e.includes('strategy must be "maximize-clicks" or "maximize-conversions"'))).toBe(
-      true,
-    );
+    expect(unsupported.some((e) => e.includes("strategy must be one of"))).toBe(true);
 
     const typo = validate(
       { bidding: [{ campaignId: 5, strategy: "Maximize-Clicks" }] },
@@ -380,6 +379,102 @@ describe("bidding guardrail", () => {
     const plan = { bidding: [{ campaignId: 9, strategy: "maximize-clicks" }] };
     const errs = validate(plan, {}, {}, undefined, undefined, undefined, BIDDING_STARVED);
     expect(errs.some((e) => e.includes("no current bidding state found"))).toBe(true);
+  });
+
+  it("accepts target-cpa and target-roas (spec.md 048 FR-001)", () => {
+    const targetCpaState = { 5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d: 0 } };
+    const targetCpa = validate(
+      { bidding: [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: 12_000_000 }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      targetCpaState,
+    );
+    expect(targetCpa).toEqual([]);
+
+    const targetRoas = validate(
+      { bidding: [{ campaignId: 5, strategy: "target-roas", targetRoas: 3.5 }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      targetCpaState,
+    );
+    expect(targetRoas).toEqual([]);
+  });
+
+  it("never guards graduating into target-cpa/target-roas regardless of conversion count", () => {
+    const plan = { bidding: [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: 12_000_000 }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(1000));
+    expect(errs).toEqual([]);
+  });
+});
+
+// ---------- bidding idempotent-skip partition (spec.md 048 FR-002/FR-003) ----------
+
+describe("biddingPlan", () => {
+  it("skips an entry whose strategy and target value already match live state", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_CPA", conversions30d: 10, targetValue: 12_000_000 } };
+    const [changes, skips] = biddingPlan(
+      [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: 12_000_000 }],
+      live,
+    );
+    expect(changes).toEqual([]);
+    expect(skips).toHaveLength(1);
+  });
+
+  it("treats a target-value-only change (same strategy) as a real change, not a skip", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_CPA", conversions30d: 10, targetValue: 12_000_000 } };
+    const [changes, skips] = biddingPlan(
+      [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: 15_000_000 }],
+      live,
+    );
+    expect(skips).toEqual([]);
+    expect(changes).toHaveLength(1);
+  });
+
+  it("treats a strategy change as a real change even when no target value is set", () => {
+    const live = { 5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d: 10 } };
+    const [changes, skips] = biddingPlan([{ campaignId: 5, strategy: "maximize-clicks" }], live);
+    expect(skips).toEqual([]);
+    expect(changes).toHaveLength(1);
+  });
+
+  it("skips a maximize-clicks entry already on maximize-clicks with a matching ceiling", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_SPEND", conversions30d: 0, targetValue: 5_000_000 } };
+    const [changes, skips] = biddingPlan(
+      [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_000_000 }],
+      live,
+    );
+    expect(changes).toEqual([]);
+    expect(skips).toHaveLength(1);
+  });
+
+  it("treats a ceiling-only change on maximize-clicks as a real change, not a skip", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_SPEND", conversions30d: 0, targetValue: 5_000_000 } };
+    const [changes, skips] = biddingPlan(
+      [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 6_000_000 }],
+      live,
+    );
+    expect(skips).toEqual([]);
+    expect(changes).toHaveLength(1);
+  });
+
+  it("treats an unknown campaign or unsupported strategy as a change, not a skip", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_CPA", conversions30d: 0, targetValue: 12_000_000 } };
+    const [changesUnknown, skipsUnknown] = biddingPlan(
+      [{ campaignId: 999, strategy: "target-cpa", targetCpaMicros: 12_000_000 }],
+      live,
+    );
+    expect(skipsUnknown).toEqual([]);
+    expect(changesUnknown).toHaveLength(1);
+
+    const [changesBad, skipsBad] = biddingPlan([{ campaignId: 5, strategy: "manual-cpc" }], live);
+    expect(skipsBad).toEqual([]);
+    expect(changesBad).toHaveLength(1);
   });
 });
 

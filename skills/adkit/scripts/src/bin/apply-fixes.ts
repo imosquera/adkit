@@ -97,6 +97,7 @@ import {
   addAdGroupsPlan,
   adGroupStatusPlan,
   adStatusPlan,
+  biddingPlan,
   campaignStatusPlan,
   coerceKeyword,
   keyStr,
@@ -172,8 +173,37 @@ interface BudgetRow {
 }
 
 interface BiddingGuardRow {
-  campaign: { id: number; bidding_strategy_type: string };
+  campaign: {
+    id: number;
+    bidding_strategy_type: string;
+    target_cpa?: { target_cpa_micros?: number };
+    target_roas?: { target_roas?: number };
+    target_spend?: { cpc_bid_ceiling_micros?: number };
+  };
   metrics: { conversions: number; average_cpc: number };
+}
+
+/**
+ * Normalize a campaign's live target/ceiling value to whichever field its live bid
+ * strategy actually uses — target_cpa_micros on TARGET_CPA, target_roas on
+ * TARGET_ROAS, cpc_bid_ceiling_micros on TARGET_SPEND (maximize-clicks), undefined
+ * for MAXIMIZE_CONVERSIONS (no comparable value) or when the API omits the nested
+ * oneof branch. Used only for the idempotent-skip comparison in apply-fixes.ts —
+ * without it, a maximize-clicks entry that only changes cpcBidCeilingMicros would be
+ * indistinguishable from a true no-op (both strategy and this value would otherwise
+ * read as undefined/undefined). Never consulted by biddingErrors.
+ */
+function liveBiddingTargetValue(campaign: BiddingGuardRow["campaign"]): number | undefined {
+  if (campaign.bidding_strategy_type === "TARGET_CPA") {
+    return campaign.target_cpa?.target_cpa_micros;
+  }
+  if (campaign.bidding_strategy_type === "TARGET_ROAS") {
+    return campaign.target_roas?.target_roas;
+  }
+  if (campaign.bidding_strategy_type === "TARGET_SPEND") {
+    return campaign.target_spend?.cpc_bid_ceiling_micros;
+  }
+  return undefined;
 }
 
 interface PositiveKeywordRow {
@@ -334,16 +364,19 @@ export async function campaignBudgets(
 }
 
 /**
- * campaignId -> {biddingStrategyType, conversions30d, avgCpcMicros30d} over a fixed
- * trailing 30 days, for the bidding guardrail (refuse a risky maximize-conversions ->
- * maximize-clicks downgrade) and the ceiling-sanity warning. Fixed to 30 days
- * regardless of any other setting — there is no --days flag on update.
+ * campaignId -> {biddingStrategyType, conversions30d, avgCpcMicros30d, targetValue}
+ * over a fixed trailing 30 days, for the bidding guardrail (refuse a risky
+ * maximize-conversions -> maximize-clicks downgrade), the idempotent-skip check
+ * (targetValue), and the ceiling-sanity warning. Fixed to 30 days regardless of any
+ * other setting — there is no --days flag on update.
  */
 export async function biddingGuardState(
   client: AdsClient,
   customerId: string,
   campaignIds: ReadonlyArray<string | number>,
-): Promise<Map<number, { biddingStrategyType: string; conversions30d: number; avgCpcMicros30d: number }>> {
+): Promise<
+  Map<number, { biddingStrategyType: string; conversions30d: number; avgCpcMicros30d: number; targetValue?: number }>
+> {
   if (campaignIds.length === 0) {
     return new Map();
   }
@@ -354,8 +387,12 @@ export async function biddingGuardState(
         biddingStrategyType: r.campaign.bidding_strategy_type,
         conversions30d: r.metrics.conversions,
         avgCpcMicros30d: r.metrics.average_cpc,
+        targetValue: liveBiddingTargetValue(r.campaign),
       }),
-    new Map<number, { biddingStrategyType: string; conversions30d: number; avgCpcMicros30d: number }>(),
+    new Map<
+      number,
+      { biddingStrategyType: string; conversions30d: number; avgCpcMicros30d: number; targetValue?: number }
+    >(),
   );
 }
 
@@ -774,7 +811,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const liveSpEnabled = new Map([...liveSp].map(([id, v]) => [id, v.enabled]));
   const liveSpGoogleSearch = new Map([...liveSp].map(([id, v]) => [id, v.googleSearchEnabled]));
 
-  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch, liveAdSt.adGroup, bidding);
+  // Idempotent-skip partition (spec.md 048 FR-002/FR-003): a bidding block whose
+  // strategy and comparable target value already match the campaign's live state is
+  // a no-op skip, computed ahead of validate() so a skip never reaches the downgrade
+  // guardrail or issues a mutate call — mirrors campaignStatus's statusChanges/
+  // statusSkips split below, just computed earlier since validate() needs it.
+  const [biddingChanges, biddingSkips] = biddingPlan(section(plan, "bidding"), bidding);
+
+  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch, liveAdSt.adGroup, bidding, biddingChanges);
   if (errs.length > 0) {
     console.log("VALIDATION FAILED:");
     for (const e of errs) {
@@ -808,7 +852,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const stateIndex = loadStateIndex(adbriefsRoot);
   const noStateFileAtAll =
     stateIndex.byCampaignId.size === 0 && stateIndex.byAdGroupId.size === 0 && stateIndex.byAdId.size === 0;
-  const planGroups = resolvePlanGroups(plan, stateIndex);
+  // A skipped bidding entry (biddingSkips) must never reach brief staging either — the
+  // adbrief must not be rewritten to reflect a "change" that never actually happened
+  // live (spec.md 048 FR-002). resolvePlanGroups reads plan.bidding directly, so a
+  // stagingPlan with only biddingChanges substituted is passed in place of the raw
+  // plan; every other section is staged from the plan unchanged.
+  const stagingPlan = { ...plan, bidding: biddingChanges };
+  const planGroups = resolvePlanGroups(stagingPlan, stateIndex);
   const unresolvedIds = planGroups.find((g) => g.slug === "")?.unresolvedIds ?? [];
   const staged = stageResolvedGroups(adbriefsRoot, planGroups, { defaultLandingUrl: defaultUrl, adGroupCreates: agCreates });
 
@@ -875,6 +925,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         searchPartnersChanges: spChanges,
         searchPartnersSkipped: spSkips,
         searchPartnersEnableIncreasesReach: spEnableChanges.map((c) => c.campaignId),
+        biddingChanges,
+        biddingSkipped: biddingSkips,
+        bidStrategyChangeAffectsSpend: bidStrategyChangeAffectsSpendIds,
         briefs: briefResults,
         briefStagingSkipped,
         briefStagingSkipReason,
@@ -917,11 +970,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       const cur = budgets.get(asId(b.campaignId))!.amountMicros;
       return `budget campaign ${pyStr(b.campaignId)}: ${dollars(cur)} -> ${dollars(b.dailyMicros as number)}/day`;
     }),
-    ...section(plan, "bidding").map((b) => {
+    ...biddingChanges.map((b) => {
       const cur = bidding.get(asId(b.campaignId))?.biddingStrategyType ?? "UNKNOWN";
       const ceiling = typeof b.cpcBidCeilingMicros === "number" ? ` (ceiling ${dollars(b.cpcBidCeilingMicros)})` : "";
-      return `bidding campaign ${pyStr(b.campaignId)}: ${cur} -> ${pyStr(b.strategy)}${ceiling}`;
+      const targetCpa = typeof b.targetCpaMicros === "number" ? ` (target CPA ${dollars(b.targetCpaMicros)})` : "";
+      const targetRoas = typeof b.targetRoas === "number" ? ` (target ROAS ${b.targetRoas}x)` : "";
+      return `bidding campaign ${pyStr(b.campaignId)}: ${cur} -> ${pyStr(b.strategy)}${ceiling}${targetCpa}${targetRoas}`;
     }),
+    ...biddingSkips.map((b) => `bidding campaign ${pyStr(b.campaignId)}: already ${pyStr(b.strategy)}, skipped`),
     ...statusChanges.map((c) => `campaign ${pyStr(c.campaignId)}: status ${pyStr(c.current)} -> ${pyStr(c.status)}`),
     ...statusSkips.map((c) => `campaign ${pyStr(c.campaignId)}: status already ${pyStr(c.status)}, skipped`),
     ...agStatusChanges.map((g) => `adGroup ${pyStr(g.adGroupId)}: status ${pyStr(g.current)} -> ${pyStr(g.status)}`),
@@ -981,7 +1037,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // Ceiling-sanity warning (FR-006): non-blocking, deliberately outside validate()/
   // biddingErrors — a low ceiling is a self-inflicted misconfiguration risk, not a
   // reason to refuse the change.
-  for (const b of section(plan, "bidding")) {
+  for (const b of biddingChanges) {
     const ceiling = b.cpcBidCeilingMicros;
     if (typeof ceiling !== "number") {
       continue;
@@ -993,6 +1049,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
           `trailing-30-day average CPC (${dollars(avgCpc)}) — this may starve the campaign of traffic.`,
       );
     }
+  }
+  // Spend-affecting bid-strategy warning (spec.md 048 FR-004): loud, non-blocking —
+  // any REAL change (biddingChanges, never biddingSkips) into a strategy that lets the
+  // platform optimize toward spend/conversions rather than clicks gets a WARNING: line
+  // plus a campaign-ID entry in the bidStrategyChangeAffectsSpend envelope key, same
+  // loud-not-silent treatment as enableStartsLiveSpend/
+  // searchPartnersEnableIncreasesReach. Downgrading to maximize-clicks is excluded by
+  // construction (never in this set) — mirrors PAUSE-is-always-safe elsewhere.
+  const SPEND_AFFECTING_STRATEGIES = new Set(["maximize-conversions", "target-cpa", "target-roas"]);
+  const bidStrategyChangeAffectsSpendIds = biddingChanges
+    .filter((b) => SPEND_AFFECTING_STRATEGIES.has(b.strategy as string))
+    .map((b) => b.campaignId);
+  if (bidStrategyChangeAffectsSpendIds.length > 0) {
+    console.log(
+      "WARNING: bid strategy change affects spend optimization on campaign(s): " +
+        bidStrategyChangeAffectsSpendIds.map((id) => pyStr(id)).join(", "),
+    );
   }
   if (!apply) {
     console.log("\nDry run. Re-run with --apply.");
@@ -1185,11 +1258,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
   }
 
-  // 5b) bidding (guardrail already enforced in validate). maximize-clicks sets
-  // target_spend (with the ceiling, if given); every other strategy sets
-  // maximize_conversions with no ceiling field — the API models bid strategy as a
-  // oneof, so sending one branch clears whichever the campaign previously had.
-  for (const b of section(plan, "bidding")) {
+  // 5b) bidding (guardrail already enforced in validate; idempotent skips already
+  // filtered out of biddingChanges, so every entry here is a real change — spec.md
+  // 048 FR-002). maximize-clicks sets target_spend (with the ceiling, if given);
+  // target-cpa/target-roas set their own oneof branch with the plan's target value;
+  // maximize-conversions sets maximize_conversions with no companion field — the API
+  // models bid strategy as a oneof, so sending one branch clears whichever the
+  // campaign previously had.
+  for (const b of biddingChanges) {
     const cid = b.campaignId;
     try {
       const resource: Record<string, unknown> = {
@@ -1198,6 +1274,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       if (b.strategy === "maximize-clicks") {
         resource["target_spend"] =
           typeof b.cpcBidCeilingMicros === "number" ? { cpc_bid_ceiling_micros: b.cpcBidCeilingMicros } : {};
+      } else if (b.strategy === "target-cpa") {
+        resource["target_cpa"] = { target_cpa_micros: b.targetCpaMicros };
+      } else if (b.strategy === "target-roas") {
+        resource["target_roas"] = { target_roas: b.targetRoas };
       } else {
         resource["maximize_conversions"] = {};
       }
