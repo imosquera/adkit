@@ -556,18 +556,25 @@ const BIDDING_PLAN_STRATEGIES = new Set(["maximize-clicks", "maximize-conversion
  * Refuse a bidding block whose `strategy` isn't one of the four this plan section
  * supports (typo, wrong case, missing field, or a legitimate-but-unsupported
  * BidStrategy like "manual-cpc") before it can ever reach the live mutation loop.
- * Then refuse a maximize-conversions -> maximize-clicks block when the campaign has
- * proven conversion volume (FR-004), unless the block explicitly acknowledges the
- * downgrade. The reverse direction (graduating up, including into target-cpa/
- * target-roas) and same-strategy ceiling/target-only edits are never guarded by this
- * function (FR-005) — the loud, non-blocking spend-affecting WARNING for those
- * directions lives in apply-fixes.ts, not here. Callers (apply-fixes.ts) are expected
- * to only pass blocks that represent a real change — an entry matching the campaign's
- * current live strategy/target value is filtered out upstream as a skip, so this
- * function never needs its own idempotency check. cpcBidCeilingMicros/strategy
- * pairing validity is
- * intentionally NOT checked here — it's enforced for free when the staged brief is
- * re-parsed through CampaignSchema (see apply-plan.ts / stageResolvedGroups).
+ * Refuse a target-cpa/target-roas block missing its required positive numeric target
+ * value — this check MUST live here, not deferred to CampaignSchema's re-parse (see
+ * below), because that re-parse doesn't run for every campaign and its failure mode
+ * doesn't block the live mutation loop either way. Then refuse a
+ * maximize-conversions -> maximize-clicks block when the campaign has proven
+ * conversion volume (FR-004), unless the block explicitly acknowledges the downgrade.
+ * The reverse direction (graduating up, including into target-cpa/target-roas) and
+ * same-strategy ceiling/target-only edits are never guarded by this function (FR-005)
+ * — the loud, non-blocking spend-affecting WARNING for those directions lives in
+ * apply-fixes.ts, not here. Callers (apply-fixes.ts) are expected to only pass blocks
+ * that represent a real change — an entry matching the campaign's current live
+ * strategy/target value is filtered out upstream as a skip, so this function never
+ * needs its own idempotency check. cpcBidCeilingMicros's optional pairing with
+ * maximize-clicks is the one field intentionally NOT checked here (unlike the
+ * required target-cpa/target-roas fields above) — a missing ceiling is a valid,
+ * ceiling-less maximize-clicks entry, so there's nothing to require; an invalid
+ * *mismatched* pairing (e.g. cpcBidCeilingMicros set alongside target-cpa) is still
+ * caught for free when the staged brief is re-parsed through CampaignSchema (see
+ * apply-plan.ts / stageResolvedGroups) for campaigns that reach that step.
  */
 function biddingErrors(
   biddingBlocks: Array<Record<string, unknown>>,
@@ -579,6 +586,31 @@ function biddingErrors(
       return [
         `bidding campaign ${pyStr(cid)}: strategy must be one of ` +
           `${[...BIDDING_PLAN_STRATEGIES].map((s) => `"${s}"`).join(", ")} (got ${pyRepr(b.strategy)})`,
+      ];
+    }
+    // Required-companion-field check (mirrors CampaignSchema.superRefine, schema.ts):
+    // a target-cpa/target-roas block MUST carry a positive numeric target value before
+    // it can ever reach the live mutation loop. This can NOT be left to the "enforced
+    // for free by CampaignSchema" brief re-parse below — that re-parse only runs for
+    // campaigns resolved to a tracked adbriefs slug, and even when it does run and
+    // rejects the brief, that failure only downgrades to a non-fatal staging WARNING
+    // (apply-fixes.ts) and does not stop the live mutation. Without this check, a
+    // block missing its target value would reach the mutation loop with
+    // `targetCpaMicros: undefined`/`targetRoas: undefined`, which the Ads API decodes
+    // as an explicit 0 — silently zeroing a campaign's live target, not a caught error.
+    if (
+      b.strategy === "target-cpa" &&
+      !(typeof b.targetCpaMicros === "number" && Number.isInteger(b.targetCpaMicros) && b.targetCpaMicros > 0)
+    ) {
+      return [
+        `bidding campaign ${pyStr(cid)}: strategy "target-cpa" requires a positive integer ` +
+          `targetCpaMicros (got ${pyRepr(b.targetCpaMicros)})`,
+      ];
+    }
+    if (b.strategy === "target-roas" && !(typeof b.targetRoas === "number" && b.targetRoas > 0)) {
+      return [
+        `bidding campaign ${pyStr(cid)}: strategy "target-roas" requires a positive numeric ` +
+          `targetRoas (got ${pyRepr(b.targetRoas)})`,
       ];
     }
     const state = getBiddingState(biddingState, cid);

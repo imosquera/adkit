@@ -411,6 +411,59 @@ describe("bidding guardrail", () => {
     const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(1000));
     expect(errs).toEqual([]);
   });
+
+  it("refuses a target-cpa block missing targetCpaMicros before ever checking live state", () => {
+    const errs = validate(
+      { bidding: [{ campaignId: 5, strategy: "target-cpa" }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      new Map(), // no live state at all — the required-field check must fire first
+    );
+    expect(errs.some((e) => e.includes('requires a positive integer targetCpaMicros'))).toBe(true);
+    expect(errs.some((e) => e.includes("no current bidding state found"))).toBe(false);
+  });
+
+  it("refuses a target-cpa block with a non-positive or non-integer targetCpaMicros", () => {
+    for (const bad of [0, -1, 1.5, "12000000", NaN]) {
+      const errs = validate(
+        { bidding: [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: bad }] },
+        {},
+        {},
+        undefined,
+        undefined,
+        undefined,
+        new Map(),
+      );
+      expect(errs.some((e) => e.includes("requires a positive integer targetCpaMicros"))).toBe(true);
+    }
+  });
+
+  it("refuses a target-roas block missing or with a non-positive targetRoas", () => {
+    for (const bad of [undefined, 0, -1, "3.5", NaN]) {
+      const block: Record<string, unknown> = { campaignId: 5, strategy: "target-roas" };
+      if (bad !== undefined) {
+        block.targetRoas = bad;
+      }
+      const errs = validate({ bidding: [block] }, {}, {}, undefined, undefined, undefined, new Map());
+      expect(errs.some((e) => e.includes("requires a positive numeric targetRoas"))).toBe(true);
+    }
+  });
+
+  it("accepts a fractional targetRoas (unlike targetCpaMicros, it is not required to be an integer)", () => {
+    const errs = validate(
+      { bidding: [{ campaignId: 5, strategy: "target-roas", targetRoas: 3.5 }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      { 5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d: 0 } },
+    );
+    expect(errs).toEqual([]);
+  });
 });
 
 // ---------- bidding idempotent-skip partition (spec.md 048 FR-002/FR-003) ----------
@@ -475,6 +528,25 @@ describe("biddingPlan", () => {
     const [changesBad, skipsBad] = biddingPlan([{ campaignId: 5, strategy: "manual-cpc" }], live);
     expect(skipsBad).toEqual([]);
     expect(changesBad).toHaveLength(1);
+  });
+
+  it("treats a switch between spend-optimizing strategies (target-cpa -> target-roas) as a real change, never a cross-field skip", () => {
+    // Guards against comparing a target-cpa micros value against a target-roas ratio
+    // (or vice versa) across the strategy switch — the live strategy check must gate
+    // the target-value comparison, not run alongside it.
+    const live = { 5: { biddingStrategyType: "TARGET_CPA", conversions30d: 10, targetValue: 12_000_000 } };
+    const [changes, skips] = biddingPlan([{ campaignId: 5, strategy: "target-roas", targetRoas: 3.5 }], live);
+    expect(skips).toEqual([]);
+    expect(changes).toHaveLength(1);
+
+    // Numeric-coincidence variant: an absurd but type-legal targetRoas that happens to
+    // equal the live targetCpaMicros value must still never accidentally match.
+    const [changesCoincidence, skipsCoincidence] = biddingPlan(
+      [{ campaignId: 5, strategy: "target-roas", targetRoas: 12_000_000 }],
+      live,
+    );
+    expect(skipsCoincidence).toEqual([]);
+    expect(changesCoincidence).toHaveLength(1);
   });
 });
 
