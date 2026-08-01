@@ -221,6 +221,37 @@ describe("applyPlanToBrief", () => {
     expect(result.campaign.budgetMicros).toBe(40_000_000);
   });
 
+  it("bidding stages bidStrategy and cpcBidCeilingMicros from the plan block", () => {
+    const plan = {
+      bidding: [{ campaignId: "100", strategy: "maximize-clicks", cpcBidCeilingMicros: 5_500_000 }],
+    };
+    const result = applyPlanToBrief(baseBrief(), groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("maximize-clicks");
+    expect(result.campaign.cpcBidCeilingMicros).toBe(5_500_000);
+  });
+
+  it("bidding switching away from maximize-clicks clears a previously staged ceiling", () => {
+    const brief = baseBrief({
+      campaign: {
+        ...baseBrief().campaign,
+        bidStrategy: "maximize-clicks",
+        cpcBidCeilingMicros: 4_000_000,
+      },
+    });
+    const plan = { bidding: [{ campaignId: "100", strategy: "maximize-conversions" }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("maximize-conversions");
+    expect(result.campaign.cpcBidCeilingMicros).toBeUndefined();
+  });
+
+  it("no bidding blocks leaves campaign.bidStrategy/cpcBidCeilingMicros unchanged", () => {
+    const brief = baseBrief();
+    const plan = { budgets: [{ campaignId: "100", dailyMicros: 40_000_000 }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe(brief.campaign.bidStrategy);
+    expect(result.campaign.cpcBidCeilingMicros).toBe(brief.campaign.cpcBidCeilingMicros);
+  });
+
   it("adGroups create appends a new ad group not already present by name", () => {
     const plan = { adGroups: [{ campaignId: "100", adGroup: { name: "placeholder" } }] };
     const created: AdGroupCreatePlanEntry = {
@@ -315,7 +346,7 @@ describe("applyPlanToBrief", () => {
     expect(groups).toEqual([]);
     // With no group at all there is nothing to apply — applyPlanToBrief is only ever
     // called for a resolved group, so simulate the "resolved but empty" case directly.
-    const emptyGroup = { slug: "alpha", campaignName: "Alpha", sections: { rewrites: [], appendHeadlines: [], sitelinks: [], callouts: [], negatives: [], keywords: [], budgets: [], adGroups: [] }, unresolvedIds: [] };
+    const emptyGroup = { slug: "alpha", campaignName: "Alpha", sections: { rewrites: [], appendHeadlines: [], sitelinks: [], callouts: [], negatives: [], keywords: [], budgets: [], bidding: [], adGroups: [] }, unresolvedIds: [] };
     const result = applyPlanToBrief(brief, emptyGroup);
     expect(result).toEqual(brief);
   });

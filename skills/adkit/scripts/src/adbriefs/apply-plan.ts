@@ -346,8 +346,24 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
       ? (lastBudget["dailyMicros"] as number)
       : campaign.budgetMicros;
 
+  const lastBidding = group.sections.bidding[group.sections.bidding.length - 1];
+  const bidStrategy =
+    lastBidding && typeof lastBidding["strategy"] === "string"
+      ? (lastBidding["strategy"] as Brief["campaign"]["bidStrategy"])
+      : campaign.bidStrategy;
+  const cpcBidCeilingMicros = lastBidding
+    ? typeof lastBidding["cpcBidCeilingMicros"] === "number"
+      ? (lastBidding["cpcBidCeilingMicros"] as number)
+      : undefined
+    : campaign.cpcBidCeilingMicros;
+
   const campaignChanged =
-    newSitelinks.length > 0 || newCallouts.length > 0 || newNegatives.length > 0 || budgetMicros !== campaign.budgetMicros;
+    newSitelinks.length > 0 ||
+    newCallouts.length > 0 ||
+    newNegatives.length > 0 ||
+    budgetMicros !== campaign.budgetMicros ||
+    bidStrategy !== campaign.bidStrategy ||
+    cpcBidCeilingMicros !== campaign.cpcBidCeilingMicros;
 
   return {
     ...base,
@@ -359,6 +375,12 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
           callouts: [...campaign.callouts, ...newCallouts],
           negativeKeywords: [...campaign.negativeKeywords, ...newNegatives],
           budgetMicros,
+          bidStrategy,
+          // Explicit key (not a conditional spread): a bidding block that switches
+          // away from maximize-clicks must CLEAR a previously staged ceiling, not
+          // inherit it from `...campaign` above — an inherited ceiling alongside a
+          // non-maximize-clicks strategy would fail CampaignSchema's re-parse.
+          cpcBidCeilingMicros,
         }
       : campaign,
   };

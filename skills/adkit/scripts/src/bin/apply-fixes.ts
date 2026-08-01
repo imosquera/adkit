@@ -917,6 +917,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       const cur = budgets.get(asId(b.campaignId))!.amountMicros;
       return `budget campaign ${pyStr(b.campaignId)}: ${dollars(cur)} -> ${dollars(b.dailyMicros as number)}/day`;
     }),
+    ...section(plan, "bidding").map((b) => {
+      const cur = bidding.get(asId(b.campaignId))?.biddingStrategyType ?? "UNKNOWN";
+      const ceiling = typeof b.cpcBidCeilingMicros === "number" ? ` (ceiling ${dollars(b.cpcBidCeilingMicros)})` : "";
+      return `bidding campaign ${pyStr(b.campaignId)}: ${cur} -> ${pyStr(b.strategy)}${ceiling}`;
+    }),
     ...statusChanges.map((c) => `campaign ${pyStr(c.campaignId)}: status ${pyStr(c.current)} -> ${pyStr(c.status)}`),
     ...statusSkips.map((c) => `campaign ${pyStr(c.campaignId)}: status already ${pyStr(c.status)}, skipped`),
     ...agStatusChanges.map((g) => `adGroup ${pyStr(g.adGroupId)}: status ${pyStr(g.current)} -> ${pyStr(g.status)}`),
@@ -972,6 +977,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       "WARNING: search partners ON increases reach on campaign(s): " +
         spEnableChanges.map((c) => String(c.campaignId)).join(", "),
     );
+  }
+  // Ceiling-sanity warning (FR-006): non-blocking, deliberately outside validate()/
+  // biddingErrors — a low ceiling is a self-inflicted misconfiguration risk, not a
+  // reason to refuse the change.
+  for (const b of section(plan, "bidding")) {
+    const ceiling = b.cpcBidCeilingMicros;
+    if (typeof ceiling !== "number") {
+      continue;
+    }
+    const avgCpc = bidding.get(asId(b.campaignId))?.avgCpcMicros30d;
+    if (typeof avgCpc === "number" && ceiling < avgCpc) {
+      console.log(
+        `WARNING: cpcBidCeilingMicros for campaign ${pyStr(b.campaignId)} (${dollars(ceiling)}) is below its ` +
+          `trailing-30-day average CPC (${dollars(avgCpc)}) — this may starve the campaign of traffic.`,
+      );
+    }
   }
   if (!apply) {
     console.log("\nDry run. Re-run with --apply.");
@@ -1161,6 +1182,30 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       console.log(`  budget campaign ${pyStr(cid)} -> ${dollars(b.dailyMicros as number)}/day`);
     } catch (exc) {
       recordFailure(`budgets (campaign ${pyStr(cid)})`, exc, slugsForIds([cid], stateIndex.byCampaignId));
+    }
+  }
+
+  // 5b) bidding (guardrail already enforced in validate). maximize-clicks sets
+  // target_spend (with the ceiling, if given); every other strategy sets
+  // maximize_conversions with no ceiling field — the API models bid strategy as a
+  // oneof, so sending one branch clears whichever the campaign previously had.
+  for (const b of section(plan, "bidding")) {
+    const cid = b.campaignId;
+    try {
+      const resource: Record<string, unknown> = {
+        resource_name: `customers/${customer}/campaigns/${cid}`,
+      };
+      if (b.strategy === "maximize-clicks") {
+        resource["target_spend"] =
+          typeof b.cpcBidCeilingMicros === "number" ? { cpc_bid_ceiling_micros: b.cpcBidCeilingMicros } : {};
+      } else {
+        resource["maximize_conversions"] = {};
+      }
+      const op: AdsMutateOperation = { entity: "campaign", operation: "update", resource };
+      await client.mutate(customer, [op]);
+      console.log(`  bidding campaign ${pyStr(cid)} -> ${pyStr(b.strategy)}`);
+    } catch (exc) {
+      recordFailure(`bidding (campaign ${pyStr(cid)})`, exc, slugsForIds([cid], stateIndex.byCampaignId));
     }
   }
 
