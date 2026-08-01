@@ -510,11 +510,18 @@ function adGroupBody(name: string): Record<string, unknown> {
   return {
     name,
     defaultBidMicros: 2_000_000,
-    responsiveSearchAd: {
-      headlines: Array.from({ length: 15 }, (_, i) => `headline ${i}`),
-      descriptions: Array.from({ length: 4 }, (_, i) => `description ${i}`),
-      finalUrl: "https://example.com/ideas/x",
-    },
+    responsiveSearchAds: [
+      {
+        headlines: Array.from({ length: 15 }, (_, i) => `headline ${i}`),
+        descriptions: Array.from({ length: 4 }, (_, i) => `description ${i}`),
+        finalUrl: "https://example.com/ideas/x",
+      },
+      {
+        headlines: Array.from({ length: 15 }, (_, i) => `alt headline ${i}`),
+        descriptions: Array.from({ length: 4 }, (_, i) => `alt description ${i}`),
+        finalUrl: "https://example.com/ideas/x",
+      },
+    ],
     keywords: ["close deals ai"],
   };
 }
@@ -541,7 +548,7 @@ describe("adGroups (add-ad-group) path", () => {
     expect(mutations).toEqual([]); // dry-run never mutates
   });
 
-  it("apply creates ad group + RSA + keywords (3 mutate batches)", async () => {
+  it("apply creates ad group + 2 RSAs + keywords (4 mutate batches)", async () => {
     const { client, mutations } = adGroupNamesClient({ 100: [] });
     currentClient = client;
     const plan = writeAdGroupsPlan([{ campaignId: "100", adGroup: adGroupBody("close deals ai") }]);
@@ -550,12 +557,13 @@ describe("adGroups (add-ad-group) path", () => {
     expect(await main([plan, "--apply"])).toBe(0);
     cap.text();
 
-    // createAdGroup, createResponsiveSearchAd, createKeywords -> one mutate batch each.
-    expect(mutations).toHaveLength(3);
-    const [ag, rsa, kw] = mutations;
+    // createAdGroup, createResponsiveSearchAd (x2), createKeywords -> one mutate batch each.
+    expect(mutations).toHaveLength(4);
+    const [ag, rsa1, rsa2, kw] = mutations;
     expect(ag!.operations[0]!.entity).toBe("ad_group");
     expect(ag!.operations[0]!.resource.campaign).toBe("customers/1111111111/campaigns/100");
-    expect(rsa!.operations[0]!.entity).toBe("ad_group_ad");
+    expect(rsa1!.operations[0]!.entity).toBe("ad_group_ad");
+    expect(rsa2!.operations[0]!.entity).toBe("ad_group_ad");
     expect(kw!.operations[0]!.entity).toBe("ad_group_criterion");
   });
 
@@ -576,7 +584,7 @@ describe("adGroups (add-ad-group) path", () => {
     const { client, mutations } = adGroupNamesClient({ 100: [] });
     currentClient = client;
     const bad = adGroupBody("bad group");
-    (bad.responsiveSearchAd as { headlines: unknown[] }).headlines = Array.from({ length: 14 }, (_, i) => ({
+    (bad.responsiveSearchAds as Array<{ headlines: unknown[] }>)[0]!.headlines = Array.from({ length: 14 }, (_, i) => ({
       text: `headline ${i}`,
     }));
     const plan = writeAdGroupsPlan([{ campaignId: "100", adGroup: bad }]);
@@ -586,7 +594,8 @@ describe("adGroups (add-ad-group) path", () => {
     const out = cap.text();
 
     expect(out).toContain("VALIDATION FAILED");
-    expect(out).toContain("adGroup.responsiveSearchAd.headlines");
+    expect(out).toContain("adGroup.responsiveSearchAds");
+    expect(out).toContain("headlines");
     expect(mutations).toEqual([]);
   });
 });
@@ -886,6 +895,13 @@ function stagingBriefYaml(): string {
   const descriptions = Array.from({ length: 4 }, (_, i) => `        - text: "Description number ${i + 1} ok"`).join(
     "\n",
   );
+  const altHeadlines = Array.from({ length: 15 }, (_, i) => `        - text: "Alt headline number ${i + 1}"`).join(
+    "\n",
+  );
+  const altDescriptions = Array.from(
+    { length: 4 },
+    (_, i) => `        - text: "Alt description number ${i + 1} ok"`,
+  ).join("\n");
   return [
     'name: "demo-search"',
     "version: 1",
@@ -897,17 +913,22 @@ function stagingBriefYaml(): string {
     "    defaultBidMicros: 1500000",
     "    keywords:",
     '      - text: "buy widgets"',
-    "    responsiveSearchAd:",
-    '      finalUrl: "https://www.example.com/ideas/widget"',
-    "      headlines:",
+    "    responsiveSearchAds:",
+    '      - finalUrl: "https://www.example.com/ideas/widget"',
+    "        headlines:",
     headlines,
-    "      descriptions:",
+    "        descriptions:",
     descriptions,
+    '      - finalUrl: "https://www.example.com/ideas/widget"',
+    "        headlines:",
+    altHeadlines,
+    "        descriptions:",
+    altDescriptions,
     "",
   ].join("\n");
 }
 
-/** The matching `<slug>.state.yaml`: campaign 500, ad group 600, ad 700. */
+/** The matching `<slug>.state.yaml`: campaign 500, ad group 600, ads 700 (rsaIndex 0) + 701 (rsaIndex 1). */
 function stagingStateYaml(): string {
   return [
     "campaign:",
@@ -917,7 +938,9 @@ function stagingStateYaml(): string {
     "adGroups:",
     "  - name: buyers",
     '    adGroupId: "600"',
-    '    adId: "700"',
+    "    adIds:",
+    '      - "700"',
+    '      - "701"',
     "",
   ].join("\n");
 }
@@ -1030,7 +1053,7 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
     expect(payload.briefs[0].briefDiff.added).toBe(dryPayload.briefs[0].briefDiff.added);
 
     const persisted = onDiskBrief();
-    expect(persisted.adGroups[0]!.responsiveSearchAd.headlines.map((h: { text: string }) => h.text)).toEqual(
+    expect(persisted.adGroups[0]!.responsiveSearchAds[0]!.headlines.map((h: { text: string }) => h.text)).toEqual(
       Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
     );
   });
@@ -1230,6 +1253,14 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
       { length: 4 },
       (_, i) => `        - text: "B description number ${i + 1} ok"`,
     ).join("\n");
+    const altHeadlines = Array.from(
+      { length: 15 },
+      (_, i) => `        - text: "B alt headline number ${i + 1}"`,
+    ).join("\n");
+    const altDescriptions = Array.from(
+      { length: 4 },
+      (_, i) => `        - text: "B alt description number ${i + 1} ok"`,
+    ).join("\n");
     return [
       'name: "demo-search-b"',
       "version: 1",
@@ -1241,12 +1272,17 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
       "    defaultBidMicros: 1500000",
       "    keywords:",
       '      - text: "sell gadgets"',
-      "    responsiveSearchAd:",
-      '      finalUrl: "https://www.example.com/ideas/gadget"',
-      "      headlines:",
+      "    responsiveSearchAds:",
+      '      - finalUrl: "https://www.example.com/ideas/gadget"',
+      "        headlines:",
       headlines,
-      "      descriptions:",
+      "        descriptions:",
       descriptions,
+      '      - finalUrl: "https://www.example.com/ideas/gadget"',
+      "        headlines:",
+      altHeadlines,
+      "        descriptions:",
+      altDescriptions,
       "",
     ].join("\n");
   }
@@ -1324,7 +1360,7 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
     expect(briefA.briefPath).toBe(briefPath());
     expect(readFileSync(briefPath(), "utf8")).not.toBe(beforeA);
     const persistedA = onDiskBrief();
-    expect(persistedA.adGroups[0]!.responsiveSearchAd.headlines.map((h: { text: string }) => h.text)).toEqual(
+    expect(persistedA.adGroups[0]!.responsiveSearchAds[0]!.headlines.map((h: { text: string }) => h.text)).toEqual(
       Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
     );
 

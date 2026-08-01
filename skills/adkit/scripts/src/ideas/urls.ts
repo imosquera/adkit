@@ -12,11 +12,11 @@
 import type { Brief } from "../lib/schema.js";
 
 /**
- * Every destination URL the brief publishes: one per RSA + one per sitelink.
- * Deduped, order-preserving.
+ * Every destination URL the brief publishes: one per RSA (RSAS_PER_AD_GROUP per ad
+ * group) + one per sitelink. Deduped, order-preserving.
  */
 export function finalUrls(brief: Brief): string[] {
-  const rsaUrls = brief.adGroups.map((ag) => String(ag.responsiveSearchAd.finalUrl));
+  const rsaUrls = brief.adGroups.flatMap((ag) => ag.responsiveSearchAds.map((rsa) => String(rsa.finalUrl)));
   const sitelinkUrls = brief.campaign.sitelinks.map((sl) => String(sl.finalUrl));
   return [...new Set([...rsaUrls, ...sitelinkUrls])];
 }

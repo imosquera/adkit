@@ -71,6 +71,7 @@ import {
   negativesToAdd,
 } from "../lib/cluster.js";
 import { microsToCurrency } from "../lib/report.js";
+import { RSAS_PER_AD_GROUP } from "../lib/schema.js";
 import {
   normalizeAdGroupAdRow,
   normalizeKeywordMetricsRow,
@@ -337,6 +338,27 @@ export async function auditCampaign(
     Object.entries(headlineGroups).filter(([, g]) => g.length >= SHARED_HEADLINE_GROUPS),
   );
 
+  // Every ad group must publish exactly RSAS_PER_AD_GROUP RSAs (issue #175): a
+  // serving fallback plus angle-level diversity. `rows` is already scoped to
+  // non-REMOVED ad_group_ads (auditAdGroupAdQuery's `status != 'REMOVED'`), so
+  // this counts every live RSA regardless of ENABLED/PAUSED — deliberately, since
+  // /adkit create always publishes RSAs PAUSED, so an ENABLED-only filter would
+  // false-flag every freshly-published campaign until an operator flips status.
+  const rsaCountsByAdGroup: Record<string, number> = Object.fromEntries(
+    Object.entries(groupBy(rows.map((r): [string, AdGroupAdRow] => [r.ad_group.name, r]))).map(([name, rs]) => [
+      name,
+      rs.length,
+    ]),
+  );
+  const rsaCountMismatches: CampaignFinding[] = Object.entries(rsaCountsByAdGroup)
+    .filter(([, count]) => count !== RSAS_PER_AD_GROUP)
+    .map(([adGroupName, count]) => ({
+      level: "campaign",
+      issue: "rsa_count_mismatch",
+      detail: `ad group '${adGroupName}': ${count}/${RSAS_PER_AD_GROUP} RSAs`,
+      items: { [adGroupName]: [String(count)] },
+    }));
+
   // Total ENABLED keywords across the campaign's ad groups — the reach lever. Google's
   // guidance: successful campaigns carry >= MIN_KEYWORDS to match more real searches.
   const keywordCount = Object.values(agKeywords).flat().length;
@@ -384,6 +406,7 @@ export async function auditCampaign(
           },
         ]
       : []),
+    ...rsaCountMismatches,
   ];
   return {
     campaignId: cid,

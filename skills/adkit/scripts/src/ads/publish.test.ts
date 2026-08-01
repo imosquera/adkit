@@ -23,11 +23,18 @@ function minimalBrief(): ReturnType<typeof parseBrief> {
       {
         name: "primary",
         defaultBidMicros: 1_500_000,
-        responsiveSearchAd: {
-          headlines: Array.from({ length: 15 }, (_, i) => ({ text: `Headline ${i}` })),
-          descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `Description ${i}` })),
-          finalUrl: "https://www.example.com/x",
-        },
+        responsiveSearchAds: [
+          {
+            headlines: Array.from({ length: 15 }, (_, i) => ({ text: `Headline ${i}` })),
+            descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `Description ${i}` })),
+            finalUrl: "https://www.example.com/x",
+          },
+          {
+            headlines: Array.from({ length: 15 }, (_, i) => ({ text: `Alt headline ${i}` })),
+            descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `Alt description ${i}` })),
+            finalUrl: "https://www.example.com/x",
+          },
+        ],
         keywords: [{ text: "widget", matchType: "PHRASE" }],
       },
     ],
@@ -72,14 +79,14 @@ describe("publishV1", () => {
     expect(outcome.results.budgetId).not.toBeNull();
     expect(outcome.results.campaignId).not.toBeNull();
     // Deterministic mutate sequence for the minimal brief:
-    // budget, campaign, target-location, create-ad-group, create-rsa, create-keywords.
-    expect(mutateCalls).toHaveLength(6);
+    // budget, campaign, target-location, create-ad-group, create-rsa x2, create-keywords.
+    expect(mutateCalls).toHaveLength(7);
 
     expect(outcome.results.adGroups).toHaveLength(1);
     const ag = outcome.results.adGroups[0]!;
     expect(ag.name).toBe("primary");
     expect(ag.adGroupId).not.toBeNull();
-    expect(ag.responsiveSearchAdId).not.toBeNull();
+    expect(ag.responsiveSearchAdIds).toHaveLength(2);
     expect(ag.keywordResourceNames.length).toBeGreaterThan(0);
   });
 
@@ -93,7 +100,10 @@ describe("publishV1", () => {
 
   it("mid-step failure: yields a RunOutcome tagged with the failing step and partial results", async () => {
     // Mutate sequence: 1 budget, 2 campaign, 3 target-location, 4 create-ad-group,
-    // 5 create-responsive-search-ad, 6 create-keywords. Fail on the 5th (the RSA).
+    // 5/6 create-responsive-search-ad (x2, concurrently via allSettled), 7
+    // create-keywords. Fail on the 5th (the first of the two RSA creates) — the
+    // 6th (its sibling) still resolves and its id must be recorded, not dropped
+    // (allSettled, not Promise.all — see the comment in publish.ts).
     const { client } = makeFake({ throwOnCall: 5 });
     const brief = minimalBrief();
 
@@ -109,8 +119,21 @@ describe("publishV1", () => {
     expect(outcome.results.campaignId).not.toBeNull();
     const ag = outcome.results.adGroups[0]!;
     expect(ag.adGroupId).not.toBeNull(); // ad group was created before the RSA step
-    expect(ag.responsiveSearchAdId).toBeNull(); // RSA is where it failed
+    expect(ag.responsiveSearchAdIds).toHaveLength(1); // the RSA that DID succeed is still recorded
     expect(ag.keywordResourceNames).toHaveLength(0); // never reached
+  });
+
+  it("mid-step failure on the SECOND RSA still records the first's id (order-independent)", async () => {
+    // Fail on the 6th mutate call (the second RSA create) instead of the 5th —
+    // the first RSA's id must be preserved regardless of which of the two fails.
+    const { client } = makeFake({ throwOnCall: 6 });
+    const brief = minimalBrief();
+
+    const outcome = await publishV1(client, "1234567890", brief);
+
+    expect(outcome.failure?.step).toBe("create-responsive-search-ad");
+    const ag = outcome.results.adGroups[0]!;
+    expect(ag.responsiveSearchAdIds).toHaveLength(1);
   });
 
   it("reuses an existing campaign, skipping budget/campaign creation and keyword creation", async () => {
@@ -139,7 +162,7 @@ describe("publishV1", () => {
     expect(outcome.results.budgetId).toBe("customers/1/campaignBudgets/7");
     const ag = outcome.results.adGroups[0]!;
     expect(ag.adGroupId).toBe("customers/1/adGroups/5");
-    expect(ag.responsiveSearchAdId).not.toBeNull(); // RSA still created
+    expect(ag.responsiveSearchAdIds).toHaveLength(2); // both RSAs still created
     expect(ag.keywordResourceNames).toHaveLength(0); // reused ad group: no keywords
   });
 });

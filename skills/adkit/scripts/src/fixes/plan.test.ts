@@ -607,11 +607,10 @@ function adGroupBody(overrides: Record<string, unknown> = {}): Record<string, un
   return {
     name: "close deals ai",
     defaultBidMicros: 2_000_000,
-    responsiveSearchAd: {
-      headlines: h(15),
-      descriptions: d(4),
-      finalUrl: "https://example.com/ideas/close-deals-ai",
-    },
+    responsiveSearchAds: [
+      { headlines: h(15), descriptions: d(4), finalUrl: "https://example.com/ideas/close-deals-ai" },
+      { headlines: h(15), descriptions: d(4), finalUrl: "https://example.com/ideas/close-deals-ai" },
+    ],
     keywords: ["close deals ai", { text: "ai deal closer", matchType: "exact" }],
     ...overrides,
   };
@@ -640,14 +639,25 @@ describe("adGroups validation", () => {
 
   it("a bad RSA (14 headlines) surfaces the field path", () => {
     const bad = adGroupBody({
-      responsiveSearchAd: {
-        headlines: h(14).map((text) => ({ text })),
-        descriptions: d(4).map((text) => ({ text })),
-        finalUrl: "https://example.com/x",
-      },
+      responsiveSearchAds: [
+        {
+          headlines: h(14).map((text) => ({ text })),
+          descriptions: d(4).map((text) => ({ text })),
+          finalUrl: "https://example.com/x",
+        },
+        { headlines: h(15).map((text) => ({ text })), descriptions: d(4).map((text) => ({ text })), finalUrl: "https://example.com/x" },
+      ],
     });
     const errs = validate({ adGroups: [{ campaignId: "100", adGroup: bad }] }, {}, {});
-    expect(errs.some((e) => e.includes("adGroup.responsiveSearchAd.headlines"))).toBe(true);
+    expect(errs.some((e) => e.includes("adGroup.responsiveSearchAds") && e.includes("headlines"))).toBe(true);
+  });
+
+  it("a single RSA (missing the second angle) surfaces a cardinality error", () => {
+    const bad = adGroupBody({
+      responsiveSearchAds: [{ headlines: h(15), descriptions: d(4), finalUrl: "https://example.com/x" }],
+    });
+    const errs = validate({ adGroups: [{ campaignId: "100", adGroup: bad }] }, {}, {});
+    expect(errs.some((e) => e.includes("adGroup.responsiveSearchAds"))).toBe(true);
   });
 
   it("too many keywords (>30) is flagged", () => {

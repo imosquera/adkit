@@ -15,14 +15,16 @@ import {
   writeBrief,
 } from "./store.js";
 
+const rsa = (variant = 0) => ({
+  headlines: Array.from({ length: 15 }, (_, i) => ({ text: `Vontevo headline ${variant}-${i}` })),
+  descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `Vontevo description ${variant}-${i}` })),
+  finalUrl: "https://www.example.com/waitlist",
+});
+
 const adGroup = (name = "Waitlist Core", root = "vontevo") => ({
   name,
   defaultBidMicros: 1_500_000,
-  responsiveSearchAd: {
-    headlines: Array.from({ length: 15 }, (_, i) => ({ text: `Vontevo headline ${i}` })),
-    descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `Vontevo description ${i}` })),
-    finalUrl: "https://www.example.com/waitlist",
-  },
+  responsiveSearchAds: [rsa(0), rsa(1)],
   keywords: [{ text: root, matchType: "PHRASE" }],
 });
 

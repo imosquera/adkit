@@ -25,6 +25,11 @@ export const MAX_AD_GROUPS = 10;
 // per-theme packing cap (parse.ts MAX_KEYWORDS_PER_THEME) derives from this, so a
 // scaffolded brief can never exceed what validation accepts.
 export const AD_GROUP_MAX_KEYWORDS = 30;
+// Every ad group publishes exactly this many RSAs — a serving fallback plus
+// angle-level diversity (auction gets >1 message angle to test), hard-coded
+// (no config flag). Single source of truth for the schema's array length,
+// the scaffold generator, and the /adkit audit count check.
+export const RSAS_PER_AD_GROUP = 2;
 
 /** A validated `https://` URL string. Mirrors Pydantic's HttpUrl + https-only guard. */
 const httpsUrl = z.string().refine(
@@ -377,7 +382,12 @@ export const AdGroupSchema = z
     name: z.string().min(1),
     // max $15.00 CPC — guards against a fat-fingered micros value draining budget.
     defaultBidMicros: z.number().int().gt(0).max(15_000_000),
-    responsiveSearchAd: ResponsiveSearchAdSchema,
+    // Exactly RSAS_PER_AD_GROUP RSAs — each a genuinely distinct strategic angle
+    // (benefit-led vs. comparison-led; see reference/create.md), not reworded
+    // twins. A brief still on the pre-change singular `responsiveSearchAd` key
+    // fails here (unrecognized key, .strict()) rather than being silently
+    // migrated.
+    responsiveSearchAds: z.array(ResponsiveSearchAdSchema).length(RSAS_PER_AD_GROUP),
     keywords: z.array(KeywordSchema).min(1).max(AD_GROUP_MAX_KEYWORDS),
     // AI Max search-term matching for this ad group. Off by default: even when
     // the campaign runs AI Max, each ad group stays on strict keyword matching

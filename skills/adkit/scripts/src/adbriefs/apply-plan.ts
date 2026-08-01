@@ -26,9 +26,17 @@ export interface UnresolvedId {
   id: string;
 }
 
-/** A `rewrites` or `appendHeadlines` block, resolved to the ad group it targets. */
+/**
+ * A `rewrites` or `appendHeadlines` block, resolved to the ad group it targets.
+ * `rsaIndex` is which of the ad group's RSAS_PER_AD_GROUP `responsiveSearchAds`
+ * entries the block's live `adId` names (from the state index's positional
+ * adIds<->responsiveSearchAds correspondence — see state.ts's `AdGroupLocator`
+ * doc); defaults to 0 when the locator carries none (a `byAdId` match always
+ * sets one, so this only guards a hypothetically absent index).
+ */
 interface ResolvedAdBlock {
   adGroupName: string;
+  rsaIndex: number;
   block: Record<string, unknown>;
 }
 
@@ -156,12 +164,21 @@ export function resolvePlanGroups(plan: PlanSections, index: StateIndex): Resolv
 
   for (const b of arr(plan, "rewrites")) {
     const loc = byAdId(b, "adId");
-    if (loc) groupFor(loc.slug, loc.campaignName).sections.rewrites.push({ adGroupName: loc.adGroupName, block: b });
+    if (loc)
+      groupFor(loc.slug, loc.campaignName).sections.rewrites.push({
+        adGroupName: loc.adGroupName,
+        rsaIndex: loc.rsaIndex ?? 0,
+        block: b,
+      });
   }
   for (const b of arr(plan, "appendHeadlines")) {
     const loc = byAdId(b, "adId");
     if (loc)
-      groupFor(loc.slug, loc.campaignName).sections.appendHeadlines.push({ adGroupName: loc.adGroupName, block: b });
+      groupFor(loc.slug, loc.campaignName).sections.appendHeadlines.push({
+        adGroupName: loc.adGroupName,
+        rsaIndex: loc.rsaIndex ?? 0,
+        block: b,
+      });
   }
   // adStatus resolves (for the unresolved-id warning) but has no Brief field to stage into.
   for (const b of arr(plan, "adStatus")) {
@@ -243,41 +260,58 @@ function dedupeBy<T>(values: T[], key: (v: T) => string): T[] {
  */
 export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed: ApplyPlanComputed = {}): Brief {
   const adGroups = base.adGroups.map((ag) => {
-    // findLast (not find): when two blocks in the same section target the same ad
-    // group, the live imperative mutation loop in apply-fixes.ts applies both in
-    // order and "last one wins" — staging must reflect the SAME last block, not the
-    // first, or live and staged silently diverge.
-    const rewrite = group.sections.rewrites.findLast((r) => r.adGroupName === ag.name);
-    const append = group.sections.appendHeadlines.findLast((a) => a.adGroupName === ag.name);
-    const kwBlock = group.sections.keywords.findLast((k) => k.adGroupName === ag.name);
-
-    let rsa = ag.responsiveSearchAd;
-    if (rewrite) {
-      const b = rewrite.block;
-      const headlines = Array.isArray(b["headlines"])
-        ? (b["headlines"] as string[]).map((text) => ({ text }))
-        : rsa.headlines;
-      const descriptions = Array.isArray(b["descriptions"])
-        ? (b["descriptions"] as string[]).map((text) => ({ text }))
-        : rsa.descriptions;
-      const path1 = typeof b["path1"] === "string" ? (b["path1"] as string).toLowerCase() : rsa.path1;
-      const path2 = typeof b["path2"] === "string" ? (b["path2"] as string).toLowerCase() : rsa.path2;
-      const finalUrl = typeof b["finalUrl"] === "string" ? (b["finalUrl"] as string) : rsa.finalUrl;
-      rsa = { ...rsa, headlines, descriptions, finalUrl, path1, path2 };
-    }
-    if (append) {
-      const add = Array.isArray(append.block["add"]) ? (append.block["add"] as string[]) : [];
-      const existing = rsa.headlines.map((h) => h.text);
-      const fresh = dedupeBy(
-        add.filter((h) => !existing.some((e) => isSameHeadline(e, h))),
-        (h) => h,
+    // Each rewrite/appendHeadlines block targets exactly one live ad (one RSA),
+    // resolved to a specific responsiveSearchAds[rsaIndex] slot via the state
+    // index's positional adIds<->responsiveSearchAds correspondence (see
+    // state.ts's AdGroupLocator doc) — a whole-ad-group findLast would silently
+    // overwrite the WRONG RSA now that an ad group carries RSAS_PER_AD_GROUP of
+    // them. findLast is still per-index (not per-ad-group): when two blocks
+    // target the SAME rsaIndex, the live imperative mutation loop in
+    // apply-fixes.ts applies both in order and "last one wins" — staging must
+    // reflect the SAME last block, not the first, or live and staged diverge.
+    const responsiveSearchAds = ag.responsiveSearchAds.map((rsa, rsaIndex) => {
+      const rewrite = group.sections.rewrites.findLast(
+        (r) => r.adGroupName === ag.name && r.rsaIndex === rsaIndex,
       );
-      if (fresh.length > 0) {
-        rsa = { ...rsa, headlines: [...rsa.headlines, ...fresh.map((text) => ({ text }))] };
+      const append = group.sections.appendHeadlines.findLast(
+        (a) => a.adGroupName === ag.name && a.rsaIndex === rsaIndex,
+      );
+
+      let next = rsa;
+      if (rewrite) {
+        const b = rewrite.block;
+        const headlines = Array.isArray(b["headlines"])
+          ? (b["headlines"] as string[]).map((text) => ({ text }))
+          : next.headlines;
+        const descriptions = Array.isArray(b["descriptions"])
+          ? (b["descriptions"] as string[]).map((text) => ({ text }))
+          : next.descriptions;
+        const path1 = typeof b["path1"] === "string" ? (b["path1"] as string).toLowerCase() : next.path1;
+        const path2 = typeof b["path2"] === "string" ? (b["path2"] as string).toLowerCase() : next.path2;
+        const finalUrl = typeof b["finalUrl"] === "string" ? (b["finalUrl"] as string) : next.finalUrl;
+        next = { ...next, headlines, descriptions, finalUrl, path1, path2 };
       }
-    }
+      if (append) {
+        const add = Array.isArray(append.block["add"]) ? (append.block["add"] as string[]) : [];
+        const existing = next.headlines.map((h) => h.text);
+        const fresh = dedupeBy(
+          add.filter((h) => !existing.some((e) => isSameHeadline(e, h))),
+          (h) => h,
+        );
+        if (fresh.length > 0) {
+          next = { ...next, headlines: [...next.headlines, ...fresh.map((text) => ({ text }))] };
+        }
+      }
+      return next;
+    });
+    // Every slot's identity is preserved when nothing targeted it (`next = rsa`
+    // when no rewrite/append matched), so this stays reference-equal to
+    // `ag.responsiveSearchAds` unless a slot actually changed — same "no-op
+    // touch" shortcut the pre-array code used for `ag.responsiveSearchAd`.
+    const rsaChanged = responsiveSearchAds.some((rsa, i) => rsa !== ag.responsiveSearchAds[i]);
 
     let keywords = ag.keywords;
+    const kwBlock = group.sections.keywords.findLast((k) => k.adGroupName === ag.name);
     if (kwBlock) {
       const b = kwBlock.block;
       const addItems = Array.isArray(b["add"]) ? (b["add"] as unknown[]) : [];
@@ -291,7 +325,7 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
       keywords = [...keywords.filter((k) => !removeKeys.has(keyStr(posKey(k.text, k.matchType)))), ...fresh];
     }
 
-    return rsa === ag.responsiveSearchAd && keywords === ag.keywords ? ag : { ...ag, responsiveSearchAd: rsa, keywords };
+    return !rsaChanged && keywords === ag.keywords ? ag : { ...ag, responsiveSearchAds, keywords };
   });
 
   // `computed.adGroupCreates` is already filtered against LIVE ad-group names by

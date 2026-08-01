@@ -216,6 +216,78 @@ describe("auditCampaign keyword-count finding", () => {
   });
 });
 
+describe("auditCampaign RSA-count-per-ad-group finding (issue #175)", () => {
+  const emptyProfile = { competitors: [], axes: [], genericPhrases: [] };
+  const camp = { campaign: { id: 1, name: "x", status: "ENABLED" } };
+
+  /** One ad_group_ad row for `adGroupName`, minimal but scoreAd-safe. */
+  const adRow = (adGroupName: string) => ({
+    ad_group: { name: adGroupName },
+    ad_group_ad: {
+      ad: {
+        id: 10,
+        final_urls: ["https://x"],
+        responsive_search_ad: {
+          headlines: Array.from({ length: 15 }, (_, i) => ({ text: `H${i}`, pinned_field: "UNSPECIFIED" })),
+          descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `D${i}`, pinned_field: "UNSPECIFIED" })),
+        },
+      },
+      ad_strength: "EXCELLENT",
+      status: "ENABLED",
+      action_items: [],
+    },
+  });
+
+  it("flags an ad group with only 1 enabled RSA", async () => {
+    const client = fakeClient((query) => (query.includes("FROM ad_group_ad") ? [adRow("Widgets")] : []));
+    const result = await auditCampaign(client, "123", camp, [], {}, emptyProfile);
+    const finding = result.campaignFindings.find((f) => f.issue === "rsa_count_mismatch");
+    expect(finding).toBeDefined();
+    expect(finding?.detail).toContain("Widgets");
+    expect(finding?.detail).toContain("1/2");
+  });
+
+  it("does not flag an ad group with exactly 2 enabled RSAs", async () => {
+    const client = fakeClient((query) =>
+      query.includes("FROM ad_group_ad") ? [adRow("Widgets"), adRow("Widgets")] : [],
+    );
+    const result = await auditCampaign(client, "123", camp, [], {}, emptyProfile);
+    expect(result.campaignFindings.some((f) => f.issue === "rsa_count_mismatch")).toBe(false);
+  });
+
+  it("flags an ad group with 3 enabled RSAs (over the target, not just under)", async () => {
+    const client = fakeClient((query) =>
+      query.includes("FROM ad_group_ad") ? [adRow("Widgets"), adRow("Widgets"), adRow("Widgets")] : [],
+    );
+    const result = await auditCampaign(client, "123", camp, [], {}, emptyProfile);
+    const finding = result.campaignFindings.find((f) => f.issue === "rsa_count_mismatch");
+    expect(finding).toBeDefined();
+    expect(finding?.detail).toContain("3/2");
+  });
+
+  it("counts each ad group independently — one mismatched, one correct", async () => {
+    const client = fakeClient((query) =>
+      query.includes("FROM ad_group_ad") ? [adRow("Widgets"), adRow("Gadgets"), adRow("Gadgets")] : [],
+    );
+    const result = await auditCampaign(client, "123", camp, [], {}, emptyProfile);
+    const mismatches = result.campaignFindings.filter((f) => f.issue === "rsa_count_mismatch");
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]?.detail).toContain("Widgets");
+  });
+
+  it("does not double-flag a 2-RSA ad group when a REMOVED 3rd RSA is excluded", async () => {
+    // auditAdGroupAdQuery constrains ad_group_ad.status != REMOVED at the query
+    // boundary (PAUSED still counts — /adkit create always publishes RSAs
+    // PAUSED), so a fake returning only 2 rows models a REMOVED 3rd RSA never
+    // appearing in these rows: a 2-RSA ad group is not flagged.
+    const client = fakeClient((query) =>
+      query.includes("FROM ad_group_ad") ? [adRow("Widgets"), adRow("Widgets")] : [],
+    );
+    const result = await auditCampaign(client, "123", camp, [], {}, emptyProfile);
+    expect(result.campaignFindings.some((f) => f.issue === "rsa_count_mismatch")).toBe(false);
+  });
+});
+
 // The Google Ads API omits empty nested messages and zero-valued metric fields
 // from `search` rows entirely. A healthy account routinely returns keywords/ads/
 // search-terms/criteria with a missing metrics/quality_info/policy_summary/
