@@ -114,6 +114,7 @@ import {
   applyAdGroupNamesQuery,
   applyAdGroupStatusesQuery,
   applyAdStatusesQuery,
+  applyBiddingGuardQuery,
   applyBudgetsQuery,
   applyCampaignStatusesQuery,
   applyHeadlinesQuery,
@@ -168,6 +169,11 @@ interface SearchPartnersRow {
 interface BudgetRow {
   campaign: { id: number };
   campaign_budget: { resource_name: string; amount_micros: number };
+}
+
+interface BiddingGuardRow {
+  campaign: { id: number; bidding_strategy_type: string };
+  metrics: { conversions: number; average_cpc: number };
 }
 
 interface PositiveKeywordRow {
@@ -328,6 +334,32 @@ export async function campaignBudgets(
 }
 
 /**
+ * campaignId -> {biddingStrategyType, conversions30d, avgCpcMicros30d} over a fixed
+ * trailing 30 days, for the bidding guardrail (refuse a risky maximize-conversions ->
+ * maximize-clicks downgrade) and the ceiling-sanity warning. Fixed to 30 days
+ * regardless of any other setting — there is no --days flag on update.
+ */
+export async function biddingGuardState(
+  client: AdsClient,
+  customerId: string,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Map<number, { biddingStrategyType: string; conversions30d: number; avgCpcMicros30d: number }>> {
+  if (campaignIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.searchStructured<BiddingGuardRow>(customerId, applyBiddingGuardQuery(campaignIds));
+  return rows.reduce(
+    (acc, r) =>
+      acc.set(r.campaign.id, {
+        biddingStrategyType: r.campaign.bidding_strategy_type,
+        conversions30d: r.metrics.conversions,
+        avgCpcMicros30d: r.metrics.average_cpc,
+      }),
+    new Map<number, { biddingStrategyType: string; conversions30d: number; avgCpcMicros30d: number }>(),
+  );
+}
+
+/**
  * adGroupId -> {(text.lower matchType): criterionResource} for the live POSITIVE
  * keywords on each ad group — used to dedup ADDs and resolve REMOVE/PAUSE targets to
  * their criterion resource name.
@@ -426,6 +458,7 @@ export interface FixesPlan extends Record<string, unknown> {
   negatives?: Array<Record<string, unknown>>;
   keywords?: Array<Record<string, unknown>>;
   budgets?: Array<Record<string, unknown>>;
+  bidding?: Array<Record<string, unknown>>;
   campaignStatus?: Array<Record<string, unknown>>;
   adGroupStatus?: Array<Record<string, unknown>>;
   adStatus?: Array<Record<string, unknown>>;
@@ -690,6 +723,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     customer,
     section(plan, "budgets").map((b) => b.campaignId as string | number),
   );
+  const bidding = await biddingGuardState(
+    client,
+    customer,
+    section(plan, "bidding").map((b) => b.campaignId as string | number),
+  );
   const liveNeg = await liveNegatives(
     client,
     customer,
@@ -736,7 +774,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const liveSpEnabled = new Map([...liveSp].map(([id, v]) => [id, v.enabled]));
   const liveSpGoogleSearch = new Map([...liveSp].map(([id, v]) => [id, v.googleSearchEnabled]));
 
-  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch, liveAdSt.adGroup);
+  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch, liveAdSt.adGroup, bidding);
   if (errs.length > 0) {
     console.log("VALIDATION FAILED:");
     for (const e of errs) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   adGroupQuery,
   adQuery,
+  applyBiddingGuardQuery,
   applyPositiveKeywordsQuery,
   auditAdGroupAdQuery,
   auditKeywordMetricsQuery,
@@ -117,6 +118,25 @@ describe("applyPositiveKeywordsQuery", () => {
     expect(q.conditions).toContain("ad_group_criterion.negative = FALSE");
     expect(q.conditions).toContain("ad_group_criterion.type = KEYWORD");
     expect(q.conditions).toContain("ad_group_criterion.status != 'REMOVED'");
+  });
+});
+
+describe("applyBiddingGuardQuery", () => {
+  it("guards ids digits-only", () => {
+    expect(() => applyBiddingGuardQuery(["123", "4x"])).toThrow();
+  });
+
+  it("selects bid strategy, conversions, and average CPC over a fixed 30-day window", () => {
+    const q = applyBiddingGuardQuery(["12345", "67890"]);
+    expect(q.resource).toBe("campaign");
+    expect(q.fields).toEqual([
+      "campaign.id",
+      "campaign.bidding_strategy_type",
+      "metrics.conversions",
+      "metrics.average_cpc",
+    ]);
+    expect(q.conditions).toContain("campaign.id IN (12345,67890)");
+    expect(q.conditions).toContain("segments.date DURING LAST_30_DAYS");
   });
 });
 

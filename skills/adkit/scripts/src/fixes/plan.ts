@@ -33,6 +33,10 @@ export const SITELINK_DESC_MAX = 35;
 // hard ceiling: a budget raise beyond this % over current is refused
 // (a plan's maxRaisePct can only lower this, never exceed it)
 export const MAX_RAISE_PCT_CAP = 50;
+// a maximize-conversions -> maximize-clicks downgrade is refused when the campaign
+// has at least this many conversions in the trailing 30 days, unless the plan block
+// sets acknowledgeStrategyDowngrade: true. The reverse (graduating up) is never guarded.
+export const CONVERSION_GUARD_THRESHOLD = 30;
 
 /** Plain-object guard (excludes arrays and null). */
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -530,6 +534,52 @@ function budgetsErrors(
   return budgetBlocks.flatMap(one);
 }
 
+interface BiddingLiveState {
+  biddingStrategyType?: string;
+  conversions30d?: number;
+}
+
+/**
+ * Refuse a maximize-conversions -> maximize-clicks bidding block when the campaign
+ * has proven conversion volume (FR-004), unless the block explicitly acknowledges
+ * the downgrade. The reverse direction (graduating up) and same-strategy ceiling-only
+ * edits are never guarded (FR-005). cpcBidCeilingMicros/strategy pairing validity is
+ * intentionally NOT checked here — it's enforced for free when the staged brief is
+ * re-parsed through CampaignSchema (see apply-plan.ts / stageResolvedGroups).
+ */
+function biddingErrors(
+  biddingBlocks: Array<Record<string, unknown>>,
+  biddingState: Map<unknown, BiddingLiveState> | Record<string, BiddingLiveState>,
+): string[] {
+  const getState = (cid: unknown): BiddingLiveState | undefined => {
+    if (biddingState instanceof Map) {
+      return biddingState.get(cid);
+    }
+    return (biddingState as Record<string, BiddingLiveState>)[cid as string];
+  };
+  const one = (b: Record<string, unknown>): string[] => {
+    const cid = b.campaignId;
+    const state = getState(cid);
+    if (state === undefined) {
+      return [`bidding campaign ${pyStr(cid)}: no current bidding state found`];
+    }
+    const conversions = state.conversions30d ?? 0;
+    const isRiskyDowngrade =
+      b.strategy === "maximize-clicks" &&
+      state.biddingStrategyType === "MAXIMIZE_CONVERSIONS" &&
+      conversions >= CONVERSION_GUARD_THRESHOLD;
+    if (isRiskyDowngrade && b.acknowledgeStrategyDowngrade !== true) {
+      return [
+        `bidding campaign ${pyStr(cid)}: refusing maximize-conversions -> maximize-clicks ` +
+          `(${conversions} conversions in trailing 30 days >= ${CONVERSION_GUARD_THRESHOLD}); ` +
+          `set acknowledgeStrategyDowngrade: true to override`,
+      ];
+    }
+    return [];
+  };
+  return biddingBlocks.flatMap(one);
+}
+
 function keywordsErrors(
   keywordBlocks: Array<Record<string, unknown>>,
   livePositive: LiveKeywordMap | null | undefined,
@@ -791,6 +841,7 @@ export interface ValidateLiveState {
   liveHeadlines: Map<unknown, string[]> | Record<string, string[]>;
   budgets: Map<unknown, { amountMicros?: number }> | Record<string, { amountMicros?: number }>;
   livePositive?: LiveKeywordMap | null;
+  biddingState?: Map<unknown, BiddingLiveState> | Record<string, BiddingLiveState> | null;
 }
 
 /**
@@ -804,6 +855,7 @@ export function validate(
   livePositive: LiveKeywordMap | null | undefined = undefined,
   liveSearchPartnersGoogleSearch: LiveBoolMap | null | undefined = undefined,
   liveAdParents: LiveAdParentMap | null | undefined = undefined,
+  biddingState: ValidateLiveState["biddingState"] = undefined,
 ): string[] {
   const arr = (key: string): Array<Record<string, unknown>> =>
     Array.isArray(plan[key]) ? (plan[key] as Array<Record<string, unknown>>) : [];
@@ -814,6 +866,7 @@ export function validate(
     ...sitelinksErrors(arr("sitelinks")),
     ...calloutsErrors(arr("callouts")),
     ...budgetsErrors(arr("budgets"), budgets),
+    ...biddingErrors(arr("bidding"), biddingState ?? new Map()),
     ...keywordsErrors(arr("keywords"), livePositive),
     ...statusChangeErrors(arr("campaignStatus"), CampaignStatusChangeSchema, "campaignStatus", "campaign", "campaignId"),
     ...statusChangeErrors(arr("adGroupStatus"), AdGroupStatusChangeSchema, "adGroupStatus", "adGroup", "adGroupId"),

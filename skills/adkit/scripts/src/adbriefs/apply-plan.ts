@@ -64,6 +64,7 @@ export interface ResolvedPlanGroup {
     negatives: Array<Record<string, unknown>>;
     keywords: ResolvedKeywordsBlock[];
     budgets: Array<Record<string, unknown>>;
+    bidding: Array<Record<string, unknown>>;
     adGroups: ResolvedAdGroupCreateBlock[];
   };
   unresolvedIds: UnresolvedId[];
@@ -81,6 +82,7 @@ function emptySections(): ResolvedPlanGroup["sections"] {
     negatives: [],
     keywords: [],
     budgets: [],
+    bidding: [],
     adGroups: [],
   };
 }
@@ -94,6 +96,7 @@ export interface PlanSections {
   negatives?: Array<Record<string, unknown>>;
   keywords?: Array<Record<string, unknown>>;
   budgets?: Array<Record<string, unknown>>;
+  bidding?: Array<Record<string, unknown>>;
   campaignStatus?: Array<Record<string, unknown>>;
   adGroupStatus?: Array<Record<string, unknown>>;
   adStatus?: Array<Record<string, unknown>>;
@@ -186,6 +189,7 @@ export function resolvePlanGroups(plan: PlanSections, index: StateIndex): Resolv
   campaignSection("callouts", (g, b) => g.sections.callouts.push(b));
   campaignSection("negatives", (g, b) => g.sections.negatives.push(b));
   campaignSection("budgets", (g, b) => g.sections.budgets.push(b));
+  campaignSection("bidding", (g, b) => g.sections.bidding.push(b));
   campaignSection("adGroups", (g, b) => g.sections.adGroups.push({ block: b }));
   // campaignStatus/searchPartners/languages: resolved for the warning only (no Brief field).
   campaignSection("campaignStatus", null);

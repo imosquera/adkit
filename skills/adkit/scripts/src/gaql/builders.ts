@@ -471,6 +471,25 @@ export function applyBudgetsQuery(
 }
 
 /**
+ * Each campaign's bid strategy plus trailing-30-day conversions and average CPC, for
+ * the bidding guardrail (refuse a maximize-conversions -> maximize-clicks downgrade
+ * on a campaign with proven conversion volume) and the ceiling-sanity warning (flag a
+ * cpcBidCeilingMicros below the campaign's own recent average CPC). Fixed to
+ * LAST_30_DAYS regardless of any other setting — there is no --days flag on update.
+ */
+export function applyBiddingGuardQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "campaign",
+    ["campaign.id", "campaign.bidding_strategy_type", "metrics.conversions", "metrics.average_cpc"],
+    "campaign.id",
+    campaignIds,
+    [lastNDays(30)],
+  );
+}
+
+/**
  * Each campaign's current serving status, so a campaignStatus fixes block can skip
  * a no-op flip (a campaign already in the requested status).
  */

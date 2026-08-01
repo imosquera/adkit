@@ -6,6 +6,7 @@ import {
   adStatusPlan,
   campaignStatusPlan,
   coerceKeyword,
+  CONVERSION_GUARD_THRESHOLD,
   negKey,
   newNegatives,
   newPositiveKeywords,
@@ -281,6 +282,61 @@ describe("budget guardrail", () => {
     expect(bad.some((e) => e.includes("positive int"))).toBe(true);
     const missing = validate({ budgets: [{ campaignId: 7, dailyMicros: 1_000_000 }] }, {}, BUDGETS);
     expect(missing.some((e) => e.includes("no current budget"))).toBe(true);
+  });
+});
+
+// ---------- bidding guardrail ----------
+
+const BIDDING_STARVED = { 5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d: 5 } };
+const bidding = (conversions30d: number) => ({
+  5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d },
+});
+
+describe("bidding guardrail", () => {
+  it("refuses a downgrade at exactly the 30-conversion threshold without acknowledgement", () => {
+    const plan = { bidding: [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_000_000 }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(CONVERSION_GUARD_THRESHOLD));
+    expect(errs.some((e) => e.includes("refusing maximize-conversions -> maximize-clicks"))).toBe(true);
+  });
+
+  it("allows a downgrade at one conversion below the threshold", () => {
+    const plan = { bidding: [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_000_000 }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(CONVERSION_GUARD_THRESHOLD - 1));
+    expect(errs).toEqual([]);
+  });
+
+  it("allows a downgrade at/above the threshold when acknowledged", () => {
+    const plan = {
+      bidding: [
+        {
+          campaignId: 5,
+          strategy: "maximize-clicks",
+          cpcBidCeilingMicros: 5_000_000,
+          acknowledgeStrategyDowngrade: true,
+        },
+      ],
+    };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(CONVERSION_GUARD_THRESHOLD));
+    expect(errs).toEqual([]);
+  });
+
+  it("never guards the reverse (graduate-up) direction regardless of conversion count", () => {
+    const plan = { bidding: [{ campaignId: 5, strategy: "maximize-conversions" }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(1000));
+    expect(errs).toEqual([]);
+  });
+
+  it("does not guard a ceiling-only edit that leaves the campaign on maximize-clicks", () => {
+    const alreadyOnClicks = { 5: { biddingStrategyType: "MAXIMIZE_CLICKS", conversions30d: 1000 } };
+    const plan = { bidding: [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 6_000_000 }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, alreadyOnClicks);
+    expect(errs).toEqual([]);
+  });
+
+  it("errors on an unknown campaignId", () => {
+    const plan = { bidding: [{ campaignId: 9, strategy: "maximize-clicks" }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, BIDDING_STARVED);
+    expect(errs.some((e) => e.includes("no current bidding state found"))).toBe(true);
   });
 });
 
