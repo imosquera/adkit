@@ -28,3 +28,7 @@ into types so illegal states are unrepresentable and checks happen exactly once.
 - **No redundant downstream checks.** If you find yourself re-checking something the
   boundary already guaranteed, that's a smell: move the check to the parse step and
   let the type carry the result.
+
+## 3. TypeScript tooling location
+
+When running TypeScript tooling in this repo, always `cd skills/adkit/scripts` first — that's where `package.json` and the local `node_modules/typescript` live. Never run `npx tsc` (or any npx-invoked local binary) from the worktree root or repo root; npx resolves binaries relative to the current working directory, and running it outside `skills/adkit/scripts` causes it to fall through to fetching an unrelated same-named package from the npm registry instead of using the installed TypeScript compiler. Use `npm run typecheck` (defined in `skills/adkit/scripts/package.json` as `tsc --noEmit`) instead of a raw `npx tsc` invocation, and don't pass a `-p`/`--project` path pointing outside that directory.
