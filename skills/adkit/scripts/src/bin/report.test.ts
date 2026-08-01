@@ -131,7 +131,8 @@ describe("shapeRows", () => {
         {
           campaign: { id: 11 },
           ad_group: { id: 21 },
-          ad_group_ad: { ad: { id: 31, name: "", type: "RESPONSIVE_SEARCH_AD" }, ad_strength: "GOOD" },
+          // ad_strength as the SDK actually returns it: raw numeric enum (6 === GOOD).
+          ad_group_ad: { ad: { id: 31, name: "", type: "RESPONSIVE_SEARCH_AD" }, ad_strength: 6 },
           metrics: metrics(),
         },
       ],

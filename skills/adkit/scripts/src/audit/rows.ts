@@ -13,12 +13,14 @@
  * field to a `Raw*Row` and the compiler forces the matching `normalize*` to account
  * for it.
  *
- * Enum fields arrive as their STRING name already (no `.name`) — with one
- * confirmed exception: `quality_info.post_click_quality_score`,
+ * Enum fields arrive as their STRING name already (no `.name`) — with two
+ * confirmed exceptions: `quality_info.post_click_quality_score`,
  * `.creative_quality_score`, and `.search_predicted_ctr` arrive as the raw
- * QualityScoreBucket enum INTEGER instead (issue #40). Those three are
- * normalized to their string bucket name in `bin/audit.ts`'s `qualityScore()`,
- * not here — see that module for the conversion.
+ * QualityScoreBucket enum INTEGER instead (issue #40), and `ad_group_ad.ad_strength`
+ * arrives as the raw AdStrength enum INTEGER (issue #51). The Quality Score trio is
+ * normalized to its string bucket name in `bin/audit.ts`'s `qualityScore()`;
+ * `ad_strength` is normalized via `adStrengthName()` (src/ads/enums.ts), also called
+ * from `bin/audit.ts` — see those modules for the conversions.
  */
 
 // ---------------------------------------------------------------------------
@@ -49,7 +51,10 @@ export interface AdGroupAdRow {
       final_urls?: string[];
       responsive_search_ad: { headlines: TextAsset[]; descriptions: TextAsset[] };
     };
-    ad_strength: string;
+    // The Google Ads API returns the raw numeric AdStrength ordinal (e.g. `7` for
+    // EXCELLENT), not its string name — kept as `string | number` here so callers
+    // must decode via `adStrengthName` (src/ads/enums.ts) before trusting it as a name.
+    ad_strength: string | number;
     status: string;
     action_items?: string[];
   };
@@ -148,7 +153,7 @@ export interface RawAdGroupAdRow {
       final_urls?: string[];
       responsive_search_ad?: { headlines?: TextAsset[]; descriptions?: TextAsset[] };
     };
-    ad_strength: string;
+    ad_strength: string | number;
     status: string;
     action_items?: string[];
   };
