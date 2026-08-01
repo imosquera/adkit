@@ -1,8 +1,7 @@
 ---
 name: speckit-implement
-description: Execute /speckit-implement, then block completion until a quoted constitution
+description: Execute /speckit-implement, then require a constitution audit
 argument-hint: "Optional implementation guidance or task filter"
-  audit of the written code has been produced and validated by a deterministic script
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
   author: github-spec-kit

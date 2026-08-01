@@ -1,5 +1,5 @@
 ---
-description: "Wraps /speckit-tasks to keep the agent-os dashboard branch-status card current: mark the `tasks` phase active on entry, done on completion. Composes with other tasks wrappers via the wrap seam."
+description: "Wraps /speckit-tasks to update the agent-os dashboard card"
 ---
 
 ## Dashboard — enter `tasks`

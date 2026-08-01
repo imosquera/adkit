@@ -1,5 +1,5 @@
 ---
-description: "Run /speckit-implement under the Parse, Don't Validate discipline — parse untrusted input into precise domain types at the boundary — then block completion until a deterministic anti-pattern scan of the written TypeScript/Python passes."
+description: "Run /speckit-implement under Parse, Don't Validate discipline"
 ---
 
 ## User Input

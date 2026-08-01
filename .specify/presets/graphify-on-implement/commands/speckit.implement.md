@@ -1,5 +1,5 @@
 ---
-description: "Execute /speckit-implement normally, then always run graphify update as the final step"
+description: "Run /speckit-implement, then always run graphify update"
 ---
 
 ## User Input

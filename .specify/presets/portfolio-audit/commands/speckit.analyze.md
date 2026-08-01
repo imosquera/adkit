@@ -1,5 +1,5 @@
 ---
-description: Portfolio Audit preset for /speckit-analyze. Prepended to the stock command — adds a portfolio-wide audit mode (issues ↔ specs ↔ plans/tasks across main and all worktrees) plus a per-feature worktree fallback. The stock per-feature analysis (loaded from the lower-priority template) still runs when this preset's preconditions do not fire.
+description: Portfolio-wide audit mode for /speckit-analyze across worktrees
 ---
 
 ## Preset Routing (runs BEFORE the stock command body)

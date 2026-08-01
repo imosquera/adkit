@@ -1,10 +1,6 @@
 ---
 name: speckit-progress-tasks
-description: 'Dashboard hook target fired at before_tasks: marks the `tasks` phase
-  active on the progress-report branch-status card. Runs via a lifecycle hook so it
-  fires even when another preset REPLACES the /speckit-tasks command body (a replace
-  clobbers the preset''s wrap; a hook does not). Resolves the progress-report preset''s
-  writer and no-ops if the preset — or the dashboard repo — isn''t present.'
+description: 'Hook: mark the tasks phase active on the dashboard card'
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
   author: github-spec-kit

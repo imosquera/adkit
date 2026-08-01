@@ -1,5 +1,5 @@
 ---
-description: "Create or update the project constitution and always enforce a mandatory Functional Programming Paradigms section"
+description: "Enforce a mandatory Functional Programming Paradigms section"
 ---
 
 ## User Input
