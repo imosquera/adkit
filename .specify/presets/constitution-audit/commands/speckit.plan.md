@@ -1,5 +1,5 @@
 ---
-description: "Execute /speckit-plan, but require the Constitution Check section of plan.md to pass deterministic substring-quote validation against the constitution"
+description: "Run /speckit-plan and validate the Constitution Check section"
 ---
 
 ## User Input

@@ -29,9 +29,24 @@ function twoCampaignIndex(): StateIndex {
       ["211", { slug: "beta", campaignName: "Beta", adGroupName: "gadgets" }],
     ]),
     byAdId: new Map([
-      ["1111", { slug: "alpha", campaignName: "Alpha", adGroupName: "widgets" }],
-      ["2111", { slug: "beta", campaignName: "Beta", adGroupName: "gadgets" }],
+      ["1111", { slug: "alpha", campaignName: "Alpha", adGroupName: "widgets", rsaIndex: 0 }],
+      ["2111", { slug: "beta", campaignName: "Beta", adGroupName: "gadgets", rsaIndex: 0 }],
     ]),
+  };
+}
+
+/**
+ * One RSA fixture. `variant` 0 keeps the pre-existing plain "headline N" text (several
+ * tests assert against it verbatim); other variants get a distinguishing prefix so a
+ * second RSA in the same ad group reads as visibly distinct (cross-RSA duplicate text
+ * is schema-legal — uniqueness is enforced within one RSA, not across the pair).
+ */
+function rsaFixture(variant = 0) {
+  const label = variant === 0 ? "" : `alt${variant} `;
+  return {
+    headlines: Array.from({ length: 15 }, (_, i) => ({ text: `${label}headline ${i}` })),
+    descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `${label}description ${i}` })),
+    finalUrl: "https://example.com/x",
   };
 }
 
@@ -53,11 +68,7 @@ function baseBrief(overrides: Partial<Brief> = {}): Brief {
       {
         name: "widgets",
         defaultBidMicros: 1_500_000,
-        responsiveSearchAd: {
-          headlines: Array.from({ length: 15 }, (_, i) => ({ text: `headline ${i}` })),
-          descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `description ${i}` })),
-          finalUrl: "https://example.com/x",
-        },
+        responsiveSearchAds: [rsaFixture(0), rsaFixture(1)],
         keywords: [{ text: "existing keyword", matchType: "PHRASE" }],
         aiMax: false,
       },
@@ -164,18 +175,36 @@ describe("applyPlanToBrief", () => {
       ],
     };
     const result = applyPlanToBrief(baseBrief(), groupFor(plan));
-    expect(result.adGroups[0]!.responsiveSearchAd.headlines.map((h) => h.text)).toEqual(
+    expect(result.adGroups[0]!.responsiveSearchAds[0]!.headlines.map((h) => h.text)).toEqual(
       Array.from({ length: 15 }, (_, i) => `new headline ${i}`),
     );
-    expect(result.adGroups[0]!.responsiveSearchAd.descriptions.map((d) => d.text)).toEqual(
+    expect(result.adGroups[0]!.responsiveSearchAds[0]!.descriptions.map((d) => d.text)).toEqual(
       Array.from({ length: 4 }, (_, i) => `new description ${i}`),
     );
+  });
+
+  it("a rewrite targets ONLY the rsaIndex its adId resolved to — the ad group's other RSA is untouched", () => {
+    // adId "1111" resolves to rsaIndex 0 (see twoCampaignIndex); responsiveSearchAds[1]
+    // must survive byte-for-byte, proving the rewrite didn't fall back to "whole ad
+    // group" now that an ad group carries RSAS_PER_AD_GROUP entries.
+    const plan = {
+      rewrites: [
+        {
+          adId: "1111",
+          headlines: Array.from({ length: 15 }, (_, i) => `new headline ${i}`),
+          descriptions: Array.from({ length: 4 }, (_, i) => `new description ${i}`),
+        },
+      ],
+    };
+    const base = baseBrief();
+    const result = applyPlanToBrief(base, groupFor(plan));
+    expect(result.adGroups[0]!.responsiveSearchAds[1]).toEqual(base.adGroups[0]!.responsiveSearchAds[1]);
   });
 
   it("appendHeadlines merges new headlines and dedups case-sensitively against existing brief headlines", () => {
     const plan = { appendHeadlines: [{ adId: "1111", add: ["headline 0", "Headline 0", "brand new headline"] }] };
     const result = applyPlanToBrief(baseBrief(), groupFor(plan));
-    const texts = result.adGroups[0]!.responsiveSearchAd.headlines.map((h) => h.text);
+    const texts = result.adGroups[0]!.responsiveSearchAds[0]!.headlines.map((h) => h.text);
     expect(texts).toContain("brand new headline");
     expect(texts).toContain("Headline 0"); // different case is NOT a duplicate — case-sensitive dedup
     expect(texts.filter((t) => t === "headline 0")).toHaveLength(1); // exact match deduped
@@ -260,11 +289,7 @@ describe("applyPlanToBrief", () => {
       adGroup: {
         name: "new-group",
         defaultBidMicros: 2_000_000,
-        responsiveSearchAd: {
-          headlines: Array.from({ length: 15 }, (_, i) => ({ text: `h${i}` })),
-          descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `d${i}` })),
-          finalUrl: "https://example.com/y",
-        },
+        responsiveSearchAds: [rsaFixture(0), rsaFixture(1)],
         keywords: [{ text: "kw", matchType: "PHRASE" }],
         aiMax: false,
       },
@@ -286,11 +311,18 @@ describe("applyPlanToBrief", () => {
         {
           name: "Stale Group",
           defaultBidMicros: 1_000_000,
-          responsiveSearchAd: {
-            headlines: Array.from({ length: 15 }, (_, i) => ({ text: `stale headline ${i}` })),
-            descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `stale description ${i}` })),
-            finalUrl: "https://example.com/stale",
-          },
+          responsiveSearchAds: [
+            {
+              headlines: Array.from({ length: 15 }, (_, i) => ({ text: `stale headline ${i}` })),
+              descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `stale description ${i}` })),
+              finalUrl: "https://example.com/stale",
+            },
+            {
+              headlines: Array.from({ length: 15 }, (_, i) => ({ text: `stale alt headline ${i}` })),
+              descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `stale alt description ${i}` })),
+              finalUrl: "https://example.com/stale",
+            },
+          ],
           keywords: [{ text: "stale keyword", matchType: "PHRASE" }],
           aiMax: false,
         },
@@ -303,11 +335,7 @@ describe("applyPlanToBrief", () => {
       adGroup: {
         name: "stale group",
         defaultBidMicros: 2_000_000,
-        responsiveSearchAd: {
-          headlines: Array.from({ length: 15 }, (_, i) => ({ text: `h${i}` })),
-          descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `d${i}` })),
-          finalUrl: "https://example.com/y",
-        },
+        responsiveSearchAds: [rsaFixture(0), rsaFixture(1)],
         keywords: [{ text: "kw", matchType: "PHRASE" }],
         aiMax: false,
       },
@@ -334,7 +362,7 @@ describe("applyPlanToBrief", () => {
       ],
     };
     const result = applyPlanToBrief(baseBrief(), groupFor(plan));
-    expect(result.adGroups[0]!.responsiveSearchAd.headlines.map((h) => h.text)).toEqual(
+    expect(result.adGroups[0]!.responsiveSearchAds[0]!.headlines.map((h) => h.text)).toEqual(
       Array.from({ length: 15 }, (_, i) => `second headline ${i}`),
     );
   });

@@ -1,5 +1,5 @@
 ---
-description: "Wraps /speckit-plan to keep the agent-os dashboard branch-status card current: mark the `plan` phase active on entry, done on completion. Composes with other plan wrappers via the wrap seam."
+description: "Wraps /speckit-plan to update the agent-os dashboard card"
 ---
 
 ## Dashboard — enter `plan`

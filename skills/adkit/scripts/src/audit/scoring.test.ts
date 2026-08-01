@@ -9,6 +9,7 @@ import {
   pathToExcellent,
   requireDigits,
 } from "./scoring.js";
+import { adStrengthName } from "../ads/enums.js";
 
 // ---------- me-too copy (dynamic differentiation profile) ----------
 
@@ -162,6 +163,43 @@ describe("pathToExcellent", () => {
       "EXCELLENT",
     );
     expect(steps).toEqual([]);
+  });
+
+  it("is empty for an ad whose strength arrives as the raw numeric API enum (issue #51)", () => {
+    // The Google Ads API actually returns the numeric ordinal (7), not the string
+    // "EXCELLENT" — decode it the same way scoreAd() does before calling pathToExcellent,
+    // so this test exercises the real runtime contract instead of a hand-picked literal.
+    const steps = pathToExcellent(
+      "Best Ai Chatbot",
+      ["ai chatbot"],
+      fullH(),
+      ["a", "b", "c", "d"],
+      [],
+      [],
+      [],
+      [],
+      [],
+      adStrengthName(7),
+    );
+    expect(steps).toEqual([]);
+  });
+
+  it("still offers the fallback diversity recommendation for a non-excellent ad decoded from its numeric enum", () => {
+    // GOOD is enum ordinal 6 — an ad that meets the quantitative bar but isn't
+    // EXCELLENT should still get the fallback nudge once decoded correctly.
+    const steps = pathToExcellent(
+      "Best Ai Chatbot",
+      ["ai chatbot"],
+      fullH(),
+      ["a", "b", "c", "d"],
+      [],
+      [],
+      [],
+      [],
+      [],
+      adStrengthName(6),
+    );
+    expect(steps.some((s) => s.includes("push the diversity score to EXCELLENT"))).toBe(true);
   });
 
   it("flags dup, echo, banned and pins on a known-bad ad", () => {

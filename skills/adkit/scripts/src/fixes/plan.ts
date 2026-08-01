@@ -754,22 +754,25 @@ function asKeywordObject(item: unknown): unknown {
  * matchType); the schema remains the single authority on lengths, counts, and
  * uniqueness. A non-object passes straight through for the schema to reject.
  */
+function normalizeRsa(rsa: unknown): unknown {
+  if (!isObject(rsa)) {
+    return rsa;
+  }
+  return {
+    ...rsa,
+    ...(Array.isArray(rsa.headlines) ? { headlines: rsa.headlines.map(asTextObject) } : {}),
+    ...(Array.isArray(rsa.descriptions) ? { descriptions: rsa.descriptions.map(asTextObject) } : {}),
+  };
+}
+
 function normalizeAdGroup(raw: unknown): unknown {
   if (!isObject(raw)) {
     return raw;
   }
-  const rsa = raw.responsiveSearchAd;
+  const rsas = raw.responsiveSearchAds;
   return {
     ...raw,
-    ...(isObject(rsa)
-      ? {
-          responsiveSearchAd: {
-            ...rsa,
-            ...(Array.isArray(rsa.headlines) ? { headlines: rsa.headlines.map(asTextObject) } : {}),
-            ...(Array.isArray(rsa.descriptions) ? { descriptions: rsa.descriptions.map(asTextObject) } : {}),
-          },
-        }
-      : {}),
+    ...(Array.isArray(rsas) ? { responsiveSearchAds: rsas.map(normalizeRsa) } : {}),
     ...(Array.isArray(raw.keywords) ? { keywords: raw.keywords.map(asKeywordObject) } : {}),
   };
 }

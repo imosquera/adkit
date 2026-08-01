@@ -40,7 +40,9 @@ import type { Brief, Failure } from "../lib/schema.js";
 export interface ExecAdGroup {
   name: string;
   adGroupId: string | null;
-  responsiveSearchAdId: string | null;
+  // One id per created RSA (RSAS_PER_AD_GROUP on a freshly-created ad group,
+  // empty for a reused ad group that got no freshly-created RSA).
+  responsiveSearchAdIds: readonly string[];
   keywordResourceNames: readonly string[];
 }
 
@@ -67,7 +69,7 @@ export interface RunOutcome {
 
 /** Build a fresh {@link ExecAdGroup} slot for `name`, nothing created yet. */
 export function makeExecAdGroup(name: string): ExecAdGroup {
-  return { name, adGroupId: null, responsiveSearchAdId: null, keywordResourceNames: [] };
+  return { name, adGroupId: null, responsiveSearchAdIds: [], keywordResourceNames: [] };
 }
 
 /** Build an empty {@link ExecResults}, one slot per ad group in `brief`. */
@@ -175,9 +177,26 @@ export async function publishV1(
         );
         shouldCreateKeywords = true;
       }
-      slot.responsiveSearchAdId = await step(
+      // allSettled (not Promise.all): if one RSA create fails after the other
+      // already succeeded live in Ads, record the id that DID land before
+      // surfacing the failure. Promise.all would discard that id on rejection —
+      // since a rerun always re-creates RSAs (no findExisting for them, unlike
+      // the ad group), a silently-dropped id would mean the next run creates yet
+      // another RSA on top of the orphan, drifting past RSAS_PER_AD_GROUP.
+      slot.responsiveSearchAdIds = await step(
         "create-responsive-search-ad",
-        () => createResponsiveSearchAd(client, customerId, briefAg, slot.adGroupId!),
+        async () => {
+          const outcomes = await Promise.allSettled(
+            briefAg.responsiveSearchAds.map((rsa) => createResponsiveSearchAd(client, customerId, rsa, slot.adGroupId!)),
+          );
+          const ids = outcomes.flatMap((o) => (o.status === "fulfilled" ? [o.value] : []));
+          slot.responsiveSearchAdIds = ids;
+          const failed = outcomes.find((o): o is PromiseRejectedResult => o.status === "rejected");
+          if (failed) {
+            throw failed.reason;
+          }
+          return ids;
+        },
         briefAg.name,
       );
       if (shouldCreateKeywords) {

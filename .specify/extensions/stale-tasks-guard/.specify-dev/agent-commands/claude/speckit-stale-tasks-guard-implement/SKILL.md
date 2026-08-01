@@ -1,10 +1,6 @@
 ---
 name: speckit-stale-tasks-guard-implement
-description: 'Hook target fired at before_implement: halts /speckit-implement when
-  spec.md is newer than tasks.md (a late /speckit-clarify or /speckit-specify edit
-  that invalidated the task plan), unless --force is present. Runs via a lifecycle
-  hook so it fires regardless of which preset owns the /speckit-implement command
-  body.'
+description: Halt /speckit-implement when spec.md is newer than tasks.md
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
   author: github-spec-kit

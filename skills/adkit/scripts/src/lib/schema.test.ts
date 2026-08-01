@@ -1,14 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { AD_GROUP_MAX_KEYWORDS, MAX_AD_GROUPS, displayPathPairErrors, parseBrief } from "./schema.js";
+import {
+  AD_GROUP_MAX_KEYWORDS,
+  MAX_AD_GROUPS,
+  RSAS_PER_AD_GROUP,
+  displayPathPairErrors,
+  parseBrief,
+} from "./schema.js";
+
+/** One RSA fixture; `variant` offsets the placeholder text so two RSAs in the same ad group don't collide. */
+const rsa = (variant = 0) => ({
+  headlines: Array.from({ length: 15 }, (_, i) => ({ text: `Vontevo headline ${variant}-${i}` })),
+  descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `Vontevo description ${variant}-${i}` })),
+  finalUrl: "https://www.example.com/waitlist",
+});
 
 const adGroup = (name = "Waitlist Core", root = "vontevo") => ({
   name,
   defaultBidMicros: 1_500_000,
-  responsiveSearchAd: {
-    headlines: Array.from({ length: 15 }, (_, i) => ({ text: `Vontevo headline ${i}` })),
-    descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `Vontevo description ${i}` })),
-    finalUrl: "https://www.example.com/waitlist",
-  },
+  responsiveSearchAds: [rsa(0), rsa(1)],
   keywords: [
     { text: root, matchType: "PHRASE" },
     { text: root, matchType: "EXACT" },
@@ -69,7 +78,7 @@ describe("Brief validation", () => {
 
   it("rejects a non-https final URL", () => {
     const raw = validBrief();
-    raw.adGroups[0].responsiveSearchAd.finalUrl = "http://www.example.com/waitlist";
+    raw.adGroups[0].responsiveSearchAds[0].finalUrl = "http://www.example.com/waitlist";
     expect(() => parseBrief(raw)).toThrow();
   });
 
@@ -78,50 +87,78 @@ describe("Brief validation", () => {
   });
 });
 
+describe("RSA cardinality (exactly RSAS_PER_AD_GROUP per ad group)", () => {
+  it("rejects a single RSA (the pre-change shape)", () => {
+    const raw = validBrief();
+    raw.adGroups[0].responsiveSearchAds = [rsa(0)];
+    expect(() => parseBrief(raw)).toThrow();
+  });
+
+  it("rejects three RSAs", () => {
+    const raw = validBrief();
+    raw.adGroups[0].responsiveSearchAds = [rsa(0), rsa(1), rsa(2)];
+    expect(() => parseBrief(raw)).toThrow();
+  });
+
+  it("rejects the legacy singular `responsiveSearchAd` key (no silent migration)", () => {
+    const raw = validBrief() as Record<string, unknown>;
+    const adGroups = raw["adGroups"] as Array<Record<string, unknown>>;
+    const { responsiveSearchAds, ...rest } = adGroups[0]!;
+    adGroups[0] = { ...rest, responsiveSearchAd: (responsiveSearchAds as unknown[])[0] };
+    expect(() => parseBrief(raw)).toThrow();
+  });
+
+  it("accepts exactly RSAS_PER_AD_GROUP RSAs", () => {
+    const raw = validBrief();
+    expect(raw.adGroups[0].responsiveSearchAds).toHaveLength(RSAS_PER_AD_GROUP);
+    expect(() => parseBrief(raw)).not.toThrow();
+  });
+});
+
 describe("display paths", () => {
   it("omits paths by default", () => {
     const brief = parseBrief(validBrief());
-    const rsa = brief.adGroups[0].responsiveSearchAd;
-    expect(rsa.path1).toBeUndefined();
-    expect(rsa.path2).toBeUndefined();
+    const r = brief.adGroups[0].responsiveSearchAds[0];
+    expect(r.path1).toBeUndefined();
+    expect(r.path2).toBeUndefined();
   });
 
   it("parses and lowercases", () => {
     const raw = validBrief();
-    Object.assign(raw.adGroups[0].responsiveSearchAd, { path1: "Review-Replies", path2: "Free-Trial" });
+    Object.assign(raw.adGroups[0].responsiveSearchAds[0], { path1: "Review-Replies", path2: "Free-Trial" });
     const brief = parseBrief(raw);
-    const rsa = brief.adGroups[0].responsiveSearchAd;
-    expect(rsa.path1).toBe("review-replies");
-    expect(rsa.path2).toBe("free-trial");
+    const r = brief.adGroups[0].responsiveSearchAds[0];
+    expect(r.path1).toBe("review-replies");
+    expect(r.path2).toBe("free-trial");
   });
 
   it("rejects a path over 15 chars", () => {
     const raw = validBrief();
-    Object.assign(raw.adGroups[0].responsiveSearchAd, { path1: "WayTooLongPathSegment" });
+    Object.assign(raw.adGroups[0].responsiveSearchAds[0], { path1: "WayTooLongPathSegment" });
     expect(() => parseBrief(raw)).toThrow();
   });
 
   it("rejects a path with a slash", () => {
     const raw = validBrief();
-    Object.assign(raw.adGroups[0].responsiveSearchAd, { path1: "a/b" });
+    Object.assign(raw.adGroups[0].responsiveSearchAds[0], { path1: "a/b" });
     expect(() => parseBrief(raw)).toThrow();
   });
 
   it("rejects a path with a space", () => {
     const raw = validBrief();
-    Object.assign(raw.adGroups[0].responsiveSearchAd, { path1: "free trial" });
+    Object.assign(raw.adGroups[0].responsiveSearchAds[0], { path1: "free trial" });
     expect(() => parseBrief(raw)).toThrow();
   });
 
   it("rejects path2 without path1", () => {
     const raw = validBrief();
-    Object.assign(raw.adGroups[0].responsiveSearchAd, { path2: "Free-Trial" });
+    Object.assign(raw.adGroups[0].responsiveSearchAds[0], { path2: "Free-Trial" });
     expect(() => parseBrief(raw)).toThrow();
   });
 
   it("rejects a TODO placeholder path", () => {
     const raw = validBrief();
-    Object.assign(raw.adGroups[0].responsiveSearchAd, { path1: "TODO-keyword" });
+    Object.assign(raw.adGroups[0].responsiveSearchAds[0], { path1: "TODO-keyword" });
     expect(() => parseBrief(raw)).toThrow();
   });
 });
@@ -152,31 +189,37 @@ describe("displayPathPairErrors (shared create/update rules)", () => {
 describe("RSA assets", () => {
   it("rejects too few headlines", () => {
     const raw = validBrief();
-    raw.adGroups[0].responsiveSearchAd.headlines = raw.adGroups[0].responsiveSearchAd.headlines.slice(0, 14);
+    raw.adGroups[0].responsiveSearchAds[0].headlines = raw.adGroups[0].responsiveSearchAds[0].headlines.slice(0, 14);
     expect(() => parseBrief(raw)).toThrow();
   });
 
   it("rejects duplicate headlines", () => {
     const raw = validBrief();
-    raw.adGroups[0].responsiveSearchAd.headlines[1] = { text: "Vontevo headline 0" };
+    raw.adGroups[0].responsiveSearchAds[0].headlines[1] = { text: raw.adGroups[0].responsiveSearchAds[0].headlines[0]!.text };
     expect(() => parseBrief(raw)).toThrow(/headlines must be unique/);
   });
 
   it("rejects a pinned headline", () => {
     const raw = validBrief();
-    raw.adGroups[0].responsiveSearchAd.headlines[0] = { text: "Vontevo headline 0", pin: "HEADLINE_1" } as never;
+    raw.adGroups[0].responsiveSearchAds[0].headlines[0] = { text: "Vontevo headline 0", pin: "HEADLINE_1" } as never;
     expect(() => parseBrief(raw)).toThrow();
   });
 
   it("rejects a pinned description", () => {
     const raw = validBrief();
-    raw.adGroups[0].responsiveSearchAd.descriptions[0] = { text: "A description ending in act now.", pin: "DESCRIPTION_1" } as never;
+    raw.adGroups[0].responsiveSearchAds[0].descriptions[0] = { text: "A description ending in act now.", pin: "DESCRIPTION_1" } as never;
     expect(() => parseBrief(raw)).toThrow();
   });
 
   it("rejects too many descriptions", () => {
     const raw = validBrief();
-    raw.adGroups[0].responsiveSearchAd.descriptions = Array.from({ length: 5 }, (_, i) => ({ text: `D${i}` }));
+    raw.adGroups[0].responsiveSearchAds[0].descriptions = Array.from({ length: 5 }, (_, i) => ({ text: `D${i}` }));
+    expect(() => parseBrief(raw)).toThrow();
+  });
+
+  it("validates each RSA in the pair independently (second RSA's rule violation still rejects)", () => {
+    const raw = validBrief();
+    raw.adGroups[0].responsiveSearchAds[1].headlines = raw.adGroups[0].responsiveSearchAds[1].headlines.slice(0, 14);
     expect(() => parseBrief(raw)).toThrow();
   });
 });

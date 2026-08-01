@@ -1,5 +1,5 @@
 ---
-description: "Execute /speckit-implement, then block completion until a quoted constitution audit of the written code has been produced and validated by a deterministic script"
+description: "Execute /speckit-implement, then require a constitution audit"
 ---
 
 ## User Input

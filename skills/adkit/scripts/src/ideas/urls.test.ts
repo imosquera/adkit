@@ -16,11 +16,18 @@ function briefForUrls(rsaUrl: string, sitelinkUrl: string): Brief {
       {
         name: "Ag",
         defaultBidMicros: 1_500_000,
-        responsiveSearchAd: {
-          headlines: Array.from({ length: 15 }, (_, i) => ({ text: `H${i}` })),
-          descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `D${i}` })),
-          finalUrl: rsaUrl,
-        },
+        responsiveSearchAds: [
+          {
+            headlines: Array.from({ length: 15 }, (_, i) => ({ text: `H${i}` })),
+            descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `D${i}` })),
+            finalUrl: rsaUrl,
+          },
+          {
+            headlines: Array.from({ length: 15 }, (_, i) => ({ text: `H2-${i}` })),
+            descriptions: Array.from({ length: 4 }, (_, i) => ({ text: `D2-${i}` })),
+            finalUrl: rsaUrl,
+          },
+        ],
         keywords: [{ text: "kw", matchType: "PHRASE" }],
       },
     ],

@@ -1,5 +1,5 @@
 ---
-description: "Before /speckit-implement begins, invoke the ponytail:ponytail and caveman skills (when available locally), then run the canonical implementation flow."
+description: "Run ponytail and caveman skills before /speckit-implement"
 ---
 
 ## User Input

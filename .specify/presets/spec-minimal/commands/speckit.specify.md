@@ -1,5 +1,5 @@
 ---
-description: "Composable wrapper for /speckit-specify that trims spec output, adds a GitHub-safe inline HTML preview when needed, and still syncs the feature issue."
+description: "Composable /speckit-specify wrapper that trims spec output"
 ---
 
 ## Wrapper Layer

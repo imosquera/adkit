@@ -17,7 +17,7 @@
 
 import { enums } from "google-ads-api";
 import type { AdsClient, AdsMutateOperation } from "../lib/auth.js";
-import type { AdGroup, Brief, Keyword } from "../lib/schema.js";
+import type { AdGroup, Brief, Keyword, ResponsiveSearchAd } from "../lib/schema.js";
 import { StepError, gaqlStringLiteral } from "./errors.js";
 
 /**
@@ -619,17 +619,18 @@ export async function createAdGroup(
 }
 
 /**
- * Create the paused Responsive Search Ad for the ad group. No headline/description is
+ * Create one paused Responsive Search Ad on the ad group. No headline/description is
  * ever pinned (pinning is disabled skill-wide) so Google can test every combination.
- * Returns the AdGroupAd resource name.
+ * Returns the AdGroupAd resource name. Called once per RSA in an ad group's
+ * `responsiveSearchAds` (RSAS_PER_AD_GROUP per ad group) — takes a single RSA, not
+ * the whole ad group, so callers control fan-out (see publishV1 / apply-fixes).
  */
 export async function createResponsiveSearchAd(
   client: AdsClient,
   customerId: string,
-  adGroup: AdGroup,
+  rsa: ResponsiveSearchAd,
   adGroupRn: string,
 ): Promise<string> {
-  const rsa = adGroup.responsiveSearchAd;
   const responsiveSearchAd: Record<string, unknown> = {
     headlines: rsa.headlines.map((h) => ({ text: h.text })),
     descriptions: rsa.descriptions.map((d) => ({ text: d.text })),

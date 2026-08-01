@@ -20,7 +20,7 @@ import { stringify as stringifyYaml } from "yaml";
 import { loginCustomerIdFromYaml, type AdsClient, type GaqlRow } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
 import type { SearchArgs } from "../gaql/search-args.js";
-import { matchTypeName } from "../ads/enums.js";
+import { adStrengthName, matchTypeName } from "../ads/enums.js";
 import {
   type LoginCustomerId,
   loginHeaderValue,
@@ -105,7 +105,9 @@ interface AdRow {
   ad_group: { id: number | string };
   ad_group_ad: {
     ad: { id: number | string; name?: string | null; type: string };
-    ad_strength: string;
+    // Arrives as the RAW NUMERIC enum on GAQL rows (decoded to its string name
+    // via adStrengthName below); see ../ads/enums.ts.
+    ad_strength: string | number;
   };
   metrics: RowMetrics;
 }
@@ -312,7 +314,7 @@ export function shapeRows(rows: {
       id: String(r.ad_group_ad.ad.id),
       name: r.ad_group_ad.ad.name || `Ad ${r.ad_group_ad.ad.id}`,
       type: r.ad_group_ad.ad.type,
-      ad_strength: r.ad_group_ad.ad_strength,
+      ad_strength: adStrengthName(r.ad_group_ad.ad_strength),
       ...metricsOf(r.metrics),
     })),
     keywords: rows.keywords.map((r) => ({

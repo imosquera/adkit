@@ -1,8 +1,7 @@
 ---
 name: speckit-constitution
-description: Create or update the project constitution and always enforce a mandatory
+description: Enforce a mandatory Functional Programming Paradigms section
 argument-hint: "Principles or values for the project constitution"
-  Functional Programming Paradigms section
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
   author: github-spec-kit

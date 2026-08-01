@@ -33,8 +33,8 @@ These rules are baked in. Apply them when filling the scaffolded brief.
 - The scaffolder makes **one ad group per non-spend-trap theme**, packing up to 25 keywords from that theme's `### Keyword Themes` bullets — so a fresh campaign launches near **~100 keywords total** (the gtm target; well above the audit's 25-keyword floor). `--top-n N` caps keywords-*per-theme* (1 ≤ N ≤ 30, matching the brief schema's per-ad-group ceiling). **At most 10 ad groups** — gtm authors themes highest-potential-volume first, and the scaffold keeps only the **top 10**; the brief schema also rejects more than 10. Keywords are deduped **across themes** so each lands in exactly one ad group — no cross-group cannibalization. The scaffold prints the total and warns if it's outside 90–110.
 - **The spend-trap theme is excluded.** The theme gtm flags `[spend-trap]` (generic, keep-but-don't-lead) gets **no ad group** — its terms feed the campaign negative-keyword list instead (that is *why* it's safe to negate them: they're no longer live ad-group keywords). Nothing to author for it.
 - Keywords go in as **`PHRASE`**. Close-variant matching + AI Max cover plurals/typos/synonyms, so the SKAG-era PHRASE+EXACT pair is redundant. Add `EXACT`/`BROAD` on a keyword by hand only if a theme genuinely needs it.
-- **One campaign → 3–6 theme ad groups → one RSA per theme → all that theme's keywords share one landing page and one ad message.** That shared copy/landing page *is* the STAG contract. All ad groups share the campaign budget.
-- Write each theme's RSA to the **offer temperature gtm resolved for it** (the theme's `> Offer:` in `### Keyword Themes`, judged directly from that theme's member keywords — see `reference/gtm.md`'s Buying-Cycle Temperature & Offer Matching): educate/lead-magnet at the cold end → act-now at the scalding end. Same product, one temperature per theme.
+- **One campaign → 3–6 theme ad groups → exactly 2 RSAs per theme (hard-coded, not configurable) → all that theme's keywords share one landing page and one ad message.** That shared copy/landing page *is* the STAG contract. All ad groups share the campaign budget. The 2 RSAs are a serving fallback (no single-point-of-failure if one is disapproved or fatigues) *and* angle-level diversity — see **RSA: Responsive Search Ad** below for the two-angle rule.
+- Write each theme's RSAs to the **offer temperature gtm resolved for it** (the theme's `> Offer:` in `### Keyword Themes`, judged directly from that theme's member keywords — see `reference/gtm.md`'s Buying-Cycle Temperature & Offer Matching): educate/lead-magnet at the cold end → act-now at the scalding end. Same product, one temperature per theme — both RSAs in the ad group share that temperature, differing in *angle*, not in funnel stage.
 
 ### STAG + Smart Bidding + AI Max (the modern combo)
 
@@ -58,14 +58,22 @@ Either way, wire a conversion action (`Tools → Conversions → New conversion 
 
 ### RSA: Responsive Search Ad
 
-Author **diversity**, not a single message. Every RSA must use the full asset set:
+Every ad group publishes **exactly 2 RSAs** (`responsiveSearchAds`, hard-coded — there is no config flag to change the count). Each RSA independently uses the full asset set below, *and* the two RSAs together must represent **genuinely distinct strategic angles**, not reworded twins of the same message:
 
 | Field          | Min | Max | Target  |
 | ---            | --- | --- | ---     |
 | `headlines`    | 15  | 15  | **15 unique** |
 | `descriptions` | 4   | 4   | **4 unique** |
 
-These rules exist to earn an **Excellent** ad strength. POOR strength is almost always under-filled assets, near-duplicate headlines, the keyword missing from the headlines, or pinning — the five rules below kill all four causes.
+**The two-angle rule.** Pick two angles that would win different searchers, not two phrasings of the same pitch. Good defaults:
+
+- **Benefit-led vs. comparison-led** — RSA 1 leads with the core value prop (outcome, ROI, ease); RSA 2 leads with why you're the better choice (vs. the status quo, a competitor, or manual effort).
+- **Conquest ad groups get a specific pairing**: a **"direct comparison"** RSA (names the alternative being displaced and states the concrete advantage) + a **"switch & save"** RSA (frames the pitch around ease of switching, no-risk trial, or cost savings from moving over). This pairing converts conquest traffic — searchers actively comparing — better than two benefit-led RSAs saying the same thing twice.
+- Any other genuinely distinct pair works too (e.g. feature-led vs. social-proof-led) — the bar is "would a human reading both headlines-only sets recognize two different pitches," not "do the words differ."
+
+Each RSA still independently obeys every per-RSA rule below (15/4 fill, no pinning, keyword in ≥3 headlines, unique within itself) — the two-angle rule is *additional*, not a replacement for them. The scaffold's placeholders are pre-labeled `TODO benefit-led headline N` / `TODO comparison-led headline N` per RSA as a starting steer; rename the angle if a different pairing fits the ad group better (e.g. conquest groups should relabel to "direct comparison" / "switch & save").
+
+These per-RSA rules exist to earn an **Excellent** ad strength. POOR strength is almost always under-filled assets, near-duplicate headlines, the keyword missing from the headlines, or pinning — the five rules below kill all four causes.
 
 **Headline rules**
 
@@ -144,10 +152,11 @@ Every campaign ships **at least 4 callouts** — short benefit phrases (no link)
 | `campaign.callouts` | **At least 4 callouts** (or none on legacy briefs). Each a plain phrase ≤25 chars, no URL — distinct benefit/offer, non-repetitive. Max 20. Scaffold emits 4 TODO placeholders. |
 | `adGroups[].name` | The keyword theme name from `### Keyword Themes` (e.g. `Salon Software`, `Barber / Stylist`) — one ad group per non-spend-trap theme, **max 10** (top 10 by potential volume). Free-form string (schema imposes no enum). |
 | `adGroups[].defaultBidMicros` | **Operator-confirmed.** Scaffold default: `1_500_000` ($1.50 CPC); **max `15_000_000` ($15.00)** — per ad group |
-| `adGroups[].responsiveSearchAd.headlines` | Exactly 15 unique headlines **per ad group**, tuned to that theme's intent and containing top keywords across ≥3 headlines. |
-| `adGroups[].responsiveSearchAd.descriptions` | Exactly 4 unique descriptions per ad group. |
-| `adGroups[].responsiveSearchAd.finalUrl` | The published landing-page URL, always under **`https://www.example.com/ideas/<published-slug>`** (clean URL, no `.html`). The published slug is the timestamped name from `Idea HTML`, not the processed-file slug. Often the same URL across ad groups. **Pre-publish URL check rejects any finalUrl that 404s** (use `--skip-url-check` to bypass). |
-| `adGroups[].responsiveSearchAd.path1` / `.path2` | **Optional "pretty URL" display paths.** Google shows the `finalUrl` *host* plus these two keyword-rich segments as the ad's visible (display) URL — e.g. `finalUrl` `.../ideas/tonewell-...?utm=...` with `path1: review-replies`, `path2: free-trial` displays as **`www.example.com/review-replies/free-trial`**, while the click still lands on the long, tracking-heavy `finalUrl`. Each **≤15 chars, no spaces or `/`**, **always lower case** (mixed case is coerced down at validation); **`path2` requires `path1`** (Google fills them in order). Per ad group, so each theme can show its own keyword. Omit both to show the bare host. **Omitted from the scaffold** (a leftover placeholder is rejected at validation, so an untouched brief would fail) — the commented `OPTIONAL ADD-ONS` template shows how to add them. |
+| `adGroups[].responsiveSearchAds` | **Exactly 2 RSAs per ad group** (hard-coded, no config flag) — two genuinely distinct strategic angles, not reworded twins. See **RSA: Responsive Search Ad** above for the two-angle rule and the conquest "direct comparison" + "switch & save" pairing. |
+| `adGroups[].responsiveSearchAds[].headlines` | Exactly 15 unique headlines **per RSA**, tuned to that theme's intent and containing top keywords across ≥3 headlines. |
+| `adGroups[].responsiveSearchAds[].descriptions` | Exactly 4 unique descriptions per RSA. |
+| `adGroups[].responsiveSearchAds[].finalUrl` | The published landing-page URL, always under **`https://www.example.com/ideas/<published-slug>`** (clean URL, no `.html`). The published slug is the timestamped name from `Idea HTML`, not the processed-file slug. Usually the same URL across both RSAs in an ad group (and across ad groups). **Pre-publish URL check rejects any finalUrl that 404s** (use `--skip-url-check` to bypass). |
+| `adGroups[].responsiveSearchAds[].path1` / `.path2` | **Optional "pretty URL" display paths.** Google shows the `finalUrl` *host* plus these two keyword-rich segments as the ad's visible (display) URL — e.g. `finalUrl` `.../ideas/tonewell-...?utm=...` with `path1: review-replies`, `path2: free-trial` displays as **`www.example.com/review-replies/free-trial`**, while the click still lands on the long, tracking-heavy `finalUrl`. Each **≤15 chars, no spaces or `/`**, **always lower case** (mixed case is coerced down at validation); **`path2` requires `path1`** (Google fills them in order). Per RSA, so each angle can show its own keyword-rich path. Omit both to show the bare host. **Omitted from the scaffold** (a leftover placeholder is rejected at validation, so an untouched brief would fail) — the commented `OPTIONAL ADD-ONS` template shows how to add them. |
 | `adGroups[].keywords` | That theme's keywords, each `{text: <phrase>, matchType: "PHRASE"}` (deduped across themes; up to `--top-n`, default 25). Add `EXACT`/`BROAD` by hand only if a theme needs it. |
 | `adGroups[].aiMax` | **AI Max search-term matching for this ad group.** Default `false` — even when `campaign.aiMax` is on, the ad group stays on strict keyword matching (`disable_search_term_matching`). Set `true` to opt this theme into AI Max expansion. No effect when `campaign.aiMax` is `false`. |
 
@@ -157,12 +166,13 @@ Every campaign ships **at least 4 callouts** — short benefit phrases (no link)
 
 Per ad group (theme):
 - [ ] One keyword theme (from `### Keyword Themes`); 3–30 related keywords as PHRASE (schema cap 30 per ad group; EXACT/BROAD by hand only if needed).
-- [ ] **All 15 headlines filled** (exactly 15 unique), each ≤30 chars and able to stand alone.
-- [ ] Headlines are **distinct angles**, not reworded twins; no two say substantially the same thing.
-- [ ] The ad group's **main keyword appears across ≥3 headlines**, naturally phrased.
-- [ ] Headlines/descriptions include bottom-of-funnel language (software, platform, or demo) and explicitly state ROI or margin protection.
-- [ ] **All 4 descriptions filled** (exactly 4 unique), each ≤90 chars, each ending in a CTA or verb.
-- [ ] **No pins anywhere** — pinning is disabled (schema rejects any non-`NONE` pin).
+- [ ] **Exactly 2 RSAs**, each representing a genuinely distinct strategic angle (e.g. benefit-led vs. comparison-led; conquest groups: direct comparison + switch & save) — not reworded twins of each other.
+- [ ] Per RSA: **all 15 headlines filled** (exactly 15 unique), each ≤30 chars and able to stand alone.
+- [ ] Per RSA: headlines are **distinct angles from each other within that RSA**, not reworded twins; no two say substantially the same thing.
+- [ ] Per RSA: the ad group's **main keyword appears across ≥3 headlines**, naturally phrased.
+- [ ] Per RSA: headlines/descriptions include bottom-of-funnel language (software, platform, or demo) and explicitly state ROI or margin protection.
+- [ ] Per RSA: **all 4 descriptions filled** (exactly 4 unique), each ≤90 chars, each ending in a CTA or verb.
+- [ ] **No pins anywhere, on either RSA** — pinning is disabled (schema rejects any non-`NONE` pin).
 
 Per brief:
 - [ ] 3–6 theme ad groups (one per keyword theme; spend-trap theme excluded); each `adGroups[].name` unique.
@@ -209,7 +219,7 @@ ads.sh create $ARGUMENTS
 The script:
 1. Validates the brief against the zod schema.
 2. **Persists the filled brief to `adbriefs/<slug>.yaml`** — the local **source of truth** for that campaign — *before* publishing (`<slug>` is a kebab-case slug of `campaign.name`). If a brief already exists at that path for a **different** campaign, the run is **refused** (a slug collision never silently clobbers another campaign's brief), not overwritten.
-3. Publishes against the Google Ads API via `google-ads-api`: one budget + one campaign + campaign-level sitelinks + campaign-level callouts + per ad group { ad-group, RSA, PHRASE+EXACT keywords }. An existing campaign/ad-group of the same name is **reused** (so a re-run won't duplicate it). Campaign and each RSA are created in **PAUSED** state — nothing serves until you flip status in the Ads UI.
+3. Publishes against the Google Ads API via `google-ads-api`: one budget + one campaign + campaign-level sitelinks + campaign-level callouts + per ad group { ad-group, 2x RSA, PHRASE+EXACT keywords }. An existing campaign/ad-group of the same name is **reused** (so a re-run won't duplicate it). Campaign and each RSA are created in **PAUSED** state — nothing serves until you flip status in the Ads UI.
 4. Emits a JSON summary of what was created, plus `briefPath` and `briefSynced`. The `adbriefs/<slug>.yaml` brief is the local record of what was published; the live account and Google's change history remain the authority for live state (read it with `/adkit audit`). On a publish failure the brief still reflects the *intended* state — the envelope's `failure` (and `briefSynced: false`) is the brief↔live divergence signal.
 
 Exit non-zero ⇒ the JSON output includes `failure.step` and `failure.message`, plus the partial `created` ids so you can see how far it got.

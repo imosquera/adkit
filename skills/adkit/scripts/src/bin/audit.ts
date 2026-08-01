@@ -24,6 +24,7 @@
 import { readFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
+import { adStrengthName } from "../ads/enums.js";
 import { parseArgs } from "node:util";
 import { loadConfig, resolveTier } from "../lib/config.js";
 
@@ -46,6 +47,7 @@ import {
 import { resolveCustomer, type ResolveCustomerOptions } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
+  applyAdGroupNamesQuery,
   auditAdGroupAdQuery,
   auditCampaignsQuery,
   auditExtCountQuery,
@@ -71,6 +73,7 @@ import {
   negativesToAdd,
 } from "../lib/cluster.js";
 import { microsToCurrency } from "../lib/report.js";
+import { RSAS_PER_AD_GROUP } from "../lib/schema.js";
 import {
   normalizeAdGroupAdRow,
   normalizeKeywordMetricsRow,
@@ -117,6 +120,11 @@ import {
   renderSearchTermCandidates,
 } from "../audit/render.js";
 import { belowAverageFinalUrls, buildPsiRequestUrl, parsePsiResponse } from "../lib/psi.js";
+
+/** One live (non-REMOVED) ad group's name, scoped by campaign (applyAdGroupNamesQuery). */
+interface AdGroupNameRow {
+  ad_group: { name: string };
+}
 
 // ---------------------------------------------------------------------------
 // Small functional primitives.
@@ -237,6 +245,10 @@ function scoreAd(
   profile: DifferentiationProfile,
 ): ScoredAd {
   const a = r.ad_group_ad;
+  // The API returns the raw numeric AdStrength ordinal, not its name — decode once,
+  // here, so every downstream comparison sees the real name instead of an ordinal
+  // that always fails a `!== "EXCELLENT"` string check (issue #51).
+  const strength = adStrengthName(a.ad_strength);
   const rsa = a.ad.responsive_search_ad;
   const hs = rsa.headlines.map((h) => h.text);
   const ds = rsa.descriptions.map((d) => d.text);
@@ -282,7 +294,7 @@ function scoreAd(
   return {
     adId: a.ad.id,
     adGroup: r.ad_group.name,
-    strength: a.ad_strength,
+    strength,
     status: a.status,
     // Full asset text (not just counts) so /adkit update can preserve good copy when
     // authoring rewrites/appends instead of re-fetching it live.
@@ -302,7 +314,7 @@ function scoreAd(
       hit,
       pins,
       [...actionItems],
-      a.ad_strength,
+      strength,
     ),
   };
 }
@@ -336,6 +348,34 @@ export async function auditCampaign(
   const shared: Record<string, string[]> = Object.fromEntries(
     Object.entries(headlineGroups).filter(([, g]) => g.length >= SHARED_HEADLINE_GROUPS),
   );
+
+  // Every ad group must publish exactly RSAS_PER_AD_GROUP RSAs (issue #175): a
+  // serving fallback plus angle-level diversity. `rows` is already scoped to
+  // non-REMOVED ad_group_ads (auditAdGroupAdQuery's `status != 'REMOVED'`), so
+  // this counts every live RSA regardless of ENABLED/PAUSED — deliberately, since
+  // /adkit create always publishes RSAs PAUSED, so an ENABLED-only filter would
+  // false-flag every freshly-published campaign until an operator flips status.
+  // Seed from an independent live-ad-group list first: an ad group with zero RSAs
+  // never appears in `rows` at all (the ad_group_ad query has nothing to return),
+  // so deriving counts from `rows` alone silently drops the most severe mismatch —
+  // a group that cannot serve any ad.
+  const adGroupNameRows = await search<AdGroupNameRow>(client, customerId, applyAdGroupNamesQuery([cid]));
+  const rsaCountsByAdGroup: Record<string, number> = {
+    ...Object.fromEntries(adGroupNameRows.map((r) => [r.ad_group.name, 0])),
+    ...Object.fromEntries(
+      Object.entries(groupBy(rows.map((r): [string, AdGroupAdRow] => [r.ad_group.name, r]))).map(
+        ([name, rs]) => [name, rs.length],
+      ),
+    ),
+  };
+  const rsaCountMismatches: CampaignFinding[] = Object.entries(rsaCountsByAdGroup)
+    .filter(([, count]) => count !== RSAS_PER_AD_GROUP)
+    .map(([adGroupName, count]) => ({
+      level: "campaign",
+      issue: "rsa_count_mismatch",
+      detail: `ad group '${adGroupName}': ${count}/${RSAS_PER_AD_GROUP} RSAs`,
+      items: { [adGroupName]: [String(count)] },
+    }));
 
   // Total ENABLED keywords across the campaign's ad groups — the reach lever. Google's
   // guidance: successful campaigns carry >= MIN_KEYWORDS to match more real searches.
@@ -384,6 +424,7 @@ export async function auditCampaign(
           },
         ]
       : []),
+    ...rsaCountMismatches,
   ];
   return {
     campaignId: cid,
