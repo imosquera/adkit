@@ -1193,7 +1193,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     const cid = b.campaignId;
     try {
       const resource: Record<string, unknown> = {
-        resource_name: `customers/${customer}/campaigns/${cid}`,
+        resource_name: `customers/${customer}/campaigns/${pyStr(cid)}`,
       };
       if (b.strategy === "maximize-clicks") {
         resource["target_spend"] =

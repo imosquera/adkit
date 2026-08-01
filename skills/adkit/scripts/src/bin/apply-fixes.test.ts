@@ -1531,7 +1531,7 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
 
   it("US1 dry-run: stages the bidding diff and issues zero mutations", async () => {
     const biddingRows = [
-      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CLICKS" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
     ];
     const { client, mutations } = stagingClient(biddingRows);
     currentClient = client;
@@ -1551,7 +1551,7 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
 
   it("US1 apply: issues a campaign update mutate op with the ceiling and persists it to the brief", async () => {
     const biddingRows = [
-      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CLICKS" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
     ];
     const { client, mutations } = stagingClient(biddingRows);
     currentClient = client;
@@ -1598,12 +1598,47 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
     ]);
 
     expect(code).toBe(0);
-    expect(mutations.flatMap((m) => m.operations).some((o) => o.entity === "campaign")).toBe(true);
+    const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "campaign");
+    expect(op).toBeDefined();
+    expect((op!.resource as Record<string, unknown>).target_spend).toEqual({});
+  });
+
+  it("US1 graduate-up: maximize-conversions issues a maximize_conversions mutate op with no ceiling", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "maximize-conversions" }), "--apply"]);
+
+    expect(code).toBe(0);
+    const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "campaign");
+    expect(op).toBeDefined();
+    const resource = op!.resource as Record<string, unknown>;
+    expect(resource.maximize_conversions).toEqual({});
+    expect(resource.target_spend).toBeUndefined();
+  });
+
+  it("refuses an unsupported or malformed strategy end to end, with zero mutations", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "target-cpa" }), "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(1);
+    expect(out).toContain('strategy must be "maximize-clicks" or "maximize-conversions"');
+    expect(mutations.length).toBe(0);
   });
 
   it("US3 warning: a ceiling below trailing-30-day average CPC warns but still applies", async () => {
     const biddingRows = [
-      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CLICKS" }, metrics: { conversions: 0, average_cpc: 6_000_000 } },
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 6_000_000 } },
     ];
     const { client, mutations } = stagingClient(biddingRows);
     currentClient = client;
@@ -1619,7 +1654,7 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
 
   it("US3 no warning: a ceiling at/above the trailing-30-day average CPC prints nothing", async () => {
     const biddingRows = [
-      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CLICKS" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
     ];
     const { client } = stagingClient(biddingRows);
     currentClient = client;

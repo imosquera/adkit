@@ -539,10 +539,21 @@ interface BiddingLiveState {
   conversions30d?: number;
 }
 
+// The only two strategies the bidding plan section supports (spec.md FR-001) — every
+// other BID_STRATEGIES member (schema.ts) is a valid Brief.campaign.bidStrategy but
+// has no update-plan mutation path, so a plan block naming one must be REJECTED here,
+// not silently treated as "not maximize-clicks" -> maximize_conversions (the live
+// mutation loop in apply-fixes.ts has only those two branches; an unvalidated
+// strategy value would otherwise reach it and mutate the wrong bidding strategy).
+const BIDDING_PLAN_STRATEGIES = new Set(["maximize-clicks", "maximize-conversions"]);
+
 /**
- * Refuse a maximize-conversions -> maximize-clicks bidding block when the campaign
- * has proven conversion volume (FR-004), unless the block explicitly acknowledges
- * the downgrade. The reverse direction (graduating up) and same-strategy ceiling-only
+ * Refuse a bidding block whose `strategy` isn't one of the two this plan section
+ * supports (typo, wrong case, missing field, or a legitimate-but-unsupported
+ * BidStrategy like "target-cpa") before it can ever reach the live mutation loop.
+ * Then refuse a maximize-conversions -> maximize-clicks block when the campaign has
+ * proven conversion volume (FR-004), unless the block explicitly acknowledges the
+ * downgrade. The reverse direction (graduating up) and same-strategy ceiling-only
  * edits are never guarded (FR-005). cpcBidCeilingMicros/strategy pairing validity is
  * intentionally NOT checked here — it's enforced for free when the staged brief is
  * re-parsed through CampaignSchema (see apply-plan.ts / stageResolvedGroups).
@@ -559,6 +570,12 @@ function biddingErrors(
   };
   const one = (b: Record<string, unknown>): string[] => {
     const cid = b.campaignId;
+    if (!BIDDING_PLAN_STRATEGIES.has(b.strategy as string)) {
+      return [
+        `bidding campaign ${pyStr(cid)}: strategy must be "maximize-clicks" or ` +
+          `"maximize-conversions" (got ${pyRepr(b.strategy)})`,
+      ];
+    }
     const state = getState(cid);
     if (state === undefined) {
       return [`bidding campaign ${pyStr(cid)}: no current bidding state found`];

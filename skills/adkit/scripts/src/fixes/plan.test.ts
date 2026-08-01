@@ -293,6 +293,49 @@ const bidding = (conversions30d: number) => ({
 });
 
 describe("bidding guardrail", () => {
+  it("refuses an unsupported or malformed strategy before ever checking live state", () => {
+    const unsupported = validate(
+      { bidding: [{ campaignId: 5, strategy: "target-cpa" }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      bidding(0),
+    );
+    expect(unsupported.some((e) => e.includes('strategy must be "maximize-clicks" or "maximize-conversions"'))).toBe(
+      true,
+    );
+
+    const typo = validate(
+      { bidding: [{ campaignId: 5, strategy: "Maximize-Clicks" }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      bidding(0),
+    );
+    expect(typo.some((e) => e.includes("strategy must be"))).toBe(true);
+
+    const missing = validate({ bidding: [{ campaignId: 5 }] }, {}, {}, undefined, undefined, undefined, bidding(0));
+    expect(missing.some((e) => e.includes("strategy must be"))).toBe(true);
+
+    // Unlike the state lookup, this check fires even for a campaign with no live
+    // bidding state at all — it never depends on getState() succeeding.
+    const unknownCampaign = validate(
+      { bidding: [{ campaignId: 999, strategy: "not-a-strategy" }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      bidding(0),
+    );
+    expect(unknownCampaign.some((e) => e.includes("strategy must be"))).toBe(true);
+    expect(unknownCampaign.some((e) => e.includes("no current bidding state found"))).toBe(false);
+  });
+
   it("refuses a downgrade at exactly the 30-conversion threshold without acknowledgement", () => {
     const plan = { bidding: [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_000_000 }] };
     const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(CONVERSION_GUARD_THRESHOLD));
@@ -327,7 +370,7 @@ describe("bidding guardrail", () => {
   });
 
   it("does not guard a ceiling-only edit that leaves the campaign on maximize-clicks", () => {
-    const alreadyOnClicks = { 5: { biddingStrategyType: "MAXIMIZE_CLICKS", conversions30d: 1000 } };
+    const alreadyOnClicks = { 5: { biddingStrategyType: "TARGET_SPEND", conversions30d: 1000 } };
     const plan = { bidding: [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 6_000_000 }] };
     const errs = validate(plan, {}, {}, undefined, undefined, undefined, alreadyOnClicks);
     expect(errs).toEqual([]);
