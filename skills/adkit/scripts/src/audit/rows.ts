@@ -39,7 +39,7 @@ export interface CampaignRow {
 
 export interface KeywordRow {
   campaign: { id: number };
-  ad_group: { name: string };
+  ad_group: { id: number; name: string };
   ad_group_criterion: { keyword: { text: string } };
 }
 

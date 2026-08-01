@@ -80,7 +80,7 @@ const CASES: ReadonlyArray<[string, string]> = [
   ],
   [
     toGaql(auditKeywordsQuery(IDS)),
-    "SELECT campaign.id, ad_group.name, ad_group_criterion.keyword.text FROM ad_group_criterion WHERE campaign.id IN (12345,67890) AND ad_group_criterion.type = 'KEYWORD' AND ad_group_criterion.status != 'REMOVED'",
+    "SELECT campaign.id, ad_group.id, ad_group.name, ad_group_criterion.keyword.text FROM ad_group_criterion WHERE campaign.id IN (12345,67890) AND ad_group_criterion.type = 'KEYWORD' AND ad_group_criterion.status != 'REMOVED'",
   ],
   [
     toGaql(auditKeywordMetricsQuery(30, IDS)),

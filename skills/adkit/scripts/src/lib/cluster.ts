@@ -168,26 +168,37 @@ export interface KeywordsByClicksAndCtrOptions {
   limit?: number;
 }
 
+/** Composite key scoping a term to one ad group — "campaign-wide" existing-keyword
+ * checks would drop a term from ad group B just because it's already a keyword in
+ * unrelated ad group A of the same campaign. */
+function adGroupTermKey(adGroupId: number | null, text: string): string {
+  return `${adGroupId}::${comparisonKey(text)}`;
+}
+
 /**
  * Search terms worth adding as keywords, ranked by engagement (clicks, CTR)
  * rather than conversions — a conversion-agnostic companion to
  * {@link keywordsToPromote} for a clicks/CTR-first promote pass. Grouped per ad
- * group (not merged campaign-wide the way `keywordsToPromote` is), since
- * "above-average CTR" and "cheap CPC" are both judged relative to the campaign
- * the ad group sits in.
+ * group (not merged campaign-wide the way `keywordsToPromote` is): a term already
+ * a keyword in one ad group can still be a genuine new candidate in another, so
+ * `existingKeywords` rows are matched against the (ad_group_id, text) pair, not
+ * text alone. "above-average CTR" and "cheap CPC" are still judged relative to
+ * the whole campaign the ad group sits in.
  *
  * verdict:
  *   - "weak-relevance": clicks >= minClicks but CTR is below the campaign's
  *     own average — volume without relevance, not a promote candidate.
- *   - "strong": clicks >= minClicks, CTR >= campaign average, and (when
- *     campaignAvgCpc is known) this term's own cost/click undercuts it.
- *   - "watch": CTR is at/above average but CPC isn't cheap (or
- *     campaignAvgCpc is unknown) — relevant, not yet a clear win.
+ *   - "strong": clicks >= minClicks, CTR >= campaign average, and this term's
+ *     own cost/click undercuts campaignAvgCpc (cheapToScale).
+ *   - "watch": CTR is at/above average but CPC isn't cheap — or
+ *     campaignAvgCpc is unknown (0), so there's no baseline to call it cheap
+ *     against — relevant, not yet a confirmed win.
  *
  * cheapToScale flags any kept term whose own CPC undercuts campaignAvgCpc
  * (the campaign's existing-keyword average CPC, from keywordCpc) independent
  * of verdict, since "cheap" and "relevant" are different questions. Pass 0 for
- * campaignAvgCpc to skip the CPC comparison entirely.
+ * campaignAvgCpc when it's unknown — every candidate then stays at "watch" at
+ * best, since there's nothing to confirm cheapness against.
  */
 export function keywordsByClicksAndCtr(
   searchTerms: Iterable<Row>,
@@ -197,7 +208,11 @@ export function keywordsByClicksAndCtr(
 ): ClickCtrCandidate[] {
   const { minClicks = 3, limit = 25 } = options;
   const existing = new Set(
-    [...existingKeywords].map((k) => comparisonKey(String(k.text ?? ""))),
+    [...existingKeywords].map((k) => {
+      const adGroupId =
+        k.ad_group_id === null || k.ad_group_id === undefined ? null : toInt(k.ad_group_id);
+      return adGroupTermKey(adGroupId, String(k.text ?? ""));
+    }),
   );
   const rows = [...searchTerms];
 
@@ -221,7 +236,7 @@ export function keywordsByClicksAndCtr(
     }
     const adGroupId =
       row.ad_group_id === null || row.ad_group_id === undefined ? null : toInt(row.ad_group_id);
-    const groupKey = `${adGroupId}::${key}`;
+    const groupKey = adGroupTermKey(adGroupId, raw);
     const prev: GroupAgg = agg[groupKey] ?? { text: raw, adGroupId, clicks: 0, impressions: 0, cost: 0 };
     return {
       ...agg,
@@ -237,17 +252,17 @@ export function keywordsByClicksAndCtr(
 
   const grouped = rows.reduce(foldGroup, {} as Record<string, GroupAgg>);
   const kept = Object.values(grouped).filter(
-    (a) => a.clicks >= minClicks && !existing.has(comparisonKey(a.text)),
+    (a) => a.clicks >= minClicks && !existing.has(adGroupTermKey(a.adGroupId, a.text)),
   );
 
   const candidates = kept.map((a): ClickCtrCandidate => {
     const ctr = a.impressions > 0 ? a.clicks / a.impressions : 0;
     const cpc = a.clicks > 0 ? a.cost / a.clicks : 0;
     const aboveAvgCtr = ctr >= campaignCtr;
-    const cheapToScale = campaignAvgCpc > 0 && cpc > 0 && cpc < campaignAvgCpc;
+    const cheapToScale = campaignAvgCpc > 0 && cpc < campaignAvgCpc;
     const verdict: ClickCtrCandidate["verdict"] = !aboveAvgCtr
       ? "weak-relevance"
-      : cheapToScale || campaignAvgCpc <= 0
+      : cheapToScale
         ? "strong"
         : "watch";
     return {

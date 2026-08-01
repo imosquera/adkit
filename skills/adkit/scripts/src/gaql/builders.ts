@@ -226,12 +226,15 @@ export function geoRegionQuery(start: string, end: string): SearchArgs {
 
 /**
  * Every campaign's ENABLED keywords in one query → caller groups by
- * {campaignId: {adGroupName: [kw]}}. Ids are guarded digits-only.
+ * {campaignId: {adGroupName: [kw]}} and {campaignId: {adGroupId: [kw]}}. Ids are
+ * guarded digits-only. ad_group.id rides alongside ad_group.name so an
+ * existing-keyword check can be scoped to a specific ad group, not just the name
+ * (used by clicksAndCtrCandidates for its per-ad-group promote check).
  */
 export function auditKeywordsQuery(campaignIds: ReadonlyArray<string | number>): SearchArgs {
   return inListQuery(
     "ad_group_criterion",
-    ["campaign.id", "ad_group.name", "ad_group_criterion.keyword.text"],
+    ["campaign.id", "ad_group.id", "ad_group.name", "ad_group_criterion.keyword.text"],
     "campaign.id",
     campaignIds,
     ["ad_group_criterion.type = 'KEYWORD'", "ad_group_criterion.status != 'REMOVED'"],

@@ -124,11 +124,21 @@ describe("keywordsByClicksAndCtr", () => {
     ]);
   });
 
-  it("treats campaignAvgCpc=0 as unknown and skips the CPC check", () => {
+  it("with campaignAvgCpc unknown (0), an above-average-CTR term stays at watch, never strong", () => {
+    // There's no priced baseline to confirm this term is actually cheap against,
+    // so it can't be a confirmed "clear win" — matches keywordsToPromote's
+    // conservative posture and the function's own docstring.
     const rows = [st("wide shoe fit", { clicks: 10, impressions: 20, cost: 500 })];
     const out = keywordsByClicksAndCtr(rows, [], 0);
-    expect(out[0].verdict).toBe("strong");
+    expect(out[0].verdict).toBe("watch");
     expect(out[0].cheapToScale).toBe(false);
+  });
+
+  it("flags a genuinely free click (cpc=0) as cheapToScale when a priced baseline exists", () => {
+    const rows = [st("promo credit term", { clicks: 10, impressions: 20, cost: 0 })];
+    const out = keywordsByClicksAndCtr(rows, [], 1.0);
+    expect(out[0].cheapToScale).toBe(true);
+    expect(out[0].verdict).toBe("strong");
   });
 
   it("keeps the same term separate per ad group instead of merging", () => {
@@ -136,20 +146,28 @@ describe("keywordsByClicksAndCtr", () => {
       st("shoe repair", { clicks: 4, impressions: 40, adGroupId: "111" }),
       st("shoe repair", { clicks: 6, impressions: 60, adGroupId: "222" }),
     ];
-    const out = keywordsByClicksAndCtr(rows, []);
+    const out = keywordsByClicksAndCtr(rows, [], 0);
     expect(out.length).toBe(2);
     expect(out.map((c) => c.adGroupId).sort()).toEqual([111, 222]);
   });
 
-  it("excludes existing keywords and terms under minClicks", () => {
+  it("excludes an existing keyword only in the ad group it belongs to, not campaign-wide", () => {
     const rows = [
-      st("already a keyword", { clicks: 20, impressions: 40 }),
-      st("too few clicks", { clicks: 1, impressions: 2 }),
+      st("already a keyword", { clicks: 20, impressions: 40, adGroupId: "1" }),
+      st("already a keyword", { clicks: 15, impressions: 30, adGroupId: "2" }),
+      st("too few clicks", { clicks: 1, impressions: 2, adGroupId: "1" }),
     ];
-    const out = keywordsByClicksAndCtr(rows, [{ text: "Already A Keyword" }], 0, {
-      minClicks: 3,
-    });
-    expect(out).toEqual([]);
+    const out = keywordsByClicksAndCtr(
+      rows,
+      [{ text: "Already A Keyword", ad_group_id: "1" }],
+      0,
+      { minClicks: 3 },
+    );
+    // excluded in ad group 1 (already a keyword there); kept in ad group 2
+    // (genuinely new there, even though the same text is a keyword elsewhere).
+    expect(out.map((c) => ({ adGroupId: c.adGroupId, text: c.text }))).toEqual([
+      { adGroupId: 2, text: "already a keyword" },
+    ]);
   });
 });
 

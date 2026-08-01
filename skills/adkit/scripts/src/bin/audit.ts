@@ -161,21 +161,31 @@ function isPinned(field: string | null | undefined): boolean {
 // Fetch helpers.
 // ---------------------------------------------------------------------------
 
+export interface AllKeywords {
+  /** {campaignId: {adGroupName: [kw]}} — scoring/cannibalization/campaign-wide promote checks. */
+  byName: Record<number, Record<string, string[]>>;
+  /** {campaignId: {adGroupId: [kw]}} — lets a promote check scope "already a keyword" to one ad group. */
+  byAdGroupId: Record<number, Record<number, string[]>>;
+}
+
 /**
- * One query for every campaign's ENABLED keywords → {campaignId: {adGroupName: [kw]}}.
- * Replaces the old per-campaign + per-cannibalization-pair fetches.
+ * One query for every campaign's ENABLED keywords → grouped both by ad-group name
+ * (the long-standing shape scoring/cannibalization rely on) and by ad-group id (so a
+ * per-ad-group promote check, like clicksAndCtrCandidates, isn't stuck comparing
+ * against every other ad group's keywords too). Replaces the old per-campaign +
+ * per-cannibalization-pair fetches.
  */
 async function allKeywords(
   client: AdsClient,
   customerId: string,
   campaignIds: number[],
-): Promise<Record<number, Record<string, string[]>>> {
+): Promise<AllKeywords> {
   if (campaignIds.length === 0) {
-    return {};
+    return { byName: {}, byAdGroupId: {} };
   }
   const rows = await search<KeywordRow>(client, customerId, auditKeywordsQuery(campaignIds));
   const byCampaign = groupBy(rows.map((r): [number, KeywordRow] => [r.campaign.id, r]));
-  return Object.fromEntries(
+  const byName = Object.fromEntries(
     Object.entries(byCampaign).map(([cid, crows]) => [
       Number(cid),
       groupBy(
@@ -183,6 +193,15 @@ async function allKeywords(
       ),
     ]),
   );
+  const byAdGroupId = Object.fromEntries(
+    Object.entries(byCampaign).map(([cid, crows]) => [
+      Number(cid),
+      groupBy(
+        crows.map((r): [number, string] => [r.ad_group.id, r.ad_group_criterion.keyword.text]),
+      ),
+    ]),
+  );
+  return { byName, byAdGroupId };
 }
 
 async function campaigns(
@@ -669,29 +688,30 @@ function averageCpc(keywords: KeywordCpc[]): number {
 /**
  * Pure: search-term rows -> {campaignId: clicks/CTR-ranked promote candidates},
  * a conversion-agnostic companion to promoteKeywords (see keywordsByClicksAndCtr).
- * Only present where non-empty.
+ * Existing keywords are scoped per ad group (kwByAdGroupId), not flattened across
+ * the whole campaign the way negativesAndPromotions' campaign-wide check is —
+ * keywordsByClicksAndCtr's candidates are ad-group-scoped, so the "already a
+ * keyword" check needs to match that granularity. Only present where non-empty.
  */
 function clicksAndCtrCandidates(
   terms: Record<number, SearchTermAgg[]>,
-  kwByCampaign: Record<number, Record<string, string[]>>,
+  kwByAdGroupId: Record<number, Record<number, string[]>>,
   keywordCpcMap: Record<number, KeywordCpc[]>,
 ): Record<number, ReturnType<typeof keywordsByClicksAndCtr>> {
-  const result: Record<number, ReturnType<typeof keywordsByClicksAndCtr>> = {};
-  for (const [cidStr, cterms] of Object.entries(terms)) {
-    const cid = Number(cidStr);
-    const existing = Object.values(kwByCampaign[cid] ?? {}).flatMap((kws) =>
-      kws.map((kw) => ({ text: kw })),
-    );
-    const candidates = keywordsByClicksAndCtr(
-      cterms,
-      existing,
-      averageCpc(keywordCpcMap[cid] ?? []),
-    );
-    if (candidates.length > 0) {
-      result[cid] = candidates;
-    }
-  }
-  return result;
+  return Object.fromEntries(
+    Object.entries(terms)
+      .map(([cidStr, cterms]): [number, ReturnType<typeof keywordsByClicksAndCtr>] => {
+        const cid = Number(cidStr);
+        const existing = Object.entries(kwByAdGroupId[cid] ?? {}).flatMap(([adGroupId, kws]) =>
+          kws.map((kw) => ({ text: kw, ad_group_id: Number(adGroupId) })),
+        );
+        return [
+          cid,
+          keywordsByClicksAndCtr(cterms, existing, averageCpc(keywordCpcMap[cid] ?? [])),
+        ];
+      })
+      .filter(([, candidates]) => candidates.length > 0),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1104,7 +1124,11 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
 
   const camps = await campaigns(client, customer, !args.all, campaignId);
   const campIds = camps.map((c) => c.campaign.id);
-  const kwByCampaign = await allKeywords(client, customer, campIds);
+  const { byName: kwByCampaign, byAdGroupId: kwByAdGroupId } = await allKeywords(
+    client,
+    customer,
+    campIds,
+  );
   const report = await Promise.all(
     camps.map((c) =>
       auditCampaign(client, customer, c, args.banned, kwByCampaign[c.campaign.id] ?? {}, args.profile),
@@ -1135,7 +1159,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     );
     const terms = await searchTerms(client, customer, args.days, campIds);
     [addNegatives, promoteKeywords] = negativesAndPromotions(terms, kwByCampaign);
-    clickCtrCandidates = clicksAndCtrCandidates(terms, kwByCampaign, keywordCpcMap);
+    clickCtrCandidates = clicksAndCtrCandidates(terms, kwByAdGroupId, keywordCpcMap);
   }
 
   // human summary -> stderr (stdout stays clean JSON for piping)
