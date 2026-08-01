@@ -24,6 +24,7 @@
 import { readFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
+import { adStrengthName } from "../ads/enums.js";
 import { parseArgs } from "node:util";
 import { loadConfig, resolveTier } from "../lib/config.js";
 
@@ -237,6 +238,10 @@ function scoreAd(
   profile: DifferentiationProfile,
 ): ScoredAd {
   const a = r.ad_group_ad;
+  // The API returns the raw numeric AdStrength ordinal, not its name — decode once,
+  // here, so every downstream comparison sees the real name instead of an ordinal
+  // that always fails a `!== "EXCELLENT"` string check (issue #51).
+  const strength = adStrengthName(a.ad_strength);
   const rsa = a.ad.responsive_search_ad;
   const hs = rsa.headlines.map((h) => h.text);
   const ds = rsa.descriptions.map((d) => d.text);
@@ -282,7 +287,7 @@ function scoreAd(
   return {
     adId: a.ad.id,
     adGroup: r.ad_group.name,
-    strength: a.ad_strength,
+    strength,
     status: a.status,
     // Full asset text (not just counts) so /adkit update can preserve good copy when
     // authoring rewrites/appends instead of re-fetching it live.
@@ -302,7 +307,7 @@ function scoreAd(
       hit,
       pins,
       [...actionItems],
-      a.ad_strength,
+      strength,
     ),
   };
 }

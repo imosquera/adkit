@@ -16,6 +16,7 @@
 
 import { gaqlId } from "../gaql/escape.js";
 import type { DifferentiationProfile } from "../lib/brand.js";
+import type { AdStrengthName } from "./types.js";
 
 export const MIN_HEADLINES = 15;
 export const MIN_DESCRIPTIONS = 4;
@@ -74,7 +75,7 @@ export function pathToExcellent(
   bannedHit: readonly string[],
   pins: readonly string[],
   actionItems: readonly string[],
-  strength: string,
+  strength: AdStrengthName,
 ): string[] {
   const headlinesUnder = hs.length < MIN_HEADLINES;
   const descriptionsUnder = ds.length < MIN_DESCRIPTIONS;

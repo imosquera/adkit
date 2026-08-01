@@ -5,12 +5,16 @@
  * single definition instead of a cross-file `import type` cycle.
  */
 
+import type { AdStrengthName } from "../ads/enums.js";
+
 export type AdIssue = Record<string, unknown>;
+
+export type { AdStrengthName };
 
 export interface ScoredAd {
   adId: number;
   adGroup: string;
-  strength: string;
+  strength: AdStrengthName;
   status: string;
   headlines: string[];
   descriptions: string[];
