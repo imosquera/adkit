@@ -8,6 +8,13 @@
 
 **Input**: User description: "ads.sh update: allow bid-strategy edits (maximize-conversions → maximize-clicks + CPC ceiling)"
 
+## Clarifications
+
+### Session 2026-08-01
+
+- Q: What mechanism authorizes the risky `maximize-conversions` → `maximize-clicks` downgrade on a campaign with ≥30 trailing-30-day conversions — a global CLI flag or a per-entry plan field? → A: A per-entry plan field (`acknowledgeStrategyDowngrade: true` on the `bidding` entry). No existing `--force-*` precedent exists in this codebase (the `budgets` guard is a hard, non-overridable cap), and a global flag would silently authorize every risky entry in a multi-campaign plan run.
+- Q: What time window / data source backs "conversions in trailing 30 days" (guardrail) and "current average CPC" (ceiling-sanity warning)? → A: The same trailing-30-day Ads API metrics query pattern the audit command already uses for `bidding_strategy_type` context, so the guard's threshold matches what the operator saw in the audit that prompted the change.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Reverse a stalled Smart Bidding campaign back to Maximize Clicks (Priority: P1)
@@ -78,9 +85,10 @@ and confirm it proceeds.
    `bidding` entry changing it to `maximize-clicks` without the override,
    **Then** `ads.sh update` refuses the change for that campaign, leaves it out
    of the applied diff, and explains why (conversion count and threshold).
-2. **Given** the same campaign and plan, **When** the operator adds the
-   explicit override, **Then** `ads.sh update` accepts and stages/applies the
-   change like any other bidding edit.
+2. **Given** the same campaign and plan, **When** the operator adds
+   `acknowledgeStrategyDowngrade: true` to that `bidding` entry, **Then**
+   `ads.sh update` accepts and stages/applies the change like any other
+   bidding edit.
 3. **Given** a campaign currently on `maximize-clicks` moving to
    `maximize-conversions` (graduating up), **When** an operator submits that
    change regardless of conversion count, **Then** `ads.sh update` accepts it
@@ -161,15 +169,17 @@ one at or above the average CPC and confirm no warning appears.
   brief diff shown to the operator before it is applied.
 - **FR-004**: The system MUST refuse a `bidding` entry that changes a campaign
   from `maximize-conversions` to `maximize-clicks` when that campaign has 30 or
-  more conversions in the trailing 30 days, unless an explicit override is
-  present on the request.
+  more conversions in the trailing 30 days (per the audit command's existing
+  trailing-30-day metrics query), unless the entry sets
+  `acknowledgeStrategyDowngrade: true`.
 - **FR-005**: The system MUST NOT apply the conversion-count guard in FR-004 to
   the reverse direction (`maximize-clicks` → `maximize-conversions`); that
   direction requires no override regardless of conversion count.
 - **FR-006**: When a `bidding` entry's `cpcBidCeilingMicros` is below the
-  campaign's current average CPC, the dry-run output MUST include a warning
-  comparing the proposed ceiling to the current average CPC, without blocking
-  the change.
+  campaign's current average CPC (sourced via the same trailing-30-day metrics
+  query used for FR-004), the dry-run output MUST include a warning comparing
+  the proposed ceiling to the current average CPC, without blocking the
+  change.
 - **FR-007**: A refused `bidding` entry (per FR-004) MUST NOT prevent other,
   unrelated entries in the same update plan (bidding or otherwise) from being
   evaluated and applied.
