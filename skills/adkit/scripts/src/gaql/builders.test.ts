@@ -3,6 +3,7 @@ import {
   adGroupQuery,
   adQuery,
   applyPositiveKeywordsQuery,
+  auctionInsightDomainQuery,
   auditAdGroupAdQuery,
   auditKeywordMetricsQuery,
   auditSearchTermsQuery,
@@ -14,6 +15,38 @@ import {
   searchTermQuery,
 } from "./builders.js";
 import { toGaql } from "./search-args.js";
+
+describe("auctionInsightDomainQuery", () => {
+  it("guards ids digits-only", () => {
+    expect(() => auctionInsightDomainQuery(7, ["123", "4x"])).toThrow();
+  });
+
+  it("selects per-domain share metrics over the window as structured args", () => {
+    const q = auctionInsightDomainQuery(14, ["12345", "67890"]);
+    expect(q.resource).toBe("auction_insight_domain");
+    expect(q.fields).toContain("auction_insight_domain.domain");
+    expect(q.fields).toContain("metrics.auction_insight_search_impression_share");
+    expect(q.fields).toContain("metrics.auction_insight_search_overlap_rate");
+    expect(q.fields).toContain("metrics.auction_insight_search_position_above_rate");
+    expect(q.fields).toContain("metrics.auction_insight_search_top_impression_percentage");
+    expect(q.fields).toContain("metrics.auction_insight_search_outranking_share");
+    expect(q.conditions).toContain("campaign.id IN (12345,67890)");
+    expect(q.conditions).toContain("segments.date DURING LAST_14_DAYS");
+  });
+
+  it("toGaql produces a well-formed GAQL string", () => {
+    expect(toGaql(auctionInsightDomainQuery(14, ["12345"]))).toBe(
+      "SELECT campaign.id, auction_insight_domain.domain, " +
+        "metrics.auction_insight_search_impression_share, " +
+        "metrics.auction_insight_search_overlap_rate, " +
+        "metrics.auction_insight_search_position_above_rate, " +
+        "metrics.auction_insight_search_top_impression_percentage, " +
+        "metrics.auction_insight_search_outranking_share " +
+        "FROM auction_insight_domain " +
+        "WHERE campaign.id IN (12345) AND segments.date DURING LAST_14_DAYS",
+    );
+  });
+});
 
 describe("auditKeywordMetricsQuery", () => {
   it("counts only ENABLED keywords so a paused keyword's spend stops driving clusterSplits", () => {

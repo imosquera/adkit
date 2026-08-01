@@ -294,6 +294,33 @@ export function auditSearchTermsQuery(
   );
 }
 
+/**
+ * Per-competitor-domain Auction Insights over the window — impression share,
+ * overlap rate, position-above rate, top-of-page rate, and outranking share
+ * for every domain competing against our own campaigns. Ids guarded
+ * digits-only.
+ */
+export function auctionInsightDomainQuery(
+  days: number,
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "auction_insight_domain",
+    [
+      "campaign.id",
+      "auction_insight_domain.domain",
+      "metrics.auction_insight_search_impression_share",
+      "metrics.auction_insight_search_overlap_rate",
+      "metrics.auction_insight_search_position_above_rate",
+      "metrics.auction_insight_search_top_impression_percentage",
+      "metrics.auction_insight_search_outranking_share",
+    ],
+    "campaign.id",
+    campaignIds,
+    [lastNDays(days)],
+  );
+}
+
 /** List campaigns to audit: a single id, ENABLED-only, or all. */
 export function auditCampaignsQuery(
   onlyEnabled: boolean,

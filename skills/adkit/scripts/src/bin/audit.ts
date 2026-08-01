@@ -21,12 +21,12 @@
  *                 [--differentiation-profile profile.json]
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 import { adStrengthName } from "../ads/enums.js";
 import { parseArgs } from "node:util";
-import { loadConfig, resolveTier } from "../lib/config.js";
+import { auctionInsightsCachePath, loadConfig, resolveTier } from "../lib/config.js";
 
 import {
   IS_OPPORTUNITY,
@@ -37,17 +37,27 @@ import {
   MIN_KEYWORDS,
   MIN_SITELINKS,
   SHARED_HEADLINE_GROUPS,
+  auctionInsightsByCampaign,
   cannibalization,
   differentiationGaps,
   keywordAlignment,
+  losingToCompetitorFlag,
   pathToExcellent,
   requireDigits,
   type CannibalizationPair,
 } from "../audit/scoring.js";
+import {
+  diffNewCompetitors,
+  parseAuctionInsightsCache,
+  updateCache,
+  EMPTY_CACHE,
+  type AuctionInsightsCache,
+} from "../audit/auction-insights-cache.js";
 import { resolveCustomer, type ResolveCustomerOptions } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
   applyAdGroupNamesQuery,
+  auctionInsightDomainQuery,
   auditAdGroupAdQuery,
   auditCampaignsQuery,
   auditExtCountQuery,
@@ -76,6 +86,7 @@ import { microsToCurrency } from "../lib/report.js";
 import { RSAS_PER_AD_GROUP } from "../lib/schema.js";
 import {
   normalizeAdGroupAdRow,
+  normalizeAuctionInsightRow,
   normalizeKeywordMetricsRow,
   normalizeLandingPageMobileRow,
   normalizePolicyTopicRow,
@@ -87,6 +98,7 @@ import {
   type KeywordRow,
   type LandingPageMobileRow,
   type RawAdGroupAdRow,
+  type RawAuctionInsightRow,
   type RawKeywordMetricsRow,
   type RawLandingPageMobileRow,
   type RawPolicyTopicRow,
@@ -97,6 +109,7 @@ import {
 } from "../audit/rows.js";
 import type {
   AdIssue,
+  AuctionInsightRow,
   CampaignFinding,
   CampaignReport,
   ClusterSplit,
@@ -111,6 +124,7 @@ import type {
 import {
   emitLines,
   pct,
+  renderAuctionInsights,
   renderCreativeSummary,
   renderImpressionShare,
   renderKeywordCpc,
@@ -522,6 +536,83 @@ export async function campaignServing(
     auditServingQuery(days, onlyEnabled, campaignId),
   );
   return rows.map(normalizeServingRow).map(scoreServing);
+}
+
+/**
+ * Per-competitor-domain Auction Insights, grouped by campaign and sorted by
+ * impression share descending (pure grouping via {@link auctionInsightsByCampaign}).
+ * A campaign with no rows is simply absent from the map.
+ */
+export async function campaignAuctionInsights(
+  client: AdsClient,
+  customerId: string,
+  days: number,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Record<number, AuctionInsightRow[]>> {
+  if (campaignIds.length === 0) return {};
+  const rows = await search<RawAuctionInsightRow>(
+    client,
+    customerId,
+    auctionInsightDomainQuery(days, campaignIds),
+  );
+  return auctionInsightsByCampaign(rows.map(normalizeAuctionInsightRow));
+}
+
+/**
+ * Layer the `losing_to_competitor` and `new_competitor` findings onto an
+ * already-scored campaign — pure, no IO. `newCompetitorDomains` is the
+ * already-computed cache diff for this campaign (empty on a first-ever run,
+ * per spec FR-007).
+ */
+export function withAuctionInsightFindings(
+  sc: ScoredServing,
+  domains: AuctionInsightRow[],
+  newCompetitorDomains: readonly string[],
+): ScoredServing {
+  const losing = losingToCompetitorFlag(sc.flags.includes("rank_constrained"), domains);
+  const newFlags = [
+    ...sc.flags,
+    ...(losing ? [losing.flag] : []),
+    ...(newCompetitorDomains.length > 0 ? ["new_competitor"] : []),
+  ];
+  const newRecs = [
+    ...sc.impressionShareRecs,
+    ...(losing ? [losing.rec] : []),
+    ...(newCompetitorDomains.length > 0
+      ? [`New competitor(s) entering your terms: ${newCompetitorDomains.join(", ")}.`]
+      : []),
+  ];
+  if (newFlags.length === sc.flags.length) return sc;
+  return { ...sc, flags: newFlags, impressionShareRecs: newRecs };
+}
+
+/**
+ * Load the Auction Insights run-over-run cache. A missing file or a parse
+ * failure both fall back to {@link EMPTY_CACHE} — a deliberate resilience
+ * choice for a best-effort local file (plan.md Parse Boundaries #2), not a
+ * re-validation of anything already parsed.
+ */
+export function loadAuctionInsightsCache(): AuctionInsightsCache {
+  try {
+    return parseAuctionInsightsCache(JSON.parse(readFileSync(auctionInsightsCachePath(), "utf8")));
+  } catch {
+    return EMPTY_CACHE;
+  }
+}
+
+/**
+ * Best-effort write — a failure here (read-only fs, disk full, permissions)
+ * must not abort the run and discard everything else the audit already
+ * computed, mirroring the degrade-gracefully precedent `fetchPsi` sets for
+ * this file's other soft-fail IO. Only the next run's `new_competitor` diff
+ * is affected by a lost write, never this run's own findings/output.
+ */
+export function saveAuctionInsightsCache(cache: AuctionInsightsCache): void {
+  try {
+    writeFileSync(auctionInsightsCachePath(), JSON.stringify(cache, null, 2));
+  } catch {
+    // best-effort — see doc comment above.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1171,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
   let splits: ClusterSplit[] = [];
   let addNegatives: Record<number, ReturnType<typeof negativesToAdd>> = {};
   let promoteKeywords: Record<number, ReturnType<typeof keywordsToPromote>> = {};
+  let auctionInsightsMap: Record<number, AuctionInsightRow[]> = {};
   if (!args.noServing) {
     serving = await campaignServing(client, customer, args.days, !args.all, campaignId);
     cannib = cannibalization(serving, kwByCampaign);
@@ -1094,6 +1186,30 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     );
     const terms = await searchTerms(client, customer, args.days, campIds);
     [addNegatives, promoteKeywords] = negativesAndPromotions(terms, kwByCampaign);
+
+    auctionInsightsMap = await campaignAuctionInsights(client, customer, args.days, campIds);
+    const priorCache = loadAuctionInsightsCache();
+    const nextCache = serving.reduce(
+      (cache, sc) =>
+        updateCache(
+          cache,
+          customer,
+          sc.campaignId,
+          (auctionInsightsMap[sc.campaignId] ?? []).map((d) => d.domain),
+        ),
+      priorCache,
+    );
+    serving = serving.map((sc) => {
+      const domains = auctionInsightsMap[sc.campaignId] ?? [];
+      const { isFirstRun, newDomains } = diffNewCompetitors(
+        priorCache,
+        customer,
+        sc.campaignId,
+        domains.map((d) => d.domain),
+      );
+      return withAuctionInsightFindings(sc, domains, isFirstRun ? [] : newDomains);
+    });
+    saveAuctionInsightsCache(nextCache);
   }
 
   // human summary -> stderr (stdout stays clean JSON for piping)
@@ -1102,6 +1218,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     const names = Object.fromEntries(serving.map((c) => [c.campaignId, c.campaignName]));
     emitLines(renderImpressionShare(serving, cannib, args.days));
     emitLines(renderKeywordCpc(serving, keywordCpcMap, splits, args.days));
+    emitLines(renderAuctionInsights(serving, auctionInsightsMap, args.days));
     emitLines(renderSearchTermCandidates(addNegatives, promoteKeywords, names, args.days));
   }
 
@@ -1148,6 +1265,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
       serving,
       cannibalization: cannib,
       keywordCpc: stringKeyed(keywordCpcMap),
+      auctionInsights: stringKeyed(auctionInsightsMap),
       clusterSplits: splits,
       addNegatives: stringKeyed(addNegatives),
       promoteKeywords: stringKeyed(promoteKeywords),

@@ -12,24 +12,32 @@
  * finding is produced (the Python baked in a single-advertiser constant).
  */
 
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import { parseDifferentiationProfile } from "../lib/brand.js";
 import { MIN_KEYWORDS, requireDigits } from "../audit/scoring.js";
+import { diffNewCompetitors, updateCache, EMPTY_CACHE } from "../audit/auction-insights-cache.js";
 import {
   auditCampaign,
+  campaignAuctionInsights,
   campaignServing,
   isManagerMetricsError,
   keywordCpc,
   landingPageMobile,
   landingPagePolicy,
+  loadAuctionInsightsCache,
   qualityScore,
   resolveAuditCustomer,
   resolveCampaign,
   resolvePsiKey,
+  saveAuctionInsightsCache,
   searchTerms,
+  withAuctionInsightFindings,
 } from "./audit.js";
 
 /** Build a fake AdsClient whose reads pick canned rows by GAQL substring. */
@@ -355,6 +363,104 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
     expect(result[0].flags).toContain("zero_impressions");
   });
 
+  it("campaignAuctionInsights: groups rows by campaign, sorted by impression share descending", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        auction_insight_domain: { domain: "low.com" },
+        metrics: {
+          auction_insight_search_impression_share: 0.1,
+          auction_insight_search_overlap_rate: 0.1,
+          auction_insight_search_position_above_rate: 0.1,
+          auction_insight_search_top_impression_percentage: 0.1,
+          auction_insight_search_outranking_share: 0.1,
+        },
+      },
+      {
+        campaign: { id: 1 },
+        auction_insight_domain: { domain: "high.com" },
+        metrics: {
+          auction_insight_search_impression_share: 0.9,
+          auction_insight_search_overlap_rate: 0.2,
+          auction_insight_search_position_above_rate: 0.2,
+          auction_insight_search_top_impression_percentage: 0.2,
+          auction_insight_search_outranking_share: 0.72,
+        },
+      },
+    ];
+    const result = await campaignAuctionInsights(fakeClient(() => rows), "123", 7, [1]);
+    expect(result[1].map((r) => r.domain)).toEqual(["high.com", "low.com"]);
+  });
+
+  it("campaignAuctionInsights: no campaign ids -> no query, empty map", async () => {
+    let called = false;
+    const result = await campaignAuctionInsights(
+      fakeClient(() => [], () => {
+        called = true;
+      }),
+      "123",
+      7,
+      [],
+    );
+    expect(result).toEqual({});
+    expect(called).toBe(false);
+  });
+
+  it("withAuctionInsightFindings: adds losing_to_competitor only when rank_constrained + >60% outranking", () => {
+    const base: Parameters<typeof withAuctionInsightFindings>[0] = {
+      campaignId: 1,
+      campaignName: "acme",
+      bidStrategy: "MAXIMIZE_CONVERSIONS",
+      budgetMicros: 0,
+      impressions: 1000,
+      conversions: 1,
+      searchImpressionShare: 0.5,
+      lostISBudget: 0,
+      lostISRank: 0.2,
+      flags: ["rank_constrained"],
+      impressionShareRecs: [],
+    };
+    const domains = [
+      {
+        campaignId: 1,
+        domain: "beatsyou.com",
+        impressionShare: 0.5,
+        overlapRate: 0.5,
+        positionAboveRate: 0.5,
+        topOfPageRate: 0.5,
+        outrankingShare: 0.71,
+      },
+    ];
+    const result = withAuctionInsightFindings(base, domains, []);
+    expect(result.flags).toContain("losing_to_competitor");
+    expect(result.impressionShareRecs.some((r) => r.includes("beatsyou.com"))).toBe(true);
+
+    const notConstrained = withAuctionInsightFindings({ ...base, flags: [] }, domains, []);
+    expect(notConstrained.flags).not.toContain("losing_to_competitor");
+  });
+
+  it("withAuctionInsightFindings: adds new_competitor when the cache diff reports new domains", () => {
+    const base: Parameters<typeof withAuctionInsightFindings>[0] = {
+      campaignId: 1,
+      campaignName: "acme",
+      bidStrategy: "MAXIMIZE_CONVERSIONS",
+      budgetMicros: 0,
+      impressions: 1000,
+      conversions: 1,
+      searchImpressionShare: 0.5,
+      lostISBudget: 0,
+      lostISRank: 0,
+      flags: [],
+      impressionShareRecs: [],
+    };
+    const result = withAuctionInsightFindings(base, [], ["newcomer.com"]);
+    expect(result.flags).toContain("new_competitor");
+    expect(result.impressionShareRecs.some((r) => r.includes("newcomer.com"))).toBe(true);
+
+    const noNew = withAuctionInsightFindings(base, [], []);
+    expect(noNew).toBe(base); // unchanged input returned as-is, no new object
+  });
+
   it("keywordCpc: a keyword with no spend (no metrics) reads avg_cpc 0, no throw", async () => {
     const rows = [
       {
@@ -594,5 +700,56 @@ describe("resolvePsiKey (issue #40: PSI key sourceable from .adkit.yaml / Secret
   it("treats a blank/whitespace-only tier as absent, falling through to the next", () => {
     expect(resolvePsiKey("  ", undefined, "config-key")).toBe("config-key");
     expect(resolvePsiKey(undefined, "   ", "config-key")).toBe("config-key");
+  });
+});
+
+describe("Auction Insights cache IO shell", () => {
+  let dir: string;
+  let cachePath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "adkit-audit-cache-"));
+    cachePath = join(dir, "cache.json");
+    process.env["ADKIT_AUCTION_INSIGHTS_CACHE"] = cachePath;
+  });
+
+  afterEach(() => {
+    delete process.env["ADKIT_AUCTION_INSIGHTS_CACHE"];
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("loadAuctionInsightsCache returns EMPTY_CACHE when no file exists yet", () => {
+    expect(loadAuctionInsightsCache()).toEqual(EMPTY_CACHE);
+  });
+
+  it("saveAuctionInsightsCache then loadAuctionInsightsCache round-trips", () => {
+    const cache = updateCache(EMPTY_CACHE, "111", 222, ["a.com", "b.com"]);
+    saveAuctionInsightsCache(cache);
+    expect(loadAuctionInsightsCache()).toEqual(cache);
+  });
+
+  it("loadAuctionInsightsCache falls back to EMPTY_CACHE on malformed JSON on disk", () => {
+    saveAuctionInsightsCache(EMPTY_CACHE);
+    // overwrite with garbage the parser must reject
+    writeFileSync(cachePath, "{not valid json");
+    expect(loadAuctionInsightsCache()).toEqual(EMPTY_CACHE);
+  });
+
+  it("two sequential runs sharing a persisted cache: first seeds it silently, second sees only the truly new domain", () => {
+    // Run 1: campaign 222 sees two domains, no prior cache.
+    const run1Domains = ["a.com", "b.com"];
+    const run1Diff = diffNewCompetitors(loadAuctionInsightsCache(), "111", 222, run1Domains);
+    expect(run1Diff).toEqual({ isFirstRun: true, newDomains: [] });
+    saveAuctionInsightsCache(updateCache(loadAuctionInsightsCache(), "111", 222, run1Domains));
+
+    // Run 2: a third domain shows up alongside the two already-seen ones.
+    const run2Domains = ["a.com", "b.com", "c.com"];
+    const run2Diff = diffNewCompetitors(loadAuctionInsightsCache(), "111", 222, run2Domains);
+    expect(run2Diff).toEqual({ isFirstRun: false, newDomains: ["c.com"] });
+    saveAuctionInsightsCache(updateCache(loadAuctionInsightsCache(), "111", 222, run2Domains));
+
+    // Run 3: nothing new — everything from run 2 is now the baseline.
+    const run3Diff = diffNewCompetitors(loadAuctionInsightsCache(), "111", 222, run2Domains);
+    expect(run3Diff).toEqual({ isFirstRun: false, newDomains: [] });
   });
 });

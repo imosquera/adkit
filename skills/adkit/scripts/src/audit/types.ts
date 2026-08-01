@@ -58,6 +58,22 @@ export interface ScoredServing {
   impressionShareRecs: string[];
 }
 
+/**
+ * One competing domain's standing against our own campaign in the Auction
+ * Insights report — impressionShare/overlapRate/positionAboveRate/
+ * topOfPageRate/outrankingShare are all 0-1 fractions, the raw Google Ads
+ * values (e.g. 0.6 = 60%).
+ */
+export interface AuctionInsightRow {
+  campaignId: number;
+  domain: string;
+  impressionShare: number;
+  overlapRate: number;
+  positionAboveRate: number;
+  topOfPageRate: number;
+  outrankingShare: number;
+}
+
 export interface KeywordCpc {
   text: string;
   avg_cpc: number;

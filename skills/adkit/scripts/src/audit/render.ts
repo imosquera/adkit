@@ -7,6 +7,7 @@
 import type { CannibalizationPair } from "./scoring.js";
 import type { keywordsToPromote, negativesToAdd } from "../lib/cluster.js";
 import type {
+  AuctionInsightRow,
   CampaignReport,
   ClusterSplit,
   KeywordCpc,
@@ -118,6 +119,26 @@ export function renderKeywordCpc(
     ...serving.flatMap(row),
     ...splits.map((s) => `  ! cluster split: ${s.campaignName} — ${s.reason as string}`),
   ];
+}
+
+export function renderAuctionInsights(
+  serving: ScoredServing[],
+  auctionInsightsMap: Record<number, AuctionInsightRow[]>,
+  days: number,
+): string[] {
+  function row(c: ScoredServing): string[] {
+    const domains = auctionInsightsMap[c.campaignId] ?? [];
+    if (domains.length === 0) {
+      return [];
+    }
+    const top = domains
+      .slice(0, 3)
+      .map((d) => `${d.domain} (${pct(d.impressionShare)} IS, ${pct(d.outrankingShare)} outranking)`)
+      .join(", ");
+    return [`    ${ljust(c.campaignName, 34)} top competitors: ${top}`];
+  }
+
+  return [`\n=== AUCTION INSIGHTS (last ${days} days) ===`, ...serving.flatMap(row)];
 }
 
 export function renderSearchTermCandidates(

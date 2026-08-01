@@ -89,6 +89,18 @@ export function configExists(): boolean {
 export const GITIGNORE_ENTRY = "/.adkit.yaml";
 
 /**
+ * Path to the local Auction Insights run-over-run cache (the `new_competitor`
+ * finding's state), resolved the same env-override-aware way as
+ * {@link configPath} — no secrets, but per-machine/per-project like `.adkit.yaml`.
+ */
+export function auctionInsightsCachePath(): string {
+  return process.env["ADKIT_AUCTION_INSIGHTS_CACHE"] || join(process.cwd(), ".adkit-auction-insights-cache.json");
+}
+
+/** The `.gitignore` entry for {@link auctionInsightsCachePath}'s default location. */
+export const AUCTION_INSIGHTS_CACHE_GITIGNORE_ENTRY = "/.adkit-auction-insights-cache.json";
+
+/**
  * Add {@link GITIGNORE_ENTRY} to a `.gitignore`'s content, unless a line already
  * matches it exactly (ignoring surrounding whitespace). Pure: returns `content`
  * unchanged when the entry is already present, otherwise appends it after a
