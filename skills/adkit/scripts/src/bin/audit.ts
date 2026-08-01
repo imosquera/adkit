@@ -46,6 +46,7 @@ import {
 import { resolveCustomer, type ResolveCustomerOptions } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
+  applyAdGroupNamesQuery,
   auditAdGroupAdQuery,
   auditCampaignsQuery,
   auditExtCountQuery,
@@ -118,6 +119,11 @@ import {
   renderSearchTermCandidates,
 } from "../audit/render.js";
 import { belowAverageFinalUrls, buildPsiRequestUrl, parsePsiResponse } from "../lib/psi.js";
+
+/** One live (non-REMOVED) ad group's name, scoped by campaign (applyAdGroupNamesQuery). */
+interface AdGroupNameRow {
+  ad_group: { name: string };
+}
 
 // ---------------------------------------------------------------------------
 // Small functional primitives.
@@ -344,12 +350,19 @@ export async function auditCampaign(
   // this counts every live RSA regardless of ENABLED/PAUSED — deliberately, since
   // /adkit create always publishes RSAs PAUSED, so an ENABLED-only filter would
   // false-flag every freshly-published campaign until an operator flips status.
-  const rsaCountsByAdGroup: Record<string, number> = Object.fromEntries(
-    Object.entries(groupBy(rows.map((r): [string, AdGroupAdRow] => [r.ad_group.name, r]))).map(([name, rs]) => [
-      name,
-      rs.length,
-    ]),
-  );
+  // Seed from an independent live-ad-group list first: an ad group with zero RSAs
+  // never appears in `rows` at all (the ad_group_ad query has nothing to return),
+  // so deriving counts from `rows` alone silently drops the most severe mismatch —
+  // a group that cannot serve any ad.
+  const adGroupNameRows = await search<AdGroupNameRow>(client, customerId, applyAdGroupNamesQuery([cid]));
+  const rsaCountsByAdGroup: Record<string, number> = {
+    ...Object.fromEntries(adGroupNameRows.map((r) => [r.ad_group.name, 0])),
+    ...Object.fromEntries(
+      Object.entries(groupBy(rows.map((r): [string, AdGroupAdRow] => [r.ad_group.name, r]))).map(
+        ([name, rs]) => [name, rs.length],
+      ),
+    ),
+  };
   const rsaCountMismatches: CampaignFinding[] = Object.entries(rsaCountsByAdGroup)
     .filter(([, count]) => count !== RSAS_PER_AD_GROUP)
     .map(([adGroupName, count]) => ({

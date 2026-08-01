@@ -286,6 +286,23 @@ describe("auditCampaign RSA-count-per-ad-group finding (issue #175)", () => {
     const result = await auditCampaign(client, "123", camp, [], {}, emptyProfile);
     expect(result.campaignFindings.some((f) => f.issue === "rsa_count_mismatch")).toBe(false);
   });
+
+  it("flags a live ad group with zero RSAs — it never appears in the ad_group_ad rows", async () => {
+    // A group with no non-removed RSAs returns no ad_group_ad row at all, so the
+    // count can only come from an independent ad-group list (applyAdGroupNamesQuery).
+    const client = fakeClient((query) => {
+      if (query.includes("FROM ad_group_ad")) return [adRow("Gadgets"), adRow("Gadgets")];
+      if (query.includes("FROM ad_group WHERE")) {
+        return [{ ad_group: { name: "Widgets" } }, { ad_group: { name: "Gadgets" } }];
+      }
+      return [];
+    });
+    const result = await auditCampaign(client, "123", camp, [], {}, emptyProfile);
+    const mismatches = result.campaignFindings.filter((f) => f.issue === "rsa_count_mismatch");
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]?.detail).toContain("Widgets");
+    expect(mismatches[0]?.detail).toContain("0/2");
+  });
 });
 
 // The Google Ads API omits empty nested messages and zero-valued metric fields
