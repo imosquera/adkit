@@ -282,11 +282,16 @@ export function auditSearchTermsQuery(
     "search_term_view",
     [
       "campaign.id",
+      // ad_group.id splits rows per ad group (rather than server-aggregating
+      // across them) so a click/CTR ranking can be authored per ad group; ctr
+      // rides the same row so relevance is readable without a second query.
+      "ad_group.id",
       "search_term_view.search_term",
       "metrics.cost_micros",
       "metrics.impressions",
       "metrics.clicks",
       "metrics.conversions",
+      "metrics.ctr",
     ],
     "campaign.id",
     campaignIds,

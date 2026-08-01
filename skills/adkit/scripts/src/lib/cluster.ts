@@ -153,6 +153,119 @@ export function keywordsToPromote(
   }));
 }
 
+export interface ClickCtrCandidate {
+  text: string;
+  adGroupId: number | null;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  verdict: "strong" | "weak-relevance" | "watch";
+  cheapToScale: boolean;
+}
+
+export interface KeywordsByClicksAndCtrOptions {
+  minClicks?: number;
+  limit?: number;
+}
+
+/**
+ * Search terms worth adding as keywords, ranked by engagement (clicks, CTR)
+ * rather than conversions — a conversion-agnostic companion to
+ * {@link keywordsToPromote} for a clicks/CTR-first promote pass. Grouped per ad
+ * group (not merged campaign-wide the way `keywordsToPromote` is), since
+ * "above-average CTR" and "cheap CPC" are both judged relative to the campaign
+ * the ad group sits in.
+ *
+ * verdict:
+ *   - "weak-relevance": clicks >= minClicks but CTR is below the campaign's
+ *     own average — volume without relevance, not a promote candidate.
+ *   - "strong": clicks >= minClicks, CTR >= campaign average, and (when
+ *     campaignAvgCpc is known) this term's own cost/click undercuts it.
+ *   - "watch": CTR is at/above average but CPC isn't cheap (or
+ *     campaignAvgCpc is unknown) — relevant, not yet a clear win.
+ *
+ * cheapToScale flags any kept term whose own CPC undercuts campaignAvgCpc
+ * (the campaign's existing-keyword average CPC, from keywordCpc) independent
+ * of verdict, since "cheap" and "relevant" are different questions. Pass 0 for
+ * campaignAvgCpc to skip the CPC comparison entirely.
+ */
+export function keywordsByClicksAndCtr(
+  searchTerms: Iterable<Row>,
+  existingKeywords: Iterable<Row>,
+  campaignAvgCpc: number,
+  options: KeywordsByClicksAndCtrOptions = {},
+): ClickCtrCandidate[] {
+  const { minClicks = 3, limit = 25 } = options;
+  const existing = new Set(
+    [...existingKeywords].map((k) => comparisonKey(String(k.text ?? ""))),
+  );
+  const rows = [...searchTerms];
+
+  const totalClicks = rows.reduce((sum, r) => sum + toInt(r.clicks), 0);
+  const totalImpressions = rows.reduce((sum, r) => sum + toInt(r.impressions), 0);
+  const campaignCtr = totalImpressions > 0 ? totalClicks / totalImpressions : 0;
+
+  interface GroupAgg {
+    text: string;
+    adGroupId: number | null;
+    clicks: number;
+    impressions: number;
+    cost: number;
+  }
+
+  function foldGroup(agg: Record<string, GroupAgg>, row: Row): Record<string, GroupAgg> {
+    const raw = String(row.search_term ?? "").trim();
+    const key = comparisonKey(raw);
+    if (!key) {
+      return agg;
+    }
+    const adGroupId =
+      row.ad_group_id === null || row.ad_group_id === undefined ? null : toInt(row.ad_group_id);
+    const groupKey = `${adGroupId}::${key}`;
+    const prev: GroupAgg = agg[groupKey] ?? { text: raw, adGroupId, clicks: 0, impressions: 0, cost: 0 };
+    return {
+      ...agg,
+      [groupKey]: {
+        text: prev.text,
+        adGroupId: prev.adGroupId,
+        clicks: prev.clicks + toInt(row.clicks),
+        impressions: prev.impressions + toInt(row.impressions),
+        cost: prev.cost + toFloat(row.cost),
+      },
+    };
+  }
+
+  const grouped = rows.reduce(foldGroup, {} as Record<string, GroupAgg>);
+  const kept = Object.values(grouped).filter(
+    (a) => a.clicks >= minClicks && !existing.has(comparisonKey(a.text)),
+  );
+
+  const candidates = kept.map((a): ClickCtrCandidate => {
+    const ctr = a.impressions > 0 ? a.clicks / a.impressions : 0;
+    const cpc = a.clicks > 0 ? a.cost / a.clicks : 0;
+    const aboveAvgCtr = ctr >= campaignCtr;
+    const cheapToScale = campaignAvgCpc > 0 && cpc > 0 && cpc < campaignAvgCpc;
+    const verdict: ClickCtrCandidate["verdict"] = !aboveAvgCtr
+      ? "weak-relevance"
+      : cheapToScale || campaignAvgCpc <= 0
+        ? "strong"
+        : "watch";
+    return {
+      text: a.text,
+      adGroupId: a.adGroupId,
+      clicks: a.clicks,
+      ctr: roundHalfEven(ctr, 4),
+      cpc: roundHalfEven(cpc, 2),
+      verdict,
+      cheapToScale,
+    };
+  });
+
+  return candidates
+    .sort((x, y) => (y.clicks !== x.clicks ? y.clicks - x.clicks : y.ctr - x.ctr))
+    .slice(0, limit);
+}
+
 export interface NegativesToAddOptions {
   minCost?: number;
   limit?: number;

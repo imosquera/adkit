@@ -5,7 +5,7 @@
  */
 
 import type { CannibalizationPair } from "./scoring.js";
-import type { keywordsToPromote, negativesToAdd } from "../lib/cluster.js";
+import type { keywordsByClicksAndCtr, keywordsToPromote, negativesToAdd } from "../lib/cluster.js";
 import type {
   CampaignReport,
   ClusterSplit,
@@ -158,6 +158,54 @@ export function renderSearchTermCandidates(
         ]
       : [];
   return [...negativesSection, ...promoteSection];
+}
+
+/**
+ * Clicks/CTR-ranked promote candidates, grouped by ad group within each
+ * campaign — the conversion-agnostic companion to renderSearchTermCandidates'
+ * promote section (see keywordsByClicksAndCtr). Only rendered when non-empty.
+ */
+export function renderClickCtrCandidates(
+  clickCtrMap: Record<number, ReturnType<typeof keywordsByClicksAndCtr>>,
+  names: Record<number, string>,
+  days: number,
+): string[] {
+  if (Object.keys(clickCtrMap).length === 0) {
+    return [];
+  }
+
+  type Candidate = ReturnType<typeof keywordsByClicksAndCtr>[number];
+
+  function groupByAdGroup(candidates: Candidate[]): Record<string, Candidate[]> {
+    return candidates.reduce(
+      (acc, c) => {
+        const key = c.adGroupId === null ? "unknown" : String(c.adGroupId);
+        return { ...acc, [key]: [...(acc[key] ?? []), c] };
+      },
+      {} as Record<string, Candidate[]>,
+    );
+  }
+
+  function candidateLabel(c: Candidate): string {
+    const cheap = c.cheapToScale ? ", cheap" : "";
+    return `${c.text} [${c.verdict}${cheap}] ${c.clicks}clk ${(c.ctr * 100).toFixed(1)}%ctr $${c.cpc.toFixed(2)}cpc`;
+  }
+
+  function campaignLines(cid: number, candidates: Candidate[]): string[] {
+    const grouped = groupByAdGroup(candidates);
+    return [
+      `    ${names[cid] ?? String(cid)}`,
+      ...Object.entries(grouped).map(
+        ([adGroupId, cands]) =>
+          `        ad group ${adGroupId}: ${cands.map(candidateLabel).join(", ")}`,
+      ),
+    ];
+  }
+
+  return [
+    `\n=== SEARCH TERMS BY CLICKS/CTR (conversion-agnostic, last ${days} days) ===`,
+    ...Object.entries(clickCtrMap).flatMap(([cid, cands]) => campaignLines(Number(cid), cands)),
+  ];
 }
 
 export function renderQualityScoreSection(

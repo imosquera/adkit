@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clusterSplitRecommendation,
+  keywordsByClicksAndCtr,
   keywordsToPromote,
   negativesToAdd,
   type Row,
@@ -95,6 +96,60 @@ describe("negativesToAdd", () => {
     ];
     const out = negativesToAdd(rows);
     expect(out.map((n) => n.text)).toEqual(["waste b", "waste a"]);
+  });
+});
+
+describe("keywordsByClicksAndCtr", () => {
+  it("ranks by clicks/CTR, ignoring conversions, and flags cheap CPC as strong", () => {
+    const rows = [
+      // high clicks, high CTR, cheap CPC -> strong + cheapToScale
+      st("best running shoes", { clicks: 10, impressions: 100, cost: 5, conversions: 0 }),
+      // high clicks, CTR far below the campaign average -> weak-relevance
+      st("running shoes", { clicks: 5, impressions: 1000, cost: 5, conversions: 9 }),
+      // high clicks, above-average CTR, but CPC is not cheap -> watch
+      st("premium running shoes", { clicks: 8, impressions: 20, cost: 20 }),
+    ];
+    const out = keywordsByClicksAndCtr(rows, [], 1.0);
+    const byText = Object.fromEntries(out.map((c) => [c.text, c]));
+    expect(byText["best running shoes"].verdict).toBe("strong");
+    expect(byText["best running shoes"].cheapToScale).toBe(true);
+    expect(byText["running shoes"].verdict).toBe("weak-relevance");
+    expect(byText["premium running shoes"].verdict).toBe("watch");
+    expect(byText["premium running shoes"].cheapToScale).toBe(false);
+    // sorted by clicks desc
+    expect(out.map((c) => c.text)).toEqual([
+      "best running shoes",
+      "premium running shoes",
+      "running shoes",
+    ]);
+  });
+
+  it("treats campaignAvgCpc=0 as unknown and skips the CPC check", () => {
+    const rows = [st("wide shoe fit", { clicks: 10, impressions: 20, cost: 500 })];
+    const out = keywordsByClicksAndCtr(rows, [], 0);
+    expect(out[0].verdict).toBe("strong");
+    expect(out[0].cheapToScale).toBe(false);
+  });
+
+  it("keeps the same term separate per ad group instead of merging", () => {
+    const rows = [
+      st("shoe repair", { clicks: 4, impressions: 40, adGroupId: "111" }),
+      st("shoe repair", { clicks: 6, impressions: 60, adGroupId: "222" }),
+    ];
+    const out = keywordsByClicksAndCtr(rows, []);
+    expect(out.length).toBe(2);
+    expect(out.map((c) => c.adGroupId).sort()).toEqual([111, 222]);
+  });
+
+  it("excludes existing keywords and terms under minClicks", () => {
+    const rows = [
+      st("already a keyword", { clicks: 20, impressions: 40 }),
+      st("too few clicks", { clicks: 1, impressions: 2 }),
+    ];
+    const out = keywordsByClicksAndCtr(rows, [{ text: "Already A Keyword" }], 0, {
+      minClicks: 3,
+    });
+    expect(out).toEqual([]);
   });
 });
 

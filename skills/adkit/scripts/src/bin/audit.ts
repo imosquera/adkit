@@ -69,6 +69,7 @@ import {
 } from "../lib/brand.js";
 import {
   clusterSplitRecommendation,
+  keywordsByClicksAndCtr,
   keywordsToPromote,
   negativesToAdd,
 } from "../lib/cluster.js";
@@ -111,6 +112,7 @@ import type {
 import {
   emitLines,
   pct,
+  renderClickCtrCandidates,
   renderCreativeSummary,
   renderImpressionShare,
   renderKeywordCpc,
@@ -622,6 +624,8 @@ export async function searchTerms(
         conversions: r.metrics.conversions,
         cost: microsToCurrency(r.metrics.cost_micros),
         impressions: r.metrics.impressions,
+        ctr: r.metrics.ctr,
+        ad_group_id: r.ad_group?.id ?? null,
       },
     ]),
   );
@@ -652,6 +656,42 @@ function negativesAndPromotions(
     }
   }
   return [addNegatives, promoteKeywords];
+}
+
+/** Mean of a campaign's existing-keyword avg_cpc (from keywordCpc), 0 keywords -> 0 (unknown). */
+function averageCpc(keywords: KeywordCpc[]): number {
+  const priced = keywords.filter((k) => k.avg_cpc > 0);
+  return priced.length > 0
+    ? priced.reduce((sum, k) => sum + k.avg_cpc, 0) / priced.length
+    : 0;
+}
+
+/**
+ * Pure: search-term rows -> {campaignId: clicks/CTR-ranked promote candidates},
+ * a conversion-agnostic companion to promoteKeywords (see keywordsByClicksAndCtr).
+ * Only present where non-empty.
+ */
+function clicksAndCtrCandidates(
+  terms: Record<number, SearchTermAgg[]>,
+  kwByCampaign: Record<number, Record<string, string[]>>,
+  keywordCpcMap: Record<number, KeywordCpc[]>,
+): Record<number, ReturnType<typeof keywordsByClicksAndCtr>> {
+  const result: Record<number, ReturnType<typeof keywordsByClicksAndCtr>> = {};
+  for (const [cidStr, cterms] of Object.entries(terms)) {
+    const cid = Number(cidStr);
+    const existing = Object.values(kwByCampaign[cid] ?? {}).flatMap((kws) =>
+      kws.map((kw) => ({ text: kw })),
+    );
+    const candidates = keywordsByClicksAndCtr(
+      cterms,
+      existing,
+      averageCpc(keywordCpcMap[cid] ?? []),
+    );
+    if (candidates.length > 0) {
+      result[cid] = candidates;
+    }
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1120,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
   let splits: ClusterSplit[] = [];
   let addNegatives: Record<number, ReturnType<typeof negativesToAdd>> = {};
   let promoteKeywords: Record<number, ReturnType<typeof keywordsToPromote>> = {};
+  let clickCtrCandidates: Record<number, ReturnType<typeof keywordsByClicksAndCtr>> = {};
   if (!args.noServing) {
     serving = await campaignServing(client, customer, args.days, !args.all, campaignId);
     cannib = cannibalization(serving, kwByCampaign);
@@ -1094,6 +1135,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     );
     const terms = await searchTerms(client, customer, args.days, campIds);
     [addNegatives, promoteKeywords] = negativesAndPromotions(terms, kwByCampaign);
+    clickCtrCandidates = clicksAndCtrCandidates(terms, kwByCampaign, keywordCpcMap);
   }
 
   // human summary -> stderr (stdout stays clean JSON for piping)
@@ -1103,6 +1145,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     emitLines(renderImpressionShare(serving, cannib, args.days));
     emitLines(renderKeywordCpc(serving, keywordCpcMap, splits, args.days));
     emitLines(renderSearchTermCandidates(addNegatives, promoteKeywords, names, args.days));
+    emitLines(renderClickCtrCandidates(clickCtrCandidates, names, args.days));
   }
 
   const campNames = Object.fromEntries(camps.map((c) => [c.campaign.id, c.campaign.name]));
@@ -1151,6 +1194,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
       clusterSplits: splits,
       addNegatives: stringKeyed(addNegatives),
       promoteKeywords: stringKeyed(promoteKeywords),
+      clickCtrCandidates: stringKeyed(clickCtrCandidates),
       qualityScore: stringKeyed(qualityScoreMap),
       landingPageHealth: stringKeyed(landingPageHealth),
       psi: { skipped: psi.skipped, results: psi.results },
