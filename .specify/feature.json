@@ -1,7 +1,7 @@
 {
-  "branch_name": "047-auction-insights-competitors",
-  "feature_num": "047",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/047-auction-insights-competitors",
-  "source_issue": 56,
-  "feature_directory": "specs/047-auction-insights-competitors"
+  "branch_name": "051-auction-insight-domain-field-fix",
+  "feature_num": "051",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/051-auction-insight-domain-field-fix",
+  "source_issue": 67,
+  "feature_directory": "specs/051-auction-insight-domain-field-fix"
 }
