@@ -37,9 +37,12 @@ import {
   MIN_KEYWORDS,
   MIN_SITELINKS,
   SHARED_HEADLINE_GROUPS,
+  auctionInsightsByCampaign,
   cannibalization,
   differentiationGaps,
   keywordAlignment,
+  losingToCompetitorFlag,
+  newCompetitorDomains,
   pathToExcellent,
   requireDigits,
   type CannibalizationPair,
@@ -48,6 +51,8 @@ import { resolveCustomer, type ResolveCustomerOptions } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
   applyAdGroupNamesQuery,
+  auctionInsightDomainPriorWindowQuery,
+  auctionInsightDomainQuery,
   auditAdGroupAdQuery,
   auditCampaignsQuery,
   auditExtCountQuery,
@@ -58,6 +63,7 @@ import {
   auditQualityScoreQuery,
   auditSearchTermsQuery,
   auditServingQuery,
+  priorWindow,
 } from "../gaql/builders.js";
 import type { AdsClient } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
@@ -77,6 +83,7 @@ import { microsToCurrency } from "../lib/report.js";
 import { RSAS_PER_AD_GROUP } from "../lib/schema.js";
 import {
   normalizeAdGroupAdRow,
+  normalizeAuctionInsightRow,
   normalizeKeywordMetricsRow,
   normalizeLandingPageMobileRow,
   normalizePolicyTopicRow,
@@ -88,6 +95,7 @@ import {
   type KeywordRow,
   type LandingPageMobileRow,
   type RawAdGroupAdRow,
+  type RawAuctionInsightRow,
   type RawKeywordMetricsRow,
   type RawLandingPageMobileRow,
   type RawPolicyTopicRow,
@@ -98,6 +106,7 @@ import {
 } from "../audit/rows.js";
 import type {
   AdIssue,
+  AuctionInsightRow,
   CampaignFinding,
   CampaignReport,
   ClusterSplit,
@@ -112,6 +121,7 @@ import type {
 import {
   emitLines,
   pct,
+  renderAuctionInsights,
   renderClickCtrCandidates,
   renderCreativeSummary,
   renderImpressionShare,
@@ -543,6 +553,82 @@ export async function campaignServing(
     auditServingQuery(days, onlyEnabled, campaignId),
   );
   return rows.map(normalizeServingRow).map(scoreServing);
+}
+
+/**
+ * Per-competitor-domain Auction Insights, grouped by campaign and sorted by
+ * impression share descending (pure grouping via {@link auctionInsightsByCampaign}).
+ * A campaign with no rows is simply absent from the map.
+ */
+export async function campaignAuctionInsights(
+  client: AdsClient,
+  customerId: string,
+  days: number,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Record<number, AuctionInsightRow[]>> {
+  if (campaignIds.length === 0) return {};
+  const rows = await search<RawAuctionInsightRow>(
+    client,
+    customerId,
+    auctionInsightDomainQuery(days, campaignIds),
+  );
+  return auctionInsightsByCampaign(rows.map(normalizeAuctionInsightRow));
+}
+
+/**
+ * Just the competing domains from the window immediately BEFORE the current
+ * one ({@link priorWindow}) — fetched in the same run as
+ * {@link campaignAuctionInsights}'s current-window data, so `new_competitor`
+ * needs no cross-run state. Grouped by campaign; a campaign with no rows in
+ * that prior window is simply absent (its current domains all read as new).
+ */
+export async function campaignPriorAuctionInsights(
+  client: AdsClient,
+  customerId: string,
+  asOf: Date,
+  days: number,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Record<number, string[]>> {
+  if (campaignIds.length === 0) return {};
+  const [start, end] = priorWindow(asOf, days);
+  const rows = await search<RawAuctionInsightRow>(
+    client,
+    customerId,
+    auctionInsightDomainPriorWindowQuery(start, end, campaignIds),
+  );
+  return rows.reduce<Record<number, string[]>>((acc, r) => {
+    const cid = r.campaign.id;
+    const domain = r.auction_insight_domain.domain;
+    return { ...acc, [cid]: [...(acc[cid] ?? []), domain] };
+  }, {});
+}
+
+/**
+ * Layer the `losing_to_competitor` and `new_competitor` findings onto an
+ * already-scored campaign — pure, no IO. `newCompetitorDomains` is the
+ * already-computed current-vs-prior-window diff for this campaign (see
+ * {@link "../audit/scoring.js".newCompetitorDomains}).
+ */
+export function withAuctionInsightFindings(
+  sc: ScoredServing,
+  domains: AuctionInsightRow[],
+  newCompetitorDomains: readonly string[],
+): ScoredServing {
+  const losing = losingToCompetitorFlag(sc.flags.includes("rank_constrained"), domains);
+  const newFlags = [
+    ...sc.flags,
+    ...(losing ? [losing.flag] : []),
+    ...(newCompetitorDomains.length > 0 ? ["new_competitor"] : []),
+  ];
+  const newRecs = [
+    ...sc.impressionShareRecs,
+    ...(losing ? [losing.rec] : []),
+    ...(newCompetitorDomains.length > 0
+      ? [`New competitor(s) entering your terms: ${newCompetitorDomains.join(", ")}.`]
+      : []),
+  ];
+  if (newFlags.length === sc.flags.length) return sc;
+  return { ...sc, flags: newFlags, impressionShareRecs: newRecs };
 }
 
 // ---------------------------------------------------------------------------
@@ -1157,6 +1243,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
   let splits: ClusterSplit[] = [];
   let addNegatives: Record<number, ReturnType<typeof negativesToAdd>> = {};
   let promoteKeywords: Record<number, ReturnType<typeof keywordsToPromote>> = {};
+  let auctionInsightsMap: Record<number, AuctionInsightRow[]> = {};
   let clickCtrCandidates: Record<number, ReturnType<typeof keywordsByClicksAndCtr>> = {};
   if (!args.noServing) {
     serving = await campaignServing(client, customer, args.days, !args.all, campaignId);
@@ -1172,6 +1259,24 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     );
     const terms = await searchTerms(client, customer, args.days, campIds);
     [addNegatives, promoteKeywords] = negativesAndPromotions(terms, kwByCampaign);
+
+    auctionInsightsMap = await campaignAuctionInsights(client, customer, args.days, campIds);
+    const priorDomainsMap = await campaignPriorAuctionInsights(
+      client,
+      customer,
+      new Date(),
+      args.days,
+      campIds,
+    );
+    serving = serving.map((sc) => {
+      const domains = auctionInsightsMap[sc.campaignId] ?? [];
+      const newDomains = newCompetitorDomains(
+        domains.map((d) => d.domain),
+        priorDomainsMap[sc.campaignId] ?? [],
+      );
+      return withAuctionInsightFindings(sc, domains, newDomains);
+    });
+
     clickCtrCandidates = clicksAndCtrCandidates(terms, kwByAdGroupId, keywordCpcMap);
   }
 
@@ -1181,6 +1286,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     const names = Object.fromEntries(serving.map((c) => [c.campaignId, c.campaignName]));
     emitLines(renderImpressionShare(serving, cannib, args.days));
     emitLines(renderKeywordCpc(serving, keywordCpcMap, splits, args.days));
+    emitLines(renderAuctionInsights(serving, auctionInsightsMap, args.days));
     emitLines(renderSearchTermCandidates(addNegatives, promoteKeywords, names, args.days));
     emitLines(renderClickCtrCandidates(clickCtrCandidates, names, args.days));
   }
@@ -1228,6 +1334,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
       serving,
       cannibalization: cannib,
       keywordCpc: stringKeyed(keywordCpcMap),
+      auctionInsights: stringKeyed(auctionInsightsMap),
       clusterSplits: splits,
       addNegatives: stringKeyed(addNegatives),
       promoteKeywords: stringKeyed(promoteKeywords),

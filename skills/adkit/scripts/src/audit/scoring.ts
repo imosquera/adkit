@@ -16,7 +16,7 @@
 
 import { gaqlId } from "../gaql/escape.js";
 import type { DifferentiationProfile } from "../lib/brand.js";
-import type { AdStrengthName } from "./types.js";
+import type { AdStrengthName, AuctionInsightRow } from "./types.js";
 
 export const MIN_HEADLINES = 15;
 export const MIN_DESCRIPTIONS = 4;
@@ -37,6 +37,8 @@ export const SHARED_HEADLINE_GROUPS = 3;
 export const IS_OPPORTUNITY = 0.65;
 /** losing >10% IS to a cause => flag that cause */
 export const LOST_HI = 0.1;
+/** a competing domain outranking us on more than this share of shared auctions => name it */
+export const OUTRANKING_LOSING_THRESHOLD = 0.6;
 
 /** Lowercased >2-char word tokens of a blob (commas treated as spaces). Order-preserving. */
 function tokenize(text: string): string[] {
@@ -344,6 +346,69 @@ export function cannibalization(
       shared: [...shared].sort(),
       starvedLikely: impr.get(a)! < impr.get(b)! ? name.get(a)! : name.get(b)!,
     }));
+}
+
+/**
+ * Group Auction Insights rows by campaign, each group sorted by impression
+ * share descending (highest-share domain first). A campaign with no rows is
+ * simply absent from the returned map — "no evidence, no flag" (spec Edge Cases).
+ */
+export function auctionInsightsByCampaign(
+  rows: readonly AuctionInsightRow[],
+): Record<number, AuctionInsightRow[]> {
+  const grouped = rows.reduce<Record<number, AuctionInsightRow[]>>(
+    (acc, row) => ({ ...acc, [row.campaignId]: [...(acc[row.campaignId] ?? []), row] }),
+    {},
+  );
+  return Object.fromEntries(
+    Object.entries(grouped).map(([campaignId, group]) => [
+      campaignId,
+      [...group].sort((a, b) => b.impressionShare - a.impressionShare),
+    ]),
+  );
+}
+
+/**
+ * The `losing_to_competitor` finding: fires only when the campaign is already
+ * `rank_constrained` AND some domain's outranking share exceeds
+ * {@link OUTRANKING_LOSING_THRESHOLD} (spec FR-004/FR-005) — silent otherwise,
+ * including when the campaign isn't rank-constrained regardless of any
+ * domain's outranking share.
+ */
+export function losingToCompetitorFlag(
+  rankConstrained: boolean,
+  domains: readonly AuctionInsightRow[],
+): { flag: string; rec: string; domain: string; outrankingShare: number } | null {
+  if (!rankConstrained) return null;
+  const worst = domains.reduce<AuctionInsightRow | null>(
+    (best, d) => (best === null || d.outrankingShare > best.outrankingShare ? d : best),
+    null,
+  );
+  if (!worst || worst.outrankingShare <= OUTRANKING_LOSING_THRESHOLD) return null;
+  return {
+    flag: "losing_to_competitor",
+    domain: worst.domain,
+    outrankingShare: worst.outrankingShare,
+    rec:
+      `Outranked by ${worst.domain} on ${Math.round(worst.outrankingShare * 100)}% of shared ` +
+      "auctions — this is who's beating you on Ad Rank.",
+  };
+}
+
+/**
+ * The `new_competitor` finding: domains present in the current window's
+ * Auction Insights data but absent from the immediately-prior window (both
+ * fetched in the same run, no cross-run state — see {@link "../gaql/builders.js".priorWindow}).
+ * A campaign with no prior-window data (e.g. it didn't exist yet) simply has
+ * every current domain reported as new — symmetric with every other run,
+ * no special-cased "first run."
+ */
+export function newCompetitorDomains(
+  currentDomains: readonly string[],
+  priorDomains: readonly string[],
+): string[] {
+  const prior = new Set(priorDomains);
+  return currentDomains.filter((d) => !prior.has(d));
 }
 
 export type ServingCampaign = {

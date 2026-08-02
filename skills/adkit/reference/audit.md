@@ -56,6 +56,17 @@ Two related growth blockers it also flags:
 
 **These are mostly not creative fixes.** Of them, `/adkit update` can raise a budget (for `budget_constrained`), change bid strategy (for `cold_start_throttle`), add negative keywords (helps `rank_constrained` by lifting CTR → Quality Score → Ad Rank), and close per-ad `pathToExcellent` gaps. Geo/schedule the operator still does in the UI.
 
+## Auction Insights — who you're losing share to
+
+`rank_constrained` above says *that* a campaign is losing impression share to Ad Rank; this layer (on by default alongside impression share, `--no-serving` to skip, same `--days` window) says *to whom*. It pulls the Auction Insights report (`auction_insight_domain`) and reports, per serving campaign, an `auctionInsights` block: `{campaignId: [{domain, impressionShare, overlapRate, positionAboveRate, topOfPageRate, outrankingShare}]}`, sorted by impression share descending. A campaign with no Auction Insights rows gets no entry — no evidence, no flag.
+
+Two findings, both layered onto the same per-campaign flags/recs `rank_constrained`/`budget_constrained` already use:
+
+- **`losing_to_competitor`** — fires only when a campaign is already flagged `rank_constrained` AND some domain's `outrankingShare` exceeds 60% — naming that domain and its share. Never fires on a campaign that isn't rank-constrained, no matter how high a domain's outranking share is; this is deliberately a "here's who's beating you" tie-in to the existing rank-loss flag, not a standalone alert.
+- **`new_competitor`** — fires when a domain appears in the current `--days` window's Auction Insights data but not in the `--days`-day window immediately before it. Both windows are queried in the same run — there's no local cache or cross-run state, so this works identically no matter which machine (or CI) runs the audit. A campaign with no prior-window data (e.g. it's brand new) simply has every current domain read as new; there's no special-cased "first run."
+
+Domain + share metrics only — this does **not** fetch, scrape, or analyze a competitor's ad copy or landing pages. Naming who's winning is in scope; reading their ads is not.
+
 ## Professional-lane signal — me-too copy
 
 A read-only check tells the operator *when* an ad reads like a general LLM (apply the fix with `/adkit update`):
@@ -96,7 +107,7 @@ ads.sh audit --customer <10-digit> --banned "VAT,USD,EUR,Portugal"
 ads.sh audit --customer <10-digit> --campaign <id>
 ```
 
-- JSON report → **stdout** (per-campaign findings, per-ad `issues`, `keywords`, `actionItems`, `pathToExcellent`, plus each ad's full `headlines`/`descriptions` **text** so `/adkit update` can preserve good copy when authoring rewrites/appends; plus the serving-layer `serving`/`keywordCpc`/`clusterSplits`/`addNegatives`/`promoteKeywords`/`qualityScore`/`landingPageHealth`/`psi`). Redirect it: `> /tmp/audit.json`.
+- JSON report → **stdout** (per-campaign findings, per-ad `issues`, `keywords`, `actionItems`, `pathToExcellent`, plus each ad's full `headlines`/`descriptions` **text** so `/adkit update` can preserve good copy when authoring rewrites/appends; plus the serving-layer `serving`/`keywordCpc`/`clusterSplits`/`addNegatives`/`promoteKeywords`/`auctionInsights`/`qualityScore`/`landingPageHealth`/`psi`). Redirect it: `> /tmp/audit.json`.
 - Human summary → **stderr** (the table with `-> path to EXCELLENT` lines).
 - Flags: `--all` (include paused/removed), `--no-serving` (skip the impression-share layer), `--days 7|14|30` (IS window), `--banned "a,b,c"` (phrases that signal copy leaked from another product — substring-based; product-specific, no universal default, always pass the phrases you expect from neighbouring products in the account), `--differentiation-profile <path.json>` (the per-run me-too/differentiation profile that drives `undifferentiated_copy` — absent ⇒ nothing flagged; see *Professional-lane signal* above), `--psi-key <key>` (operator-supplied PageSpeed Insights API key; env `PAGESPEED_API_KEY` is used when the flag is absent — see *Landing page health* below).
 - Resolve a campaign name in `$ARGUMENTS` to an id by matching against the JSON's `campaignName` (or pass the id directly).

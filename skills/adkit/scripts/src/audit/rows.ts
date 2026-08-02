@@ -23,6 +23,8 @@
  * from `bin/audit.ts` — see those modules for the conversions.
  */
 
+import type { AuctionInsightRow } from "./types.js";
+
 // ---------------------------------------------------------------------------
 // Strong row shapes (the parsed proofs).
 // ---------------------------------------------------------------------------
@@ -206,6 +208,39 @@ export function normalizeServingRow(r: RawServingRow): ServingRow {
     campaign: r.campaign,
     campaign_budget: { amount_micros: num(r.campaign_budget?.amount_micros) },
     metrics: zeroFillMetrics(r.metrics, SERVING_METRIC_KEYS),
+  };
+}
+
+export interface RawAuctionInsightRow {
+  campaign: { id: number };
+  auction_insight_domain: { domain: string };
+  metrics?: {
+    auction_insight_search_impression_share?: number;
+    auction_insight_search_overlap_rate?: number;
+    auction_insight_search_position_above_rate?: number;
+    auction_insight_search_top_impression_percentage?: number;
+    auction_insight_search_outranking_share?: number;
+  };
+}
+
+const AUCTION_INSIGHT_METRIC_KEYS = [
+  "auction_insight_search_impression_share",
+  "auction_insight_search_overlap_rate",
+  "auction_insight_search_position_above_rate",
+  "auction_insight_search_top_impression_percentage",
+  "auction_insight_search_outranking_share",
+] as const;
+
+export function normalizeAuctionInsightRow(r: RawAuctionInsightRow): AuctionInsightRow {
+  const m = zeroFillMetrics(r.metrics, AUCTION_INSIGHT_METRIC_KEYS);
+  return {
+    campaignId: r.campaign.id,
+    domain: r.auction_insight_domain.domain,
+    impressionShare: m.auction_insight_search_impression_share,
+    overlapRate: m.auction_insight_search_overlap_rate,
+    positionAboveRate: m.auction_insight_search_position_above_rate,
+    topOfPageRate: m.auction_insight_search_top_impression_percentage,
+    outrankingShare: m.auction_insight_search_outranking_share,
   };
 }
 

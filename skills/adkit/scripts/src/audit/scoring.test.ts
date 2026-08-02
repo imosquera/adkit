@@ -2,13 +2,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  auctionInsightsByCampaign,
   cannibalization,
   conceptWords,
   differentiationGaps,
   keywordAlignment,
+  losingToCompetitorFlag,
+  newCompetitorDomains,
   pathToExcellent,
   requireDigits,
 } from "./scoring.js";
+import type { AuctionInsightRow } from "./types.js";
 import { adStrengthName } from "../ads/enums.js";
 
 // ---------- me-too copy (dynamic differentiation profile) ----------
@@ -414,5 +418,104 @@ describe("requireDigits", () => {
 
   it("rejects injection", () => {
     expect(() => requireDigits("--campaign", "1 OR 1=1")).toThrow();
+  });
+});
+
+// ---------- Auction Insights ----------
+
+function domainRow(overrides: Partial<AuctionInsightRow>): AuctionInsightRow {
+  return {
+    campaignId: 1,
+    domain: "competitor.com",
+    impressionShare: 0.1,
+    overlapRate: 0.1,
+    positionAboveRate: 0.1,
+    topOfPageRate: 0.1,
+    outrankingShare: 0.1,
+    ...overrides,
+  };
+}
+
+describe("auctionInsightsByCampaign", () => {
+  it("groups by campaign and sorts each group by impression share descending", () => {
+    const rows = [
+      domainRow({ campaignId: 1, domain: "low.com", impressionShare: 0.1 }),
+      domainRow({ campaignId: 1, domain: "high.com", impressionShare: 0.9 }),
+      domainRow({ campaignId: 2, domain: "other.com", impressionShare: 0.5 }),
+    ];
+    const grouped = auctionInsightsByCampaign(rows);
+    expect(grouped[1].map((r) => r.domain)).toEqual(["high.com", "low.com"]);
+    expect(grouped[2].map((r) => r.domain)).toEqual(["other.com"]);
+  });
+
+  it("returns an empty map for no rows", () => {
+    expect(auctionInsightsByCampaign([])).toEqual({});
+  });
+
+  it("keeps every domain a campaign has, even with tied impression shares", () => {
+    const rows = [
+      domainRow({ campaignId: 1, domain: "tie-a.com", impressionShare: 0.5 }),
+      domainRow({ campaignId: 1, domain: "tie-b.com", impressionShare: 0.5 }),
+    ];
+    const grouped = auctionInsightsByCampaign(rows);
+    expect(grouped[1].map((r) => r.domain).sort()).toEqual(["tie-a.com", "tie-b.com"]);
+  });
+});
+
+describe("losingToCompetitorFlag", () => {
+  it("fires when rank-constrained and the top domain exceeds the 60% threshold", () => {
+    const domains = [domainRow({ domain: "winner.com", outrankingShare: 0.71 })];
+    const finding = losingToCompetitorFlag(true, domains);
+    expect(finding).not.toBeNull();
+    expect(finding!.domain).toBe("winner.com");
+    expect(finding!.flag).toBe("losing_to_competitor");
+  });
+
+  it("stays silent when rank-constrained but no domain exceeds the threshold", () => {
+    const domains = [domainRow({ outrankingShare: 0.55 })];
+    expect(losingToCompetitorFlag(true, domains)).toBeNull();
+  });
+
+  it("stays silent when not rank-constrained, regardless of outranking share", () => {
+    const domains = [domainRow({ outrankingShare: 0.95 })];
+    expect(losingToCompetitorFlag(false, domains)).toBeNull();
+  });
+
+  it("stays silent with no domains at all", () => {
+    expect(losingToCompetitorFlag(true, [])).toBeNull();
+  });
+
+  it("stays silent exactly at the 60% threshold (strictly greater-than)", () => {
+    const domains = [domainRow({ outrankingShare: 0.6 })];
+    expect(losingToCompetitorFlag(true, domains)).toBeNull();
+  });
+
+  it("picks the worst (highest outranking share) among multiple competing domains", () => {
+    const domains = [
+      domainRow({ domain: "mild.com", outrankingShare: 0.65 }),
+      domainRow({ domain: "worst.com", outrankingShare: 0.9 }),
+      domainRow({ domain: "also-under.com", outrankingShare: 0.3 }),
+    ];
+    const finding = losingToCompetitorFlag(true, domains);
+    expect(finding!.domain).toBe("worst.com");
+    expect(finding!.outrankingShare).toBe(0.9);
+  });
+});
+
+describe("newCompetitorDomains", () => {
+  it("returns domains present now but absent from the prior window", () => {
+    expect(newCompetitorDomains(["a.com", "b.com", "c.com"], ["a.com", "b.com"])).toEqual(["c.com"]);
+  });
+
+  it("returns nothing when every current domain was already there", () => {
+    expect(newCompetitorDomains(["a.com"], ["a.com", "b.com"])).toEqual([]);
+  });
+
+  it("treats an empty prior window as everything being new (no first-run special case)", () => {
+    expect(newCompetitorDomains(["a.com", "b.com"], [])).toEqual(["a.com", "b.com"]);
+  });
+
+  it("returns nothing when there are no current domains", () => {
+    expect(newCompetitorDomains([], ["a.com"])).toEqual([]);
   });
 });

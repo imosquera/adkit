@@ -55,6 +55,21 @@ function isoDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+/**
+ * The `days`-day window immediately BEFORE {@link dateWindow}'s window — i.e. the
+ * `days` COMPLETE days ending the day before `dateWindow(asOf, days)`'s start.
+ * Lets a caller compare "this window" against "the one right before it" (e.g. the
+ * Auction Insights new-competitor check) in two queries within a single run,
+ * with no cross-run state.
+ */
+export function priorWindow(asOf: Date, days: number): [string, string] {
+  const MS_PER_DAY = 86_400_000;
+  const [currentStart] = dateWindow(asOf, days);
+  const priorEndMs = Date.parse(`${currentStart}T00:00:00Z`) - MS_PER_DAY;
+  const priorStartMs = priorEndMs - (days - 1) * MS_PER_DAY;
+  return [isoDate(priorStartMs), isoDate(priorEndMs)];
+}
+
 /** The shared report WHERE predicates: ENABLED campaigns over the date window. */
 function _whereConds(start: string, end: string): readonly string[] {
   return [_ENABLED, `${_DATE_FIELD} BETWEEN '${start}' AND '${end}'`];
@@ -299,6 +314,54 @@ export function auditSearchTermsQuery(
     "campaign.id",
     campaignIds,
     [lastNDays(days)],
+  );
+}
+
+/**
+ * Per-competitor-domain Auction Insights over the window — impression share,
+ * overlap rate, position-above rate, top-of-page rate, and outranking share
+ * for every domain competing against our own campaigns. Ids guarded
+ * digits-only.
+ */
+export function auctionInsightDomainQuery(
+  days: number,
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "auction_insight_domain",
+    [
+      "campaign.id",
+      "auction_insight_domain.domain",
+      "metrics.auction_insight_search_impression_share",
+      "metrics.auction_insight_search_overlap_rate",
+      "metrics.auction_insight_search_position_above_rate",
+      "metrics.auction_insight_search_top_impression_percentage",
+      "metrics.auction_insight_search_outranking_share",
+    ],
+    "campaign.id",
+    campaignIds,
+    [lastNDays(days)],
+  );
+}
+
+/**
+ * Just the competing domains (no share metrics) over an explicit prior window —
+ * see {@link priorWindow}. The `new_competitor` check diffs this against
+ * {@link auctionInsightDomainQuery}'s current-window domains, both fetched in the
+ * same run: no cross-run cache, no "first run" special case, and it works
+ * identically from any machine.
+ */
+export function auctionInsightDomainPriorWindowQuery(
+  start: string,
+  end: string,
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "auction_insight_domain",
+    ["campaign.id", "auction_insight_domain.domain"],
+    "campaign.id",
+    campaignIds,
+    [`segments.date BETWEEN '${start}' AND '${end}'`],
   );
 }
 

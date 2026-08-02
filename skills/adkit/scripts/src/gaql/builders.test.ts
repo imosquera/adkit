@@ -4,17 +4,72 @@ import {
   adQuery,
   applyBiddingGuardQuery,
   applyPositiveKeywordsQuery,
+  auctionInsightDomainPriorWindowQuery,
+  auctionInsightDomainQuery,
   auditAdGroupAdQuery,
   auditKeywordMetricsQuery,
   auditSearchTermsQuery,
   campaignDailyQuery,
   campaignTotalsQuery,
+  dateWindow,
   geoQuery,
   geoRegionQuery,
   keywordQuery,
+  priorWindow,
   searchTermQuery,
 } from "./builders.js";
 import { toGaql } from "./search-args.js";
+
+describe("priorWindow", () => {
+  it("is the N days immediately before dateWindow's window, with no gap or overlap", () => {
+    const asOf = new Date("2026-06-22T10:00:00Z");
+    const [curStart, curEnd] = dateWindow(asOf, 7);
+    const [priorStart, priorEnd] = priorWindow(asOf, 7);
+    expect(curStart).toBe("2026-06-15");
+    expect(curEnd).toBe("2026-06-21");
+    // prior window ends the day before the current window starts.
+    expect(priorEnd).toBe("2026-06-14");
+    // and spans the same number of days.
+    expect(priorStart).toBe("2026-06-08");
+  });
+});
+
+describe("auctionInsightDomainQuery", () => {
+  it("guards ids digits-only", () => {
+    expect(() => auctionInsightDomainQuery(7, ["123", "4x"])).toThrow();
+  });
+
+  it("toGaql produces a well-formed GAQL string with every share-metric field", () => {
+    expect(toGaql(auctionInsightDomainQuery(14, ["12345"]))).toBe(
+      "SELECT campaign.id, auction_insight_domain.domain, " +
+        "metrics.auction_insight_search_impression_share, " +
+        "metrics.auction_insight_search_overlap_rate, " +
+        "metrics.auction_insight_search_position_above_rate, " +
+        "metrics.auction_insight_search_top_impression_percentage, " +
+        "metrics.auction_insight_search_outranking_share " +
+        "FROM auction_insight_domain " +
+        "WHERE campaign.id IN (12345) AND segments.date DURING LAST_14_DAYS",
+    );
+  });
+
+  it("resolves the same resource as its prior-window sibling (both diffable)", () => {
+    expect(auctionInsightDomainQuery(14, ["12345"]).resource).toBe(
+      auctionInsightDomainPriorWindowQuery("2026-01-01", "2026-01-14", ["12345"]).resource,
+    );
+  });
+});
+
+describe("auctionInsightDomainPriorWindowQuery", () => {
+  it("guards ids digits-only", () => {
+    expect(() => auctionInsightDomainPriorWindowQuery("2026-01-01", "2026-01-14", ["4x"])).toThrow();
+  });
+
+  it("selects only domain identity (no share metrics) over an explicit date range", () => {
+    const q = auctionInsightDomainPriorWindowQuery("2026-06-07", "2026-06-13", ["12345"]);
+    expect(q.fields).toEqual(["campaign.id", "auction_insight_domain.domain"]);
+    expect(q.conditions).toContain("segments.date BETWEEN '2026-06-07' AND '2026-06-13'");
+  });
+});
 
 describe("auditKeywordMetricsQuery", () => {
   it("counts only ENABLED keywords so a paused keyword's spend stops driving clusterSplits", () => {

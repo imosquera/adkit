@@ -1,7 +1,7 @@
 {
-  "branch_name": "048-bid-strategy-lever",
-  "feature_num": "048",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/048-bid-strategy-lever",
-  "source_issue": 59,
-  "feature_directory": "specs/048-bid-strategy-lever"
+  "branch_name": "047-auction-insights-competitors",
+  "feature_num": "047",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/047-auction-insights-competitors",
+  "source_issue": 56,
+  "feature_directory": "specs/047-auction-insights-competitors"
 }

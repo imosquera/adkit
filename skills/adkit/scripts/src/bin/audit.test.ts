@@ -21,6 +21,8 @@ import { MIN_KEYWORDS, requireDigits } from "../audit/scoring.js";
 import {
   auditCampaign,
   averageCpc,
+  campaignAuctionInsights,
+  campaignPriorAuctionInsights,
   campaignServing,
   isManagerMetricsError,
   keywordCpc,
@@ -31,6 +33,7 @@ import {
   resolveCampaign,
   resolvePsiKey,
   searchTerms,
+  withAuctionInsightFindings,
 } from "./audit.js";
 import type { KeywordCpc } from "../audit/types.js";
 
@@ -379,6 +382,104 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
     expect(result[0].flags).toContain("zero_impressions");
   });
 
+  it("campaignAuctionInsights: groups rows by campaign, sorted by impression share descending", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        auction_insight_domain: { domain: "low.com" },
+        metrics: {
+          auction_insight_search_impression_share: 0.1,
+          auction_insight_search_overlap_rate: 0.1,
+          auction_insight_search_position_above_rate: 0.1,
+          auction_insight_search_top_impression_percentage: 0.1,
+          auction_insight_search_outranking_share: 0.1,
+        },
+      },
+      {
+        campaign: { id: 1 },
+        auction_insight_domain: { domain: "high.com" },
+        metrics: {
+          auction_insight_search_impression_share: 0.9,
+          auction_insight_search_overlap_rate: 0.2,
+          auction_insight_search_position_above_rate: 0.2,
+          auction_insight_search_top_impression_percentage: 0.2,
+          auction_insight_search_outranking_share: 0.72,
+        },
+      },
+    ];
+    const result = await campaignAuctionInsights(fakeClient(() => rows), "123", 7, [1]);
+    expect(result[1].map((r) => r.domain)).toEqual(["high.com", "low.com"]);
+  });
+
+  it("campaignAuctionInsights: no campaign ids -> no query, empty map", async () => {
+    let called = false;
+    const result = await campaignAuctionInsights(
+      fakeClient(() => [], () => {
+        called = true;
+      }),
+      "123",
+      7,
+      [],
+    );
+    expect(result).toEqual({});
+    expect(called).toBe(false);
+  });
+
+  it("withAuctionInsightFindings: adds losing_to_competitor only when rank_constrained + >60% outranking", () => {
+    const base: Parameters<typeof withAuctionInsightFindings>[0] = {
+      campaignId: 1,
+      campaignName: "acme",
+      bidStrategy: "MAXIMIZE_CONVERSIONS",
+      budgetMicros: 0,
+      impressions: 1000,
+      conversions: 1,
+      searchImpressionShare: 0.5,
+      lostISBudget: 0,
+      lostISRank: 0.2,
+      flags: ["rank_constrained"],
+      impressionShareRecs: [],
+    };
+    const domains = [
+      {
+        campaignId: 1,
+        domain: "beatsyou.com",
+        impressionShare: 0.5,
+        overlapRate: 0.5,
+        positionAboveRate: 0.5,
+        topOfPageRate: 0.5,
+        outrankingShare: 0.71,
+      },
+    ];
+    const result = withAuctionInsightFindings(base, domains, []);
+    expect(result.flags).toContain("losing_to_competitor");
+    expect(result.impressionShareRecs.some((r) => r.includes("beatsyou.com"))).toBe(true);
+
+    const notConstrained = withAuctionInsightFindings({ ...base, flags: [] }, domains, []);
+    expect(notConstrained.flags).not.toContain("losing_to_competitor");
+  });
+
+  it("withAuctionInsightFindings: adds new_competitor when the cache diff reports new domains", () => {
+    const base: Parameters<typeof withAuctionInsightFindings>[0] = {
+      campaignId: 1,
+      campaignName: "acme",
+      bidStrategy: "MAXIMIZE_CONVERSIONS",
+      budgetMicros: 0,
+      impressions: 1000,
+      conversions: 1,
+      searchImpressionShare: 0.5,
+      lostISBudget: 0,
+      lostISRank: 0,
+      flags: [],
+      impressionShareRecs: [],
+    };
+    const result = withAuctionInsightFindings(base, [], ["newcomer.com"]);
+    expect(result.flags).toContain("new_competitor");
+    expect(result.impressionShareRecs.some((r) => r.includes("newcomer.com"))).toBe(true);
+
+    const noNew = withAuctionInsightFindings(base, [], []);
+    expect(noNew).toBe(base); // unchanged input returned as-is, no new object
+  });
+
   it("keywordCpc: a keyword with no spend (no metrics) reads avg_cpc 0, no throw", async () => {
     const rows = [
       {
@@ -618,5 +719,70 @@ describe("resolvePsiKey (issue #40: PSI key sourceable from .adkit.yaml / Secret
   it("treats a blank/whitespace-only tier as absent, falling through to the next", () => {
     expect(resolvePsiKey("  ", undefined, "config-key")).toBe("config-key");
     expect(resolvePsiKey(undefined, "   ", "config-key")).toBe("config-key");
+  });
+});
+
+describe("campaignPriorAuctionInsights", () => {
+  it("groups the prior window's domains by campaign, no share metrics needed", async () => {
+    const rows = [
+      { campaign: { id: 1 }, auction_insight_domain: { domain: "a.com" } },
+      { campaign: { id: 1 }, auction_insight_domain: { domain: "b.com" } },
+      { campaign: { id: 2 }, auction_insight_domain: { domain: "c.com" } },
+    ];
+    const result = await campaignPriorAuctionInsights(
+      fakeClient(() => rows),
+      "123",
+      new Date("2026-06-22T00:00:00Z"),
+      7,
+      [1, 2],
+    );
+    expect(result[1]).toEqual(["a.com", "b.com"]);
+    expect(result[2]).toEqual(["c.com"]);
+  });
+
+  it("no campaign ids -> no query, empty map", async () => {
+    let called = false;
+    const result = await campaignPriorAuctionInsights(
+      fakeClient(() => [], () => {
+        called = true;
+      }),
+      "123",
+      new Date("2026-06-22T00:00:00Z"),
+      7,
+      [],
+    );
+    expect(result).toEqual({});
+    expect(called).toBe(false);
+  });
+});
+
+describe("current-vs-prior-window Auction Insights composition (no cross-run state)", () => {
+  it("a domain in the current window but absent from the prior window drives new_competitor via withAuctionInsightFindings", async () => {
+    const currentRows = [
+      {
+        campaign: { id: 1 },
+        auction_insight_domain: { domain: "newcomer.com" },
+        metrics: {
+          auction_insight_search_impression_share: 0.3,
+          auction_insight_search_overlap_rate: 0.2,
+          auction_insight_search_position_above_rate: 0.2,
+          auction_insight_search_top_impression_percentage: 0.2,
+          auction_insight_search_outranking_share: 0.1,
+        },
+      },
+    ];
+    const priorRows = [{ campaign: { id: 1 }, auction_insight_domain: { domain: "old-timer.com" } }];
+
+    let queryCount = 0;
+    const client = fakeClient((query) => {
+      queryCount += 1;
+      return query.includes("segments.date BETWEEN") ? priorRows : currentRows;
+    });
+
+    const current = await campaignAuctionInsights(client, "123", 7, [1]);
+    const prior = await campaignPriorAuctionInsights(client, "123", new Date("2026-06-22T00:00:00Z"), 7, [1]);
+    expect(queryCount).toBe(2);
+    expect(current[1].map((r) => r.domain)).toEqual(["newcomer.com"]);
+    expect(prior[1]).toEqual(["old-timer.com"]);
   });
 });
