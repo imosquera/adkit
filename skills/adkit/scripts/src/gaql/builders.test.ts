@@ -126,12 +126,15 @@ describe("applyBiddingGuardQuery", () => {
     expect(() => applyBiddingGuardQuery(["123", "4x"])).toThrow();
   });
 
-  it("selects bid strategy, conversions, and average CPC over a fixed 30-day window", () => {
+  it("selects bid strategy, target values, conversions, and average CPC over a fixed 30-day window", () => {
     const q = applyBiddingGuardQuery(["12345", "67890"]);
     expect(q.resource).toBe("campaign");
     expect(q.fields).toEqual([
       "campaign.id",
       "campaign.bidding_strategy_type",
+      "campaign.target_cpa.target_cpa_micros",
+      "campaign.target_roas.target_roas",
+      "campaign.target_spend.cpc_bid_ceiling_micros",
       "metrics.conversions",
       "metrics.average_cpc",
     ]);

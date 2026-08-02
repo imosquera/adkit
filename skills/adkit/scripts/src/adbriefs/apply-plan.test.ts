@@ -281,6 +281,67 @@ describe("applyPlanToBrief", () => {
     expect(result.campaign.cpcBidCeilingMicros).toBe(brief.campaign.cpcBidCeilingMicros);
   });
 
+  it("bidding stages bidStrategy and targetCpaMicros for target-cpa (spec.md 048)", () => {
+    const plan = {
+      bidding: [{ campaignId: "100", strategy: "target-cpa", targetCpaMicros: 12_000_000 }],
+    };
+    const result = applyPlanToBrief(baseBrief(), groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("target-cpa");
+    expect(result.campaign.targetCpaMicros).toBe(12_000_000);
+  });
+
+  it("bidding stages bidStrategy and targetRoas for target-roas (spec.md 048)", () => {
+    const plan = {
+      bidding: [{ campaignId: "100", strategy: "target-roas", targetRoas: 3.5 }],
+    };
+    const result = applyPlanToBrief(baseBrief(), groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("target-roas");
+    expect(result.campaign.targetRoas).toBe(3.5);
+  });
+
+  it("bidding switching away from target-cpa/target-roas clears their companion fields", () => {
+    const brief = baseBrief({
+      campaign: {
+        ...baseBrief().campaign,
+        bidStrategy: "target-cpa",
+        targetCpaMicros: 12_000_000,
+      },
+    });
+    const plan = { bidding: [{ campaignId: "100", strategy: "maximize-clicks" }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("maximize-clicks");
+    expect(result.campaign.targetCpaMicros).toBeUndefined();
+  });
+
+  it("bidding switching away from target-roas to maximize-clicks clears targetRoas", () => {
+    const brief = baseBrief({
+      campaign: {
+        ...baseBrief().campaign,
+        bidStrategy: "target-roas",
+        targetRoas: 3.5,
+      },
+    });
+    const plan = { bidding: [{ campaignId: "100", strategy: "maximize-clicks" }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("maximize-clicks");
+    expect(result.campaign.targetRoas).toBeUndefined();
+  });
+
+  it("bidding switching directly between target-cpa and target-roas clears the old companion field and sets the new one", () => {
+    const brief = baseBrief({
+      campaign: {
+        ...baseBrief().campaign,
+        bidStrategy: "target-cpa",
+        targetCpaMicros: 12_000_000,
+      },
+    });
+    const plan = { bidding: [{ campaignId: "100", strategy: "target-roas", targetRoas: 3.5 }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("target-roas");
+    expect(result.campaign.targetRoas).toBe(3.5);
+    expect(result.campaign.targetCpaMicros).toBeUndefined();
+  });
+
   it("adGroups create appends a new ad group not already present by name", () => {
     const plan = { adGroups: [{ campaignId: "100", adGroup: { name: "placeholder" } }] };
     const created: AdGroupCreatePlanEntry = {
