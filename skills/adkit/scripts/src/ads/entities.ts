@@ -720,28 +720,51 @@ const AUDIENCE_LOOKUP_TABLES: ReadonlyArray<{ field: AudienceCriterionField; tab
 
 /**
  * Resolve one `audienceId` to its criterion oneof branch + resource name by
- * checking each candidate resource table in turn. Throws a {@link StepError}
- * when the ID matches none of them (e.g. it was removed, or belongs to a
+ * checking every candidate resource table. Throws a {@link StepError} when
+ * the ID matches none of them (e.g. it was removed, or belongs to a
  * different account) — this is FR-012's "reject with a clear error naming the
  * invalid ID" boundary check for the audience-attach path.
+ *
+ * Checks ALL four tables (not "first match wins") because Google Ads resource
+ * IDs are sequences scoped to their own resource type — a `user_list` and a
+ * `custom_audience` in the same account can carry the same numeric ID by
+ * coincidence. Silently picking whichever table happened to be checked first
+ * would attach the wrong criterion type with no indication anything was
+ * ambiguous, so a same-ID match in more than one table is itself a
+ * {@link StepError}, not a silent pick.
  */
 export async function resolveAudienceSegment(
   client: AdsClient,
   customerId: string,
   audienceId: number,
 ): Promise<ResolvedAudienceSegment> {
-  for (const { field, table } of AUDIENCE_LOOKUP_TABLES) {
-    const query = `SELECT ${table}.resource_name FROM ${table} WHERE ${table}.id = ${audienceId}`;
-    const rows = await client.search<Record<string, { resource_name: string }>>(customerId, query);
-    if (rows.length > 0) {
-      return { audienceId, field, resourceName: rows[0]![table]!.resource_name };
-    }
+  const matches = (
+    await Promise.all(
+      AUDIENCE_LOOKUP_TABLES.map(async ({ field, table }) => {
+        const query = `SELECT ${table}.resource_name FROM ${table} WHERE ${table}.id = ${audienceId}`;
+        const rows = await client.search<Record<string, { resource_name: string }>>(customerId, query);
+        return rows.length > 0 ? { field, resourceName: rows[0]![table]!.resource_name } : null;
+      }),
+    )
+  ).flatMap((m) => (m ? [m] : []));
+
+  if (matches.length === 0) {
+    throw new StepError(
+      "create-audience-segments",
+      `no audience segment found for audienceId ${audienceId} (checked user lists, custom audiences, combined audiences, and audiences)`,
+      null,
+    );
   }
-  throw new StepError(
-    "create-audience-segments",
-    `no audience segment found for audienceId ${audienceId} (checked user lists, custom audiences, combined audiences, and audiences)`,
-    null,
-  );
+  if (matches.length > 1) {
+    throw new StepError(
+      "create-audience-segments",
+      `audienceId ${audienceId} is ambiguous — it matches more than one resource type ` +
+        `(${matches.map((m) => m.field).join(", ")}); Google Ads IDs are only unique within ` +
+        "their own resource type, so this ID cannot be resolved automatically",
+      null,
+    );
+  }
+  return { audienceId, field: matches[0]!.field, resourceName: matches[0]!.resourceName };
 }
 
 /** Resolve every `audienceSegments` entry on an ad group. Order-preserving. */

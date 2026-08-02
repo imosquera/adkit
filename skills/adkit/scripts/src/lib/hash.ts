@@ -17,16 +17,27 @@
 
 import { createHash } from "node:crypto";
 
-/** SHA-256 hex digest of `value`. Pure. */
-function sha256Hex(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+/**
+ * A SHA-256 hex digest, branded so it can never be confused with (or
+ * accidentally assigned from) a plaintext string at the type level — only
+ * `hashEmail`/`hashPhone` below ever produce one. TypeScript's structural
+ * typing would otherwise let any `string` (including an unhashed CSV cell)
+ * flow into a `HashedIdentifier` field undetected; the non-exported brand
+ * symbol closes that gap without a runtime cost (it's erased at compile
+ * time — `sha256Hex`'s return is cast to this type in exactly one place).
+ */
+export type Sha256Hex = string & { readonly __brand: "Sha256Hex" };
+
+/** SHA-256 hex digest of `value`. Pure. The sole place the `Sha256Hex` brand is cast into existence. */
+function sha256Hex(value: string): Sha256Hex {
+  return createHash("sha256").update(value, "utf8").digest("hex") as Sha256Hex;
 }
 
 /**
  * Normalize an email per Google's Customer Match rules (trim, lowercase) and
  * return its SHA-256 hex digest. Never returns or logs the plaintext value.
  */
-export function hashEmail(rawEmail: string): string {
+export function hashEmail(rawEmail: string): Sha256Hex {
   return sha256Hex(rawEmail.trim().toLowerCase());
 }
 
@@ -37,7 +48,7 @@ export function hashEmail(rawEmail: string): string {
  * audience — see entities.ts's GEO_TARGETS) and return its SHA-256 hex digest.
  * Never returns or logs the plaintext value.
  */
-export function hashPhone(rawPhone: string): string {
+export function hashPhone(rawPhone: string): Sha256Hex {
   const digits = rawPhone.replace(/[^0-9+]/g, "");
   const e164 = digits.startsWith("+")
     ? digits

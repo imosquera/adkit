@@ -513,6 +513,17 @@ describe("resolveAudienceSegment", () => {
     const { client } = makeFakeWithSearch({});
     await expect(resolveAudienceSegment(client, "123", 999)).rejects.toThrow(/no audience segment found/);
   });
+
+  it("throws a clear ambiguity error when the same id matches more than one resource table", async () => {
+    // A user_list and a custom_audience happen to share the same numeric id —
+    // Google Ads IDs are only unique within their own resource type. Silently
+    // picking the first match would attach the wrong criterion type.
+    const { client } = makeFakeWithSearch({
+      user_list: [{ user_list: { resource_name: "customers/123/userLists/111" } }],
+      custom_audience: [{ custom_audience: { resource_name: "customers/123/customAudiences/111" } }],
+    });
+    await expect(resolveAudienceSegment(client, "123", 111)).rejects.toThrow(/is ambiguous/);
+  });
 });
 
 describe("buildAudienceSegmentOps", () => {

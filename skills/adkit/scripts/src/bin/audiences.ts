@@ -26,7 +26,7 @@ import { isMainModule } from "../cli/entry.js";
 import { resolveCustomer } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
 import { credentialsPath, loadClient, type AdsClient } from "../lib/auth.js";
-import { hashEmail, hashPhone } from "../lib/hash.js";
+import { hashEmail, hashPhone, type Sha256Hex } from "../lib/hash.js";
 
 // ---------------------------------------------------------------------------
 // `list` — enumerate available audience segments (FR-001).
@@ -115,10 +115,16 @@ export async function createCustomIntentAudience(
 // (FR-003). Never sends plaintext.
 // ---------------------------------------------------------------------------
 
-/** One successfully-parsed, already-hashed row ready to upload. */
+/**
+ * One successfully-parsed, already-hashed row ready to upload. Both fields
+ * are `Sha256Hex` (the branded type from `lib/hash.ts`), not a bare `string`
+ * — this is what actually prevents an unhashed CSV cell from being assigned
+ * here undetected; only `hashEmail`/`hashPhone` can produce a value of this
+ * type.
+ */
 export interface HashedIdentifier {
-  hashedEmail?: string;
-  hashedPhone?: string;
+  hashedEmail?: Sha256Hex;
+  hashedPhone?: Sha256Hex;
 }
 
 /** The result of parsing one CSV row: either a hashed identifier, or a skip reason. */
@@ -203,6 +209,17 @@ export async function uploadCustomerMatch(
  * identifier, then run the job. Builds its own `Customer` from
  * google-ads.yaml (like keyword-ideas.ts) since this RPC sequence is outside
  * the shared search/mutate `AdsClient` abstraction.
+ *
+ * NEEDS A REAL-CREDENTIALS SMOKE TEST before production use: the
+ * `sdkCustomer.offlineUserDataJobs.{create,addOperations,run}` shape below is
+ * cast from the SDK's `Customer` type (`as unknown as {...}`) because this
+ * sandboxed environment has no installed `google-ads-api` type definitions to
+ * verify the exact method/field names against. If the real SDK surface
+ * differs, this fails loudly (a `TypeError` on the first call, caught by
+ * `main`'s try/catch and surfaced as an error envelope) rather than silently
+ * sending a wrong-shaped request — but it has zero test coverage against the
+ * actual SDK, unlike every other SDK-touching path in this codebase. Confirm
+ * against a real account before relying on this in production.
  */
 export async function runOfflineUserDataJobViaSdk(
   customerId: string,
