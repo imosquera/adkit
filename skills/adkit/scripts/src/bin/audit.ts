@@ -677,12 +677,25 @@ function negativesAndPromotions(
   return [addNegatives, promoteKeywords];
 }
 
-/** Mean of a campaign's existing-keyword avg_cpc (from keywordCpc), 0 keywords -> 0 (unknown). */
-function averageCpc(keywords: KeywordCpc[]): number {
+/**
+ * Click-weighted mean of a campaign's existing-keyword avg_cpc (from keywordCpc),
+ * so one high-volume keyword doesn't get the same say as a dozen low-volume ones —
+ * a plain per-keyword average lets a single-click $10 keyword pull the baseline as
+ * hard as a 100-click $1 keyword. Weight is impressions * ctr (keywordCpc doesn't
+ * carry clicks directly, but that recovers it). Falls back to the unweighted mean
+ * when no priced keyword has any recorded impressions; 0 priced keywords -> 0
+ * (unknown).
+ */
+export function averageCpc(keywords: KeywordCpc[]): number {
   const priced = keywords.filter((k) => k.avg_cpc > 0);
-  return priced.length > 0
-    ? priced.reduce((sum, k) => sum + k.avg_cpc, 0) / priced.length
-    : 0;
+  if (priced.length === 0) {
+    return 0;
+  }
+  const weighted = priced.map((k) => ({ cpc: k.avg_cpc, clicks: k.impressions * k.ctr }));
+  const totalClicks = weighted.reduce((sum, w) => sum + w.clicks, 0);
+  return totalClicks > 0
+    ? weighted.reduce((sum, w) => sum + w.cpc * w.clicks, 0) / totalClicks
+    : priced.reduce((sum, k) => sum + k.avg_cpc, 0) / priced.length;
 }
 
 /**
