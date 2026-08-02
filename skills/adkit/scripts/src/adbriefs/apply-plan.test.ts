@@ -6,7 +6,8 @@
 import { describe, expect, it } from "vitest";
 import { applyPlanToBrief, resolvePlanGroups, type ApplyPlanComputed } from "./apply-plan.js";
 import type { StateIndex } from "./state.js";
-import type { AdGroupCreatePlanEntry } from "../fixes/plan.js";
+import type { AddRsaCreatePlanEntry, AdGroupCreatePlanEntry } from "../fixes/plan.js";
+import { BriefSchema } from "../lib/schema.js";
 import type { Brief } from "../lib/schema.js";
 
 // ---------------------------------------------------------------------------
@@ -435,8 +436,72 @@ describe("applyPlanToBrief", () => {
     expect(groups).toEqual([]);
     // With no group at all there is nothing to apply — applyPlanToBrief is only ever
     // called for a resolved group, so simulate the "resolved but empty" case directly.
-    const emptyGroup = { slug: "alpha", campaignName: "Alpha", sections: { rewrites: [], appendHeadlines: [], sitelinks: [], callouts: [], negatives: [], keywords: [], budgets: [], bidding: [], adGroups: [] }, unresolvedIds: [] };
+    const emptyGroup = { slug: "alpha", campaignName: "Alpha", sections: { rewrites: [], appendHeadlines: [], sitelinks: [], callouts: [], negatives: [], keywords: [], budgets: [], bidding: [], adGroups: [], addRsa: [] }, unresolvedIds: [] };
     const result = applyPlanToBrief(brief, emptyGroup);
     expect(result).toEqual(brief);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addRsa staging
+// ---------------------------------------------------------------------------
+
+describe("addRsa staging", () => {
+  function groupFor(plan: Record<string, unknown>): ReturnType<typeof resolvePlanGroups>[number] {
+    const groups = resolvePlanGroups(plan, twoCampaignIndex());
+    return groups.find((g) => g.slug === "alpha")!;
+  }
+
+  /** "widgets" ad group with only 1 live RSA — the under-2 addRsa target case. */
+  function oneRsaBrief(): Brief {
+    return baseBrief({
+      adGroups: [
+        {
+          name: "widgets",
+          defaultBidMicros: 1_500_000,
+          responsiveSearchAds: [rsaFixture(0)],
+          keywords: [{ text: "existing keyword", matchType: "PHRASE" }],
+          aiMax: false,
+        },
+      ],
+    });
+  }
+
+  it("a resolved addRsa block appends the new RSA, producing a brief that re-parses against BriefSchema with exactly 2 entries (SC-004)", () => {
+    const plan = { addRsa: [{ adGroupId: "111", headlines: [], descriptions: [] }] };
+    const created: AddRsaCreatePlanEntry = { adGroupId: "111", rsa: rsaFixture(1) };
+    const computed: ApplyPlanComputed = { addRsaCreates: [created] };
+    const result = applyPlanToBrief(oneRsaBrief(), groupFor(plan), computed);
+    expect(result.adGroups[0]!.responsiveSearchAds).toHaveLength(2);
+    expect(result.adGroups[0]!.responsiveSearchAds[1]).toEqual(rsaFixture(1));
+    expect(() => BriefSchema.parse(result)).not.toThrow();
+  });
+
+  it("an addRsa block whose adGroupId does not resolve to any tracked brief slug produces no brief change and surfaces via unresolvedIds (FR-012)", () => {
+    const plan = { addRsa: [{ adGroupId: "999", headlines: [], descriptions: [] }] };
+    const groups = resolvePlanGroups(plan, twoCampaignIndex());
+    const unresolvedGroup = groups.find((g) => g.slug === "");
+    expect(unresolvedGroup?.unresolvedIds).toEqual([{ kind: "adGroupId", id: "999" }]);
+    expect(groups.find((g) => g.slug === "alpha")).toBeUndefined();
+  });
+
+  it("an addRsa block with no matching computed.addRsaCreates entry leaves the ad group untouched", () => {
+    const plan = { addRsa: [{ adGroupId: "111", headlines: [], descriptions: [] }] };
+    const result = applyPlanToBrief(oneRsaBrief(), groupFor(plan), {});
+    expect(result.adGroups[0]!.responsiveSearchAds).toHaveLength(1);
+  });
+
+  it("stages the new RSA even when the brief file's on-disk responsiveSearchAds already shows RSAS_PER_AD_GROUP entries, as long as computed.addRsaCreates has a matching create — a stale local count must never override the live-derived create (regression)", () => {
+    // `baseBrief()` already carries 2 on-disk RSAs for "widgets" (drifted/stale
+    // relative to live, which addRsaPlan says actually had only 1) — the exact
+    // "brief already shows 2 locally" drift scenario the removed
+    // `responsiveSearchAds.length < RSAS_PER_AD_GROUP` gate used to mishandle by
+    // silently dropping the newly-created live RSA instead of staging it.
+    const plan = { addRsa: [{ adGroupId: "111", headlines: [], descriptions: [] }] };
+    const created: AddRsaCreatePlanEntry = { adGroupId: "111", rsa: rsaFixture(2) };
+    const computed: ApplyPlanComputed = { addRsaCreates: [created] };
+    const result = applyPlanToBrief(baseBrief(), groupFor(plan), computed);
+    expect(result.adGroups[0]!.responsiveSearchAds).toHaveLength(3);
+    expect(result.adGroups[0]!.responsiveSearchAds[2]).toEqual(rsaFixture(2));
   });
 });

@@ -17,7 +17,14 @@
  */
 
 import type { AdGroup, Brief, Keyword } from "../lib/schema.js";
-import { coerceKeyword, keyStr, negKey, posKey, type AdGroupCreatePlanEntry } from "../fixes/plan.js";
+import {
+  coerceKeyword,
+  keyStr,
+  negKey,
+  posKey,
+  type AddRsaCreatePlanEntry,
+  type AdGroupCreatePlanEntry,
+} from "../fixes/plan.js";
 import type { AdGroupLocator, StateIndex } from "./state.js";
 
 /** A plan id with no record in any loaded state file — reported, never silently dropped. */
@@ -51,6 +58,12 @@ interface ResolvedAdGroupCreateBlock {
   block: Record<string, unknown>;
 }
 
+/** An `addRsa` block, resolved to the ad group it targets. Mirrors {@link ResolvedKeywordsBlock}. */
+interface ResolvedAddRsaBlock {
+  adGroupName: string;
+  block: Record<string, unknown>;
+}
+
 /**
  * Every plan section touching one resolved brief slug — a proof that every id inside
  * `sections` resolved to `slug`, plus a per-slug `unresolvedIds` list for a sibling id
@@ -74,6 +87,7 @@ export interface ResolvedPlanGroup {
     budgets: Array<Record<string, unknown>>;
     bidding: Array<Record<string, unknown>>;
     adGroups: ResolvedAdGroupCreateBlock[];
+    addRsa: ResolvedAddRsaBlock[];
   };
   unresolvedIds: UnresolvedId[];
 }
@@ -92,6 +106,7 @@ function emptySections(): ResolvedPlanGroup["sections"] {
     budgets: [],
     bidding: [],
     adGroups: [],
+    addRsa: [],
   };
 }
 
@@ -111,6 +126,7 @@ export interface PlanSections {
   searchPartners?: Array<Record<string, unknown>>;
   adGroups?: Array<Record<string, unknown>>;
   languages?: Array<Record<string, unknown>>;
+  addRsa?: Array<Record<string, unknown>>;
 }
 
 function arr(plan: PlanSections, key: keyof PlanSections): Array<Record<string, unknown>> {
@@ -191,6 +207,10 @@ export function resolvePlanGroups(plan: PlanSections, index: StateIndex): Resolv
     const loc = byAdGroupId(b, "adGroupId");
     if (loc) groupFor(loc.slug, loc.campaignName).sections.keywords.push({ adGroupName: loc.adGroupName, block: b });
   }
+  for (const b of arr(plan, "addRsa")) {
+    const loc = byAdGroupId(b, "adGroupId");
+    if (loc) groupFor(loc.slug, loc.campaignName).sections.addRsa.push({ adGroupName: loc.adGroupName, block: b });
+  }
   // adGroupStatus: same as adStatus above — resolved for the warning, no Brief field.
   for (const b of arr(plan, "adGroupStatus")) {
     byAdGroupId(b, "adGroupId");
@@ -226,6 +246,8 @@ export interface ApplyPlanComputed {
   defaultLandingUrl?: string;
   /** Every ad-group create the plan's `adGroups` section produced (already parsed + skip-filtered by `addAdGroupsPlan`). */
   adGroupCreates?: AdGroupCreatePlanEntry[];
+  /** Every addRsa create the plan's `addRsa` section produced (already parsed + skip-filtered by `addRsaPlan`/`addRsaCreateEntries`). */
+  addRsaCreates?: AddRsaCreatePlanEntry[];
 }
 
 /** True when `a`/`b` are exact-match case-sensitive duplicates (the appendHeadlines dedup rule). */
@@ -329,7 +351,27 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
       keywords = [...keywords.filter((k) => !removeKeys.has(keyStr(posKey(k.text, k.matchType)))), ...fresh];
     }
 
-    return !rsaChanged && keywords === ag.keywords ? ag : { ...ag, responsiveSearchAds, keywords };
+    // addRsa (FR-011): append the new RSA onto the targeted ad group's
+    // responsiveSearchAds when the group's resolved addRsa block has a matching,
+    // already-parsed create in `computed.addRsaCreates` (populated in
+    // bin/apply-fixes.ts from addRsaPlan/addRsaCreateEntries's create half — the
+    // SAME parsed ResponsiveSearchAd the live mutation used, never re-parsed here).
+    // No local `responsiveSearchAds.length < RSAS_PER_AD_GROUP` re-check: that would
+    // gate on this BRIEF FILE's on-disk count, a different (and possibly stale, per
+    // reference/audit.md's "legacy ad group" drift scenario) source than the LIVE
+    // Ads API count `addRsaCreates` was already filtered against — re-checking here
+    // could silently drop a just-created live RSA from the brief when the two are
+    // out of sync. `computed.addRsaCreates` is the sole source of truth for whether
+    // this ad group gets an appended RSA.
+    const rsaBlock = group.sections.addRsa.findLast((r) => r.adGroupName === ag.name);
+    const rsaCreate = rsaBlock
+      ? (computed.addRsaCreates ?? []).find((c) => String(c.adGroupId) === String(rsaBlock.block["adGroupId"]))
+      : undefined;
+    const finalResponsiveSearchAds = rsaCreate ? [...responsiveSearchAds, rsaCreate.rsa] : responsiveSearchAds;
+
+    return !rsaChanged && !rsaCreate && keywords === ag.keywords
+      ? ag
+      : { ...ag, responsiveSearchAds: finalResponsiveSearchAds, keywords };
   });
 
   // `computed.adGroupCreates` is already filtered against LIVE ad-group names by

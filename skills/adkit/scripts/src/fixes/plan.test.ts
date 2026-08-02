@@ -2,6 +2,9 @@
 import { describe, expect, it } from "vitest";
 import {
   addAdGroupsPlan,
+  addRsaCreateEntries,
+  addRsaErrors,
+  addRsaPlan,
   adGroupStatusPlan,
   adStatusPlan,
   biddingPlan,
@@ -12,6 +15,7 @@ import {
   newNegatives,
   newPositiveKeywords,
   posKey,
+  resolveAddRsaFinalUrl,
   searchPartnersPlan,
   validate,
 } from "./plan.js";
@@ -952,5 +956,162 @@ describe("addAdGroupsPlan", () => {
     const [creates, skips] = addAdGroupsPlan(blocks, undefined);
     expect(creates).toHaveLength(1);
     expect(skips).toHaveLength(0);
+  });
+});
+
+// ---------- addRsa ----------
+
+/** A valid addRsa block body: 15 headlines / 4 descriptions + explicit finalUrl. */
+function addRsaBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    adGroupId: "789",
+    headlines: h(15),
+    descriptions: d(4),
+    finalUrl: "https://example.com/ideas/close-deals-ai",
+    ...overrides,
+  };
+}
+
+describe("resolveAddRsaFinalUrl", () => {
+  it("returns the block's own finalUrl when present", () => {
+    const block = addRsaBody({ finalUrl: "https://example.com/own" });
+    const live = new Map([[789, { count: 1, soleFinalUrl: "https://example.com/live" }]]);
+    expect(resolveAddRsaFinalUrl(block, live)).toBe("https://example.com/own");
+  });
+
+  it("defaults to the sole live RSA's finalUrl when omitted and live count is 1", () => {
+    const { finalUrl: _drop, ...block } = addRsaBody();
+    const live = new Map([[789, { count: 1, soleFinalUrl: "https://example.com/live" }]]);
+    expect(resolveAddRsaFinalUrl(block, live)).toBe("https://example.com/live");
+  });
+
+  it("is undefined when omitted and live count is 0 (nothing to default from)", () => {
+    const { finalUrl: _drop, ...block } = addRsaBody();
+    const live = new Map([[789, { count: 0 }]]);
+    expect(resolveAddRsaFinalUrl(block, live)).toBeUndefined();
+  });
+});
+
+describe("addRsa validation", () => {
+  it("a valid 15H/4D block passes", () => {
+    const plan = { addRsa: [addRsaBody()] };
+    expect(validate(plan, {}, {})).toEqual([]);
+  });
+
+  it("addRsaErrors accepts a well-formed block", () => {
+    expect(addRsaErrors([addRsaBody()], new Map())).toEqual([]);
+  });
+
+  it("addRsaErrors rejects a missing finalUrl when the live count is 0", () => {
+    const { finalUrl: _drop, ...block } = addRsaBody();
+    const live = new Map([[789, { count: 0 }]]);
+    const errs = addRsaErrors([block], live);
+    expect(errs.some((e) => e.includes("adGroup 789") && e.includes("finalUrl"))).toBe(true);
+  });
+
+  it("missing adGroupId is flagged", () => {
+    const { adGroupId: _drop, ...block } = addRsaBody();
+    expect(addRsaErrors([block], new Map()).some((e) => e.includes("missing adGroupId"))).toBe(true);
+  });
+
+  it("non-numeric adGroupId is flagged", () => {
+    const block = addRsaBody({ adGroupId: "abc" });
+    expect(addRsaErrors([block], new Map()).some((e) => e.includes("adGroupId must be numeric"))).toBe(true);
+  });
+
+  it("wrong headline/description count is flagged", () => {
+    const block = addRsaBody({ headlines: h(12), descriptions: d(3) });
+    const errs = addRsaErrors([block], new Map());
+    expect(errs.some((e) => e.includes("adGroup 789") && e.includes("headlines"))).toBe(true);
+    expect(errs.some((e) => e.includes("adGroup 789") && e.includes("descriptions"))).toBe(true);
+  });
+
+  it("an over-length headline is flagged", () => {
+    const block = addRsaBody({ headlines: [...h(14), "x".repeat(31)] });
+    const errs = addRsaErrors([block], new Map());
+    expect(errs.some((e) => e.includes("headlines"))).toBe(true);
+  });
+
+  it("an over-length description is flagged", () => {
+    const block = addRsaBody({ descriptions: [...d(3), "x".repeat(91)] });
+    const errs = addRsaErrors([block], new Map());
+    expect(errs.some((e) => e.includes("descriptions"))).toBe(true);
+  });
+
+  it("a duplicate headline is flagged", () => {
+    const block = addRsaBody({ headlines: [...h(14), "headline 0"] });
+    const errs = addRsaErrors([block], new Map());
+    expect(errs.some((e) => e.includes("headlines") && e.includes("unique"))).toBe(true);
+  });
+
+  it("a duplicate description is flagged", () => {
+    const block = addRsaBody({ descriptions: [...d(3), "description 0"] });
+    const errs = addRsaErrors([block], new Map());
+    expect(errs.some((e) => e.includes("descriptions") && e.includes("unique"))).toBe(true);
+  });
+
+  it("an invalid path1/path2 is flagged", () => {
+    const block = addRsaBody({ path1: "has space" });
+    const errs = addRsaErrors([block], new Map());
+    expect(errs.some((e) => e.includes("path1"))).toBe(true);
+  });
+});
+
+describe("addRsaPlan", () => {
+  it("an ad group with 1 live RSA partitions as a create", () => {
+    const live = new Map([[789, { count: 1, soleFinalUrl: "https://example.com/x" }]]);
+    const [changes, skips] = addRsaPlan([addRsaBody()], live);
+    expect(changes).toHaveLength(1);
+    expect(skips).toHaveLength(0);
+  });
+
+  it("an ad group with 0 live RSAs partitions as a create", () => {
+    const live = new Map([[789, { count: 0 }]]);
+    const [changes, skips] = addRsaPlan([addRsaBody()], live);
+    expect(changes).toHaveLength(1);
+    expect(skips).toHaveLength(0);
+  });
+
+  it("an ad group already at 2 live RSAs partitions as a skip", () => {
+    const live = new Map([[789, { count: 2 }]]);
+    const [changes, skips] = addRsaPlan([addRsaBody()], live);
+    expect(changes).toHaveLength(0);
+    expect(skips).toHaveLength(1);
+  });
+
+  it("an ad group already at 3+ live RSAs (over-count) also partitions as a skip", () => {
+    const live = new Map([[789, { count: 3 }]]);
+    const [changes, skips] = addRsaPlan([addRsaBody()], live);
+    expect(changes).toHaveLength(0);
+    expect(skips).toHaveLength(1);
+  });
+
+  it("two blocks targeting the same adGroupId starting at 1 live RSA: [create, skip]", () => {
+    const live = new Map([[789, { count: 1, soleFinalUrl: "https://example.com/x" }]]);
+    const blocks = [addRsaBody(), addRsaBody({ headlines: h(15).map((t) => `${t} v2`) })];
+    const [changes, skips] = addRsaPlan(blocks, live);
+    expect(changes).toHaveLength(1);
+    expect(skips).toHaveLength(1);
+    expect(changes[0]).toBe(blocks[0]);
+    expect(skips[0]).toBe(blocks[1]);
+  });
+
+  it("with no live state everything is a create", () => {
+    const [changes, skips] = addRsaPlan([addRsaBody()], new Map());
+    expect(changes).toHaveLength(1);
+    expect(skips).toHaveLength(0);
+  });
+});
+
+describe("addRsaCreateEntries", () => {
+  it("builds the already-parsed, already-defaulted ResponsiveSearchAd per change", () => {
+    const { finalUrl: _drop, ...block } = addRsaBody();
+    const live = new Map([[789, { count: 1, soleFinalUrl: "https://example.com/live" }]]);
+    const entries = addRsaCreateEntries([block], live);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.adGroupId).toBe("789");
+    expect(entries[0]!.rsa.finalUrl).toBe("https://example.com/live");
+    expect(entries[0]!.rsa.headlines).toHaveLength(15);
+    expect(entries[0]!.rsa.descriptions).toHaveLength(4);
   });
 });
