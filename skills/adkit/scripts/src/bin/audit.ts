@@ -79,6 +79,7 @@ import {
 } from "../lib/brand.js";
 import {
   clusterSplitRecommendation,
+  keywordsByClicksAndCtr,
   keywordsToPromote,
   negativesToAdd,
 } from "../lib/cluster.js";
@@ -125,6 +126,7 @@ import {
   emitLines,
   pct,
   renderAuctionInsights,
+  renderClickCtrCandidates,
   renderCreativeSummary,
   renderImpressionShare,
   renderKeywordCpc,
@@ -173,21 +175,31 @@ function isPinned(field: string | null | undefined): boolean {
 // Fetch helpers.
 // ---------------------------------------------------------------------------
 
+export interface AllKeywords {
+  /** {campaignId: {adGroupName: [kw]}} — scoring/cannibalization/campaign-wide promote checks. */
+  byName: Record<number, Record<string, string[]>>;
+  /** {campaignId: {adGroupId: [kw]}} — lets a promote check scope "already a keyword" to one ad group. */
+  byAdGroupId: Record<number, Record<number, string[]>>;
+}
+
 /**
- * One query for every campaign's ENABLED keywords → {campaignId: {adGroupName: [kw]}}.
- * Replaces the old per-campaign + per-cannibalization-pair fetches.
+ * One query for every campaign's ENABLED keywords → grouped both by ad-group name
+ * (the long-standing shape scoring/cannibalization rely on) and by ad-group id (so a
+ * per-ad-group promote check, like clicksAndCtrCandidates, isn't stuck comparing
+ * against every other ad group's keywords too). Replaces the old per-campaign +
+ * per-cannibalization-pair fetches.
  */
 async function allKeywords(
   client: AdsClient,
   customerId: string,
   campaignIds: number[],
-): Promise<Record<number, Record<string, string[]>>> {
+): Promise<AllKeywords> {
   if (campaignIds.length === 0) {
-    return {};
+    return { byName: {}, byAdGroupId: {} };
   }
   const rows = await search<KeywordRow>(client, customerId, auditKeywordsQuery(campaignIds));
   const byCampaign = groupBy(rows.map((r): [number, KeywordRow] => [r.campaign.id, r]));
-  return Object.fromEntries(
+  const byName = Object.fromEntries(
     Object.entries(byCampaign).map(([cid, crows]) => [
       Number(cid),
       groupBy(
@@ -195,6 +207,15 @@ async function allKeywords(
       ),
     ]),
   );
+  const byAdGroupId = Object.fromEntries(
+    Object.entries(byCampaign).map(([cid, crows]) => [
+      Number(cid),
+      groupBy(
+        crows.map((r): [number, string] => [r.ad_group.id, r.ad_group_criterion.keyword.text]),
+      ),
+    ]),
+  );
+  return { byName, byAdGroupId };
 }
 
 async function campaigns(
@@ -713,6 +734,8 @@ export async function searchTerms(
         conversions: r.metrics.conversions,
         cost: microsToCurrency(r.metrics.cost_micros),
         impressions: r.metrics.impressions,
+        ctr: r.metrics.ctr,
+        ad_group_id: r.ad_group?.id ?? null,
       },
     ]),
   );
@@ -743,6 +766,56 @@ function negativesAndPromotions(
     }
   }
   return [addNegatives, promoteKeywords];
+}
+
+/**
+ * Click-weighted mean of a campaign's existing-keyword avg_cpc (from keywordCpc),
+ * so one high-volume keyword doesn't get the same say as a dozen low-volume ones —
+ * a plain per-keyword average lets a single-click $10 keyword pull the baseline as
+ * hard as a 100-click $1 keyword. Weight is impressions * ctr (keywordCpc doesn't
+ * carry clicks directly, but that recovers it). Falls back to the unweighted mean
+ * when no priced keyword has any recorded impressions; 0 priced keywords -> 0
+ * (unknown).
+ */
+export function averageCpc(keywords: KeywordCpc[]): number {
+  const priced = keywords.filter((k) => k.avg_cpc > 0);
+  if (priced.length === 0) {
+    return 0;
+  }
+  const weighted = priced.map((k) => ({ cpc: k.avg_cpc, clicks: k.impressions * k.ctr }));
+  const totalClicks = weighted.reduce((sum, w) => sum + w.clicks, 0);
+  return totalClicks > 0
+    ? weighted.reduce((sum, w) => sum + w.cpc * w.clicks, 0) / totalClicks
+    : priced.reduce((sum, k) => sum + k.avg_cpc, 0) / priced.length;
+}
+
+/**
+ * Pure: search-term rows -> {campaignId: clicks/CTR-ranked promote candidates},
+ * a conversion-agnostic companion to promoteKeywords (see keywordsByClicksAndCtr).
+ * Existing keywords are scoped per ad group (kwByAdGroupId), not flattened across
+ * the whole campaign the way negativesAndPromotions' campaign-wide check is —
+ * keywordsByClicksAndCtr's candidates are ad-group-scoped, so the "already a
+ * keyword" check needs to match that granularity. Only present where non-empty.
+ */
+function clicksAndCtrCandidates(
+  terms: Record<number, SearchTermAgg[]>,
+  kwByAdGroupId: Record<number, Record<number, string[]>>,
+  keywordCpcMap: Record<number, KeywordCpc[]>,
+): Record<number, ReturnType<typeof keywordsByClicksAndCtr>> {
+  return Object.fromEntries(
+    Object.entries(terms)
+      .map(([cidStr, cterms]): [number, ReturnType<typeof keywordsByClicksAndCtr>] => {
+        const cid = Number(cidStr);
+        const existing = Object.entries(kwByAdGroupId[cid] ?? {}).flatMap(([adGroupId, kws]) =>
+          kws.map((kw) => ({ text: kw, ad_group_id: Number(adGroupId) })),
+        );
+        return [
+          cid,
+          keywordsByClicksAndCtr(cterms, existing, averageCpc(keywordCpcMap[cid] ?? [])),
+        ];
+      })
+      .filter(([, candidates]) => candidates.length > 0),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1155,7 +1228,11 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
 
   const camps = await campaigns(client, customer, !args.all, campaignId);
   const campIds = camps.map((c) => c.campaign.id);
-  const kwByCampaign = await allKeywords(client, customer, campIds);
+  const { byName: kwByCampaign, byAdGroupId: kwByAdGroupId } = await allKeywords(
+    client,
+    customer,
+    campIds,
+  );
   const report = await Promise.all(
     camps.map((c) =>
       auditCampaign(client, customer, c, args.banned, kwByCampaign[c.campaign.id] ?? {}, args.profile),
@@ -1172,6 +1249,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
   let addNegatives: Record<number, ReturnType<typeof negativesToAdd>> = {};
   let promoteKeywords: Record<number, ReturnType<typeof keywordsToPromote>> = {};
   let auctionInsightsMap: Record<number, AuctionInsightRow[]> = {};
+  let clickCtrCandidates: Record<number, ReturnType<typeof keywordsByClicksAndCtr>> = {};
   if (!args.noServing) {
     serving = await campaignServing(client, customer, args.days, !args.all, campaignId);
     cannib = cannibalization(serving, kwByCampaign);
@@ -1210,6 +1288,8 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
       return withAuctionInsightFindings(sc, domains, isFirstRun ? [] : newDomains);
     });
     saveAuctionInsightsCache(nextCache);
+
+    clickCtrCandidates = clicksAndCtrCandidates(terms, kwByAdGroupId, keywordCpcMap);
   }
 
   // human summary -> stderr (stdout stays clean JSON for piping)
@@ -1220,6 +1300,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     emitLines(renderKeywordCpc(serving, keywordCpcMap, splits, args.days));
     emitLines(renderAuctionInsights(serving, auctionInsightsMap, args.days));
     emitLines(renderSearchTermCandidates(addNegatives, promoteKeywords, names, args.days));
+    emitLines(renderClickCtrCandidates(clickCtrCandidates, names, args.days));
   }
 
   const campNames = Object.fromEntries(camps.map((c) => [c.campaign.id, c.campaign.name]));
@@ -1269,6 +1350,7 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
       clusterSplits: splits,
       addNegatives: stringKeyed(addNegatives),
       promoteKeywords: stringKeyed(promoteKeywords),
+      clickCtrCandidates: stringKeyed(clickCtrCandidates),
       qualityScore: stringKeyed(qualityScoreMap),
       landingPageHealth: stringKeyed(landingPageHealth),
       psi: { skipped: psi.skipped, results: psi.results },

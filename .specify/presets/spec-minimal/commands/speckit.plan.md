@@ -1,5 +1,5 @@
 ---
-description: "Composable wrapper for /speckit-plan that strictly enforces a minimal documentation tree (spec.md, plan.md, tasks.md, requirements.md, optional quickstart.md) via a mandatory prompt rule plus a read-only post-flight verifier — nothing is ever pre-created."
+description: "Composable /speckit-plan wrapper enforcing a minimal doc tree"
 ---
 
 ## Wrapper Layer

@@ -83,11 +83,17 @@ describe("auditSearchTermsQuery", () => {
 
   it("toGaql reproduces the pre-refactor GAQL string", () => {
     expect(toGaql(auditSearchTermsQuery(14, ["12345", "67890"]))).toBe(
-      "SELECT campaign.id, search_term_view.search_term, metrics.cost_micros, " +
-        "metrics.impressions, metrics.clicks, metrics.conversions " +
+      "SELECT campaign.id, ad_group.id, search_term_view.search_term, metrics.cost_micros, " +
+        "metrics.impressions, metrics.clicks, metrics.conversions, metrics.ctr " +
         "FROM search_term_view WHERE campaign.id IN (12345,67890) " +
         "AND segments.date DURING LAST_14_DAYS",
     );
+  });
+
+  it("selects ad_group.id and ctr so a per-ad-group click/CTR ranking needs no report round-trip", () => {
+    const q = auditSearchTermsQuery(14, ["12345"]);
+    expect(q.fields).toContain("ad_group.id");
+    expect(q.fields).toContain("metrics.ctr");
   });
 });
 

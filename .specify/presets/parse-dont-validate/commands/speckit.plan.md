@@ -1,5 +1,5 @@
 ---
-description: "Execute /speckit-plan, then require the plan to name its trust boundaries, branded domain types, and parsers up front — so Parse, Don't Validate is designed in before /speckit-implement enforces it."
+description: "Require the plan to name trust boundaries and parsers up front"
 ---
 
 ## User Input

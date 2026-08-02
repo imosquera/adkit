@@ -1,5 +1,5 @@
 ---
-description: "Dashboard hook target fired at before_implement: marks the `implement` phase active on the progress-report branch-status card. Runs via a lifecycle hook so it fires even when another preset REPLACES the /speckit-implement command body (a replace clobbers the preset's wrap; a hook does not). Resolves the progress-report preset's writer and no-ops if the preset — or the dashboard repo — isn't present."
+description: "Hook: mark the implement phase active on the dashboard card"
 ---
 
 ## Dashboard — enter `implement` (lifecycle hook)

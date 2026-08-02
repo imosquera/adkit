@@ -1,5 +1,5 @@
 ---
-description: "Create or update the project constitution and always enforce a mandatory Parse, Don't Validate section governing how untrusted data becomes trusted domain types."
+description: "Enforce a mandatory Parse, Don't Validate constitution section"
 ---
 
 ## User Input

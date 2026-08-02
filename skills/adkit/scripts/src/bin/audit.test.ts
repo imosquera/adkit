@@ -24,6 +24,7 @@ import { MIN_KEYWORDS, requireDigits } from "../audit/scoring.js";
 import { diffNewCompetitors, updateCache, EMPTY_CACHE } from "../audit/auction-insights-cache.js";
 import {
   auditCampaign,
+  averageCpc,
   campaignAuctionInsights,
   campaignServing,
   isManagerMetricsError,
@@ -39,6 +40,7 @@ import {
   searchTerms,
   withAuctionInsightFindings,
 } from "./audit.js";
+import type { KeywordCpc } from "../audit/types.js";
 
 /** Build a fake AdsClient whose reads pick canned rows by GAQL substring. */
 function fakeClient(pick: (query: string) => unknown[], onSearch?: () => void): AdsClient {
@@ -102,6 +104,28 @@ describe("isManagerMetricsError (bug 4)", () => {
 
   it("ignores unrelated errors", () => {
     expect(isManagerMetricsError(new Error("some other failure"))).toBe(false);
+  });
+});
+
+describe("averageCpc (click-weighted campaign CPC baseline)", () => {
+  function kwCpc(avg_cpc: number, impressions: number, ctr: number): KeywordCpc {
+    return { text: "x", avg_cpc, avg_cpc_micros: avg_cpc * 1_000_000, impressions, ctr, adGroupId: null, matchType: null };
+  }
+
+  it("weights by clicks (impressions * ctr), not a flat per-keyword average", () => {
+    // $1 keyword with 100 clicks, $10 keyword with 1 click -> ~$1.09, not $5.50.
+    const out = averageCpc([kwCpc(1, 100, 1.0), kwCpc(10, 1, 1.0)]);
+    expect(out).toBeCloseTo(1.09, 2);
+  });
+
+  it("falls back to the unweighted mean when no priced keyword has impressions", () => {
+    const out = averageCpc([kwCpc(2, 0, 0), kwCpc(4, 0, 0)]);
+    expect(out).toBe(3);
+  });
+
+  it("ignores unpriced (avg_cpc=0) keywords and returns 0 (unknown) when none are priced", () => {
+    expect(averageCpc([kwCpc(0, 100, 1.0)])).toBe(0);
+    expect(averageCpc([])).toBe(0);
   });
 });
 

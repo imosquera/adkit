@@ -1,5 +1,5 @@
 ---
-description: Execute tasks.md by walking the Execution Wave DAG and dispatching every parallel-safe task in a wave to a separate subagent in one tool-call batch.
+description: Execute tasks.md, dispatching each wave's tasks to subagents
 ---
 
 ## User Input

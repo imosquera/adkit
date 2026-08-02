@@ -4,8 +4,8 @@ description: 'Wraps the review coordinator (/speckit-review-run) to drive the da
   as its pass runs, and mark review done at the end. Composes with other review wrappers
   via the wrap seam.'
 scripts:
-  sh: scripts/bash/detect-changed-files.sh
-  ps: scripts/powershell/detect-changed-files.ps1
+  sh: .specify/extensions/review/scripts/bash/detect-changed-files.sh
+  ps: .specify/extensions/review/scripts/powershell/detect-changed-files.ps1
 ---
 
 

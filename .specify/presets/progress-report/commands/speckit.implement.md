@@ -1,5 +1,5 @@
 ---
-description: "Wraps /speckit-implement to keep the agent-os dashboard branch-status card current: mark the `implement` phase active on entry, done on completion. Composes with other implement wrappers via the wrap seam."
+description: "Wraps /speckit-implement to update the agent-os dashboard card"
 ---
 
 ## Dashboard — enter `implement`

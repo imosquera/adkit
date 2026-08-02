@@ -1,5 +1,5 @@
 ---
-description: "Execute the implementation plan by processing and executing all tasks defined in tasks.md. Per BeadBits Constitution v2.3.0 Principle VII (Feature-Work Isolation), this command MUST run inside the feature's dedicated worktree; the agent cd's into the worktree recorded in .specify/feature.json before executing any task."
+description: "Execute tasks.md inside the feature's dedicated worktree"
 argument-hint: "Optional implementation guidance or task filter"
 compatibility: "Requires spec-kit project structure with .specify/ directory"
 metadata:

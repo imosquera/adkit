@@ -41,7 +41,7 @@ export interface CampaignRow {
 
 export interface KeywordRow {
   campaign: { id: number };
-  ad_group: { name: string };
+  ad_group: { id: number; name: string };
   ad_group_criterion: { keyword: { text: string } };
 }
 
@@ -87,8 +87,19 @@ export interface KeywordMetricsRow {
 
 export interface SearchTermRow {
   campaign: { id: number };
+  // Optional to match this module's boundary convention (consumers absorb
+  // API-omitted nested fields rather than throw). ad_group.id is always selected
+  // by auditSearchTermsQuery, so in practice it is present; the consumer maps a
+  // (shouldn't-happen) omission to null — an honest "unknown", not a bogus id 0.
+  ad_group?: { id: number };
   search_term_view: { search_term: string };
-  metrics: { clicks: number; conversions: number; cost_micros: number; impressions: number };
+  metrics: {
+    clicks: number;
+    conversions: number;
+    cost_micros: number;
+    impressions: number;
+    ctr: number;
+  };
 }
 
 export interface QualityScoreRow {
@@ -249,11 +260,18 @@ export function normalizeKeywordMetricsRow(r: RawKeywordMetricsRow): KeywordMetr
 
 export interface RawSearchTermRow {
   campaign: { id: number };
+  ad_group?: { id: number };
   search_term_view: { search_term: string };
   metrics?: Partial<SearchTermRow["metrics"]>;
 }
 
-const SEARCH_TERM_METRIC_KEYS = ["clicks", "conversions", "cost_micros", "impressions"] as const;
+const SEARCH_TERM_METRIC_KEYS = [
+  "clicks",
+  "conversions",
+  "cost_micros",
+  "impressions",
+  "ctr",
+] as const;
 
 export function normalizeSearchTermRow(r: RawSearchTermRow): SearchTermRow {
   return { ...r, metrics: zeroFillMetrics(r.metrics, SEARCH_TERM_METRIC_KEYS) };

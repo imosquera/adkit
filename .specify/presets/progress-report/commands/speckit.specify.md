@@ -1,5 +1,5 @@
 ---
-description: "Wraps /speckit-specify to keep the agent-os dashboard branch-status card current: mark the `specify` phase active on entry, done on completion. Composes with other specify wrappers via the wrap seam."
+description: "Wraps /speckit-specify to update the agent-os dashboard card"
 ---
 
 ## Dashboard — enter `specify`
