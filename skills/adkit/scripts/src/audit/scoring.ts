@@ -78,6 +78,15 @@ export function pathToExcellent(
   pins: readonly string[],
   actionItems: readonly string[],
   strength: AdStrengthName,
+  // FR-011: a "display-remarketing" campaign (see bin/audit.ts's
+  // `isDisplayRemarketingCampaign`) skips the search-specific keyword-inclusion
+  // nudge and the ad-strength-scoring fallback — both search-ad concepts (theme
+  // keywords in headlines; Google's asset-diversity strength score) that don't
+  // apply the same way to a remarketing-audience-targeted campaign. Every other
+  // step (headline/description count, duplicates, echoes, banned phrases,
+  // pinning) still applies, since this feature reuses the same RSA authoring
+  // pipeline regardless of network setting.
+  skipSearchChecks = false,
 ): string[] {
   const headlinesUnder = hs.length < MIN_HEADLINES;
   const descriptionsUnder = ds.length < MIN_DESCRIPTIONS;
@@ -87,7 +96,7 @@ export function pathToExcellent(
     kwWords.length > 0
       ? hs.filter((h) => kwWords.some((w) => h.toLowerCase().includes(w))).length
       : 0;
-  const keywordGap = kwWords.length > 0 && hits < 3;
+  const keywordGap = !skipSearchChecks && kwWords.length > 0 && hits < 3;
 
   const steps: string[] = [
     ...(headlinesUnder
@@ -126,7 +135,7 @@ export function pathToExcellent(
     .filter((it) => ![...topics].some((t) => it.toLowerCase().includes(t)))
     .map((it) => `Google says: ${it}`);
   const fallback =
-    steps.length === 0 && googleHints.length === 0 && strength !== "EXCELLENT"
+    steps.length === 0 && googleHints.length === 0 && !skipSearchChecks && strength !== "EXCELLENT"
       ? [
           "Assets meet the quantitative bar; add more distinct headline angles and " +
             "stronger keyword coverage to push the diversity score to EXCELLENT.",

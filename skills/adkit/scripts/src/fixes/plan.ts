@@ -14,11 +14,13 @@ import {
   AdGroupSchema,
   AdGroupStatusChangeSchema,
   AdStatusChangeSchema,
+  AudienceSegmentSchema,
   CampaignStatusChangeSchema,
   KeywordSchema,
   SearchPartnersChangeSchema,
   displayPathPairErrors,
   type AdGroup,
+  type AudienceSegment,
   type Keyword,
 } from "../lib/schema.js";
 import { pyRepr, pyStr } from "../cli/py-format.js";
@@ -99,6 +101,37 @@ export function coerceKeyword(item: unknown): [Keyword | null, string | null] {
     return [null, parsed.error.issues[0].message];
   }
   return [null, `must be a string or object, got ${pyTypeName(item)}`];
+}
+
+/**
+ * Normalize a plan audience-segment entry to a schema AudienceSegment. A bare
+ * number/numeric-string is `{ audienceId }`; an object is passed through as-is.
+ * Mirrors {@link coerceKeyword}. Returns [AudienceSegment, null] or [null, error].
+ */
+export function coerceAudienceSegment(item: unknown): [AudienceSegment | null, string | null] {
+  const asNumericId = (): Record<string, unknown> | null => {
+    if (typeof item === "number") {
+      return { audienceId: item };
+    }
+    if (typeof item === "string" && /^[0-9]+$/.test(item)) {
+      return { audienceId: Number(item) };
+    }
+    return null;
+  };
+  const data = asNumericId() ?? (isObject(item) ? { ...item } : null);
+  if (data === null) {
+    return [null, `must be a number, numeric string, or object, got ${pyTypeName(item)}`];
+  }
+  const parsed = AudienceSegmentSchema.safeParse(data);
+  if (parsed.success) {
+    return [parsed.data, null];
+  }
+  return [null, parsed.error.issues[0].message];
+}
+
+/** Identity of an audience segment for dedup/existence: the bare numeric ID as a string. */
+export function segKey(audienceId: number): string {
+  return String(audienceId);
 }
 
 /** Identity of a negative keyword for dedup: case-insensitive text + match type. */
@@ -224,6 +257,36 @@ export function newPositiveKeywords(group: Record<string, unknown>, livePositive
     }
     seen.add(key);
     out.push(kw);
+  }
+  return out;
+}
+
+/**
+ * Coerced ADD audience segments in an `audiences` group that are not already
+ * on the ad group and not repeated within the group. Mirrors
+ * {@link newPositiveKeywords}: re-running an already-applied plan attaches
+ * nothing and creates no duplicate criterion (FR-007's add-side idempotency).
+ * Invalid items are dropped here (already surfaced by validate).
+ */
+export function newAudienceSegments(
+  group: Record<string, unknown>,
+  liveAudienceSegments: LiveKeywordMap,
+): AudienceSegment[] {
+  const agid = asInt((group as { adGroupId?: unknown }).adGroupId);
+  const seen = liveKeysFor(liveAudienceSegments, agid);
+  const out: AudienceSegment[] = [];
+  const add = Array.isArray(group.add) ? group.add : [];
+  for (const item of add) {
+    const [seg] = coerceAudienceSegment(item);
+    if (seg === null) {
+      continue;
+    }
+    const key = segKey(seg.audienceId);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(seg);
   }
   return out;
 }
@@ -751,6 +814,53 @@ function keywordsErrors(
   return keywordBlocks.flatMap(one);
 }
 
+/**
+ * Validate `audiences` plan blocks. Mirrors {@link keywordsErrors} for shape
+ * (missing adGroupId, non-numeric adGroupId, empty add+remove, malformed add
+ * items) but **deliberately deviates on `remove`**: unlike a keyword `remove`/
+ * `pause` targeting a criterion not present live (an error, per
+ * `keywordsErrors`'s `rpErrors`), removing an audience segment already absent
+ * is treated as a no-op success, not an error — FR-007 requires idempotency in
+ * *both* directions ("re-removing one already absent MUST NOT error"), which
+ * this feature's spec asks for explicitly and `keywords` does not.
+ */
+function audienceSegmentsErrors(
+  audienceBlocks: Array<Record<string, unknown>>,
+  liveAudienceSegments: LiveKeywordMap | null | undefined,
+): string[] {
+  const one = (ab: Record<string, unknown>): string[] => {
+    const agid = ab.adGroupId;
+    const add = Array.isArray(ab.add) ? ab.add : [];
+    const remove = Array.isArray(ab.remove) ? ab.remove : [];
+
+    return [
+      ...(agid === undefined || agid === null ? ["audiences: entry missing adGroupId"] : []),
+      ...(agid !== undefined && agid !== null && !isDigitString(agid)
+        ? [`audiences adGroup ${pyRepr(agid)}: adGroupId must be numeric`]
+        : []),
+      ...(add.length === 0 && remove.length === 0
+        ? [`audiences adGroup ${pyStr(agid)}: empty operation lists (add/remove)`]
+        : []),
+      ...add.flatMap((item) => {
+        const err = coerceAudienceSegment(item)[1];
+        return err ? [`audiences adGroup ${pyStr(agid)}: add ${pyRepr(item)}: ${err}`] : [];
+      }),
+      // `remove` items are only validated for shape (a malformed entry is
+      // still an error); whether they're present live is resolved by the
+      // shell (bin/apply-fixes.ts) against liveAudienceSegments, and an
+      // already-absent one is silently a no-op there — see this function's
+      // doc comment. `liveAudienceSegments` is accepted (matching keywords'
+      // signature) but intentionally unused for `remove` shape validation.
+      ...remove.flatMap((item) => {
+        const err = coerceAudienceSegment(item)[1];
+        return err ? [`audiences adGroup ${pyStr(agid)}: remove ${pyRepr(item)}: ${err}`] : [];
+      }),
+    ];
+  };
+  void liveAudienceSegments;
+  return audienceBlocks.flatMap(one);
+}
+
 type StatusSchema =
   | typeof CampaignStatusChangeSchema
   | typeof AdGroupStatusChangeSchema
@@ -971,6 +1081,7 @@ export interface ValidateLiveState {
   budgets: Map<unknown, { amountMicros?: number }> | Record<string, { amountMicros?: number }>;
   livePositive?: LiveKeywordMap | null;
   biddingState?: Map<unknown, BiddingLiveState> | Record<string, BiddingLiveState> | null;
+  liveAudienceSegments?: LiveKeywordMap | null;
 }
 
 /**
@@ -989,6 +1100,7 @@ export function validate(
   // FR-002) — defaults to the raw plan section so existing callers that don't compute
   // the skip partition (tests, other call sites) keep validating every bidding block.
   biddingBlocks: Array<Record<string, unknown>> | undefined = undefined,
+  liveAudienceSegments: LiveKeywordMap | null | undefined = undefined,
 ): string[] {
   const arr = (key: string): Array<Record<string, unknown>> =>
     Array.isArray(plan[key]) ? (plan[key] as Array<Record<string, unknown>>) : [];
@@ -1001,6 +1113,7 @@ export function validate(
     ...budgetsErrors(arr("budgets"), budgets),
     ...biddingErrors(biddingBlocks ?? arr("bidding"), biddingState ?? new Map()),
     ...keywordsErrors(arr("keywords"), livePositive),
+    ...audienceSegmentsErrors(arr("audiences"), liveAudienceSegments),
     ...statusChangeErrors(arr("campaignStatus"), CampaignStatusChangeSchema, "campaignStatus", "campaign", "campaignId"),
     ...statusChangeErrors(arr("adGroupStatus"), AdGroupStatusChangeSchema, "adGroupStatus", "adGroup", "adGroupId"),
     ...statusChangeErrors(arr("adStatus"), AdStatusChangeSchema, "adStatus", "ad", "adId"),

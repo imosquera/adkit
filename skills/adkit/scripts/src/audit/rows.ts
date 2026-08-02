@@ -36,7 +36,17 @@ export interface TextAsset {
 }
 
 export interface CampaignRow {
-  campaign: { id: number; name: string; status: string };
+  campaign: {
+    id: number;
+    name: string;
+    status: string;
+    // Optional per this module's boundary convention — the API omits a
+    // false-valued nested field. Absence means Display is off for this
+    // campaign (the overwhelming majority case); read via
+    // `isDisplayRemarketingCampaign` (bin/audit.ts) rather than trusting
+    // presence directly.
+    network_settings?: { target_content_network?: boolean };
+  };
 }
 
 export interface KeywordRow {

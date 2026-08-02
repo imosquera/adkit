@@ -474,6 +474,120 @@ describe("live keyword identity keys (numeric match_type)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// audiences (attach/detach audience segments on an ad group) — US2
+// ---------------------------------------------------------------------------
+
+/**
+ * Fake client whose `search` resolves an `audienceId` against `user_list` (the
+ * only table this fixture needs) and whose `searchStructured` returns the
+ * given live audience-segment criteria rows. Records every mutate batch.
+ */
+function audienceSegmentsClient(liveCriteria: Array<{ adGroupId: number; audienceId: number }>): {
+  client: AdsClient;
+  mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }>;
+} {
+  const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    async search<Row = unknown>(_customerId: string, query: string): Promise<Row[]> {
+      // resolveAudienceSegment's per-id user_list lookup.
+      const match = /user_list\.id = ([0-9]+)/.exec(query);
+      if (match) {
+        const id = match[1];
+        return [{ user_list: { resource_name: `customers/1/userLists/${id}` } }] as Row[];
+      }
+      return [] as Row[];
+    },
+    async searchStructured<Row = unknown>(_customerId: string, _args: SearchArgs): Promise<Row[]> {
+      return liveCriteria.map((c) => ({
+        ad_group: { id: c.adGroupId },
+        ad_group_criterion: {
+          criterion_id: c.audienceId,
+          resource_name: `customers/1/adGroupCriteria/${c.adGroupId}~${c.audienceId}`,
+        },
+      })) as Row[];
+    },
+    async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+      mutations.push({ customerId, operations });
+      return { results: operations.map((_, i) => ({ resource_name: `customers/1/adGroupCriteria/x/${i}` })) };
+    },
+  };
+  return { client, mutations };
+}
+
+function writeAudiencesPlan(blocks: Array<Record<string, unknown>>): string {
+  const p = join(dir, "plan.json");
+  writeFileSync(p, JSON.stringify({ customerId: "1111111111", audiences: blocks }));
+  return p;
+}
+
+describe("audiences (attach/detach) path", () => {
+  it("dry-run shows the add and issues zero mutations", async () => {
+    const { client, mutations } = audienceSegmentsClient([{ adGroupId: 200, audienceId: 111 }]);
+    currentClient = client;
+    const plan = writeAudiencesPlan([{ adGroupId: "200", add: [333] }]);
+
+    expect(await main([plan])).toBe(0);
+    expect(mutations).toEqual([]);
+  });
+
+  it("apply creates one criterion for the new audienceId", async () => {
+    const { client, mutations } = audienceSegmentsClient([{ adGroupId: 200, audienceId: 111 }]);
+    currentClient = client;
+    const plan = writeAudiencesPlan([{ adGroupId: "200", add: [333] }]);
+
+    expect(await main([plan, "--apply"])).toBe(0);
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]!.operations).toHaveLength(1);
+    expect(mutations[0]!.operations[0]!.entity).toBe("ad_group_criterion");
+    expect(mutations[0]!.operations[0]!.operation).toBe("create");
+  });
+
+  it("FR-007: re-applying the same add is idempotent — zero mutate calls", async () => {
+    // 111 is already live on ad group 200 — an add of 111 must be a no-op.
+    const { client, mutations } = audienceSegmentsClient([{ adGroupId: 200, audienceId: 111 }]);
+    currentClient = client;
+    const plan = writeAudiencesPlan([{ adGroupId: "200", add: [111] }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(mutations).toEqual([]);
+    expect(out).toContain("nothing to do");
+  });
+
+  it("apply removes a live criterion", async () => {
+    const { client, mutations } = audienceSegmentsClient([{ adGroupId: 200, audienceId: 111 }]);
+    currentClient = client;
+    const plan = writeAudiencesPlan([{ adGroupId: "200", remove: [111] }]);
+
+    expect(await main([plan, "--apply"])).toBe(0);
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]!.operations).toEqual([
+      {
+        entity: "ad_group_criterion",
+        operation: "remove",
+        resource: { resource_name: "customers/1/adGroupCriteria/200~111" },
+      },
+    ]);
+  });
+
+  it("FR-007: re-removing an already-absent segment is idempotent — zero mutate calls, not an error", async () => {
+    // 999 was never live on ad group 200.
+    const { client, mutations } = audienceSegmentsClient([{ adGroupId: 200, audienceId: 111 }]);
+    currentClient = client;
+    const plan = writeAudiencesPlan([{ adGroupId: "200", remove: [999] }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0); // not a validation failure (exit 1)
+    const out = cap.text();
+
+    expect(mutations).toEqual([]);
+    expect(out).not.toContain("VALIDATION FAILED");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // adGroups (add a new ad group to an existing campaign) — dry-run + apply
 // ---------------------------------------------------------------------------
 

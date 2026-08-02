@@ -24,6 +24,7 @@ import {
   campaignAuctionInsights,
   campaignPriorAuctionInsights,
   campaignServing,
+  isDisplayRemarketingCampaign,
   isManagerMetricsError,
   keywordCpc,
   landingPageMobile,
@@ -329,6 +330,61 @@ describe("auditCampaign RSA-count-per-ad-group finding (issue #175)", () => {
     expect(mismatches).toHaveLength(1);
     expect(mismatches[0]?.detail).toContain("Widgets");
     expect(mismatches[0]?.detail).toContain("0/2");
+  });
+});
+
+describe("isDisplayRemarketingCampaign / FR-011 audit awareness", () => {
+  const emptyProfile = { competitors: [], axes: [], genericPhrases: [] };
+
+  it("isDisplayRemarketingCampaign is true only when target_content_network is set", () => {
+    expect(isDisplayRemarketingCampaign({ campaign: { id: 1, name: "x", status: "ENABLED" } })).toBe(false);
+    expect(
+      isDisplayRemarketingCampaign({
+        campaign: { id: 1, name: "x", status: "ENABLED", network_settings: { target_content_network: false } },
+      }),
+    ).toBe(false);
+    expect(
+      isDisplayRemarketingCampaign({
+        campaign: { id: 1, name: "x", status: "ENABLED", network_settings: { target_content_network: true } },
+      }),
+    ).toBe(true);
+  });
+
+  // A single under-filled, 1-RSA ad (would normally trip rsa_count_mismatch,
+  // keywords_under, and the keyword-inclusion/ad-strength path-to-excellent nudges).
+  const underfilledAdRow = {
+    ad_group: { name: "Retarget" },
+    ad_group_ad: {
+      ad: {
+        id: 10,
+        final_urls: ["https://x"],
+        responsive_search_ad: {
+          headlines: [{ text: "Come Back", pinned_field: "UNSPECIFIED" }],
+          descriptions: [{ text: "We miss you", pinned_field: "UNSPECIFIED" }],
+        },
+      },
+      ad_strength: "POOR",
+      status: "ENABLED",
+      action_items: [],
+    },
+  };
+
+  it("SC-005: a display-remarketing campaign produces zero RSA-count/keywords_under findings", async () => {
+    const client = fakeClient((query) => (query.includes("FROM ad_group_ad") ? [underfilledAdRow] : []));
+    const displayCamp = {
+      campaign: { id: 1, name: "x", status: "ENABLED", network_settings: { target_content_network: true } },
+    };
+    const result = await auditCampaign(client, "123", displayCamp, [], { Retarget: ["a"] }, emptyProfile);
+    expect(result.campaignFindings.some((f) => f.issue === "rsa_count_mismatch")).toBe(false);
+    expect(result.campaignFindings.some((f) => f.issue === "keywords_under")).toBe(false);
+  });
+
+  it("SC-005: a search campaign's checks are unaffected (still flags the same underfilled ad group)", async () => {
+    const client = fakeClient((query) => (query.includes("FROM ad_group_ad") ? [underfilledAdRow] : []));
+    const searchCamp = { campaign: { id: 1, name: "x", status: "ENABLED" } };
+    const result = await auditCampaign(client, "123", searchCamp, [], { Retarget: ["a"] }, emptyProfile);
+    expect(result.campaignFindings.some((f) => f.issue === "rsa_count_mismatch")).toBe(true);
+    expect(result.campaignFindings.some((f) => f.issue === "keywords_under")).toBe(true);
   });
 });
 

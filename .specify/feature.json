@@ -1,7 +1,7 @@
 {
-  "branch_name": "047-auction-insights-competitors",
-  "feature_num": "047",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/047-auction-insights-competitors",
-  "source_issue": 56,
-  "feature_directory": "specs/047-auction-insights-competitors"
+  "branch_name": "049-retargeting-remarketing-audiences",
+  "feature_num": "049",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/049-retargeting-remarketing-audiences",
+  "source_issue": 64,
+  "feature_directory": "specs/049-retargeting-remarketing-audiences"
 }
