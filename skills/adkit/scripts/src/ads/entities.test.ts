@@ -6,9 +6,11 @@ import {
   ALL_DEVICES,
   ENGLISH_LANGUAGE_CONSTANT,
   GEO_TARGETS,
+  buildAudienceSegmentOps,
   buildKeywordOps,
   buildLanguageOps,
   createAdGroup,
+  createAudienceSegments,
   createCallouts,
   createNegativeKeywords,
   createPriceAsset,
@@ -16,6 +18,7 @@ import {
   createSearchCampaign,
   createSitelinks,
   createStructuredSnippet,
+  resolveAudienceSegment,
   setCampaignStatus,
   targetDevices,
   targetUsCanada,
@@ -38,7 +41,10 @@ function makeFake(): { client: AdsClient; calls: Array<{ customerId: string; ops
 
 const CAMPAIGN_RN = "customers/123/campaigns/9";
 
-function briefFixture(campaignOverrides: Record<string, unknown>): ReturnType<typeof parseBrief> {
+function briefFixture(
+  campaignOverrides: Record<string, unknown>,
+  adGroupOverrides: Record<string, unknown> = {},
+): ReturnType<typeof parseBrief> {
   return parseBrief({
     name: "konnect-test",
     version: 1,
@@ -65,6 +71,7 @@ function briefFixture(campaignOverrides: Record<string, unknown>): ReturnType<ty
           },
         ],
         keywords: [{ text: "kw", matchType: "PHRASE" }],
+        ...adGroupOverrides,
       },
     ],
   });
@@ -253,22 +260,35 @@ describe("createSearchCampaign", () => {
     expect((resource["ai_max_setting"] as { enable_ai_max: boolean }).enable_ai_max).toBe(false);
   });
 
-  it("honors networkSettings: Search Partners follow the brief, Display always off", async () => {
+  it("honors networkSettings: Search Partners follow the brief, Display off except display-remarketing (SC-002)", async () => {
     const cases = [
-      { networkSettings: "search-only", expectedSearchNetwork: false },
-      { networkSettings: "search-partners-display", expectedSearchNetwork: true },
+      { networkSettings: "search-only", expectedSearchNetwork: false, expectedDisplay: false },
+      { networkSettings: "search-partners-display", expectedSearchNetwork: true, expectedDisplay: false },
+      { networkSettings: "display-remarketing", expectedSearchNetwork: true, expectedDisplay: true },
     ] as const;
-    for (const { networkSettings, expectedSearchNetwork } of cases) {
+    for (const { networkSettings, expectedSearchNetwork, expectedDisplay } of cases) {
       const { client, calls } = makeFake();
-      await createSearchCampaign(client, "123", briefFixture({ networkSettings }), "customers/123/budgets/1");
-      const ns = campaignResource(calls[0]!.ops[0]!)["network_settings"] as {
+      const adGroupOverrides =
+        networkSettings === "display-remarketing" ? { audienceSegments: [{ audienceId: 123 }] } : {};
+      await createSearchCampaign(
+        client,
+        "123",
+        briefFixture({ networkSettings }, adGroupOverrides),
+        "customers/123/budgets/1",
+      );
+      const resource = campaignResource(calls[0]!.ops[0]!);
+      const ns = resource["network_settings"] as {
         target_google_search: boolean;
         target_search_network: boolean;
         target_content_network: boolean;
       };
       expect(ns.target_google_search).toBe(true);
       expect(ns.target_search_network).toBe(expectedSearchNetwork);
-      expect(ns.target_content_network).toBe(false);
+      expect(ns.target_content_network).toBe(expectedDisplay);
+      // advertising_channel_type stays SEARCH even for display-remarketing — the
+      // existing RSA authoring pipeline is reused (Search Network with Display
+      // Select), not a true Display-creative campaign type.
+      expect(resource["advertising_channel_type"]).toBe(enums.AdvertisingChannelType.SEARCH);
     }
   });
 });
@@ -445,5 +465,109 @@ describe("setCampaignStatus", () => {
     const { client, calls } = makeFake();
     await setCampaignStatus(client, "123", "9", "PAUSED");
     expect(calls[0]!.ops[0]!.resource["status"]).toBe(enums.CampaignStatus.PAUSED);
+  });
+});
+
+/** A fake supporting configurable `search` results, keyed by the table name in the query. */
+function makeFakeWithSearch(
+  tableResults: Record<string, Array<Record<string, { resource_name: string }>>>,
+): { client: AdsClient; calls: Array<{ customerId: string; ops: AdsMutateOperation[] }> } {
+  const calls: Array<{ customerId: string; ops: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    search: async (_customerId, query) => {
+      for (const table of Object.keys(tableResults)) {
+        if (query.includes(`FROM ${table} `)) {
+          return tableResults[table] as never[];
+        }
+      }
+      return [];
+    },
+    searchStructured: async () => [],
+    mutate: async (customerId, ops) => {
+      calls.push({ customerId, ops });
+      return { results: ops.map((_, i) => ({ resource_name: `rn/${i}` })) };
+    },
+  };
+  return { client, calls };
+}
+
+describe("resolveAudienceSegment", () => {
+  it("resolves a user_list-typed audienceId", async () => {
+    const { client } = makeFakeWithSearch({
+      user_list: [{ user_list: { resource_name: "customers/123/userLists/111" } }],
+    });
+    const resolved = await resolveAudienceSegment(client, "123", 111);
+    expect(resolved).toEqual({ audienceId: 111, field: "user_list", resourceName: "customers/123/userLists/111" });
+  });
+
+  it("falls through to custom_audience when not a user_list", async () => {
+    const { client } = makeFakeWithSearch({
+      user_list: [],
+      custom_audience: [{ custom_audience: { resource_name: "customers/123/customAudiences/222" } }],
+    });
+    const resolved = await resolveAudienceSegment(client, "123", 222);
+    expect(resolved.field).toBe("custom_audience");
+  });
+
+  it("throws a clear error when the audienceId matches nothing", async () => {
+    const { client } = makeFakeWithSearch({});
+    await expect(resolveAudienceSegment(client, "123", 999)).rejects.toThrow(/no audience segment found/);
+  });
+});
+
+describe("buildAudienceSegmentOps", () => {
+  const rn = "customers/123/adGroups/9";
+
+  it("builds a create op per resolved add, templating the oneof field name", () => {
+    const ops = buildAudienceSegmentOps(
+      rn,
+      [
+        { audienceId: 111, field: "user_list", resourceName: "customers/123/userLists/111" },
+        { audienceId: 222, field: "custom_audience", resourceName: "customers/123/customAudiences/222" },
+      ],
+      [],
+    );
+    expect(ops).toHaveLength(2);
+    expect(ops[0]!.operation).toBe("create");
+    expect(ops[0]!.resource["user_list"]).toEqual({ user_list: "customers/123/userLists/111" });
+    expect(ops[0]!.resource["negative"]).toBe(false);
+    expect(ops[1]!.resource["custom_audience"]).toEqual({ custom_audience: "customers/123/customAudiences/222" });
+  });
+
+  it("builds a remove op per resource name", () => {
+    const ops = buildAudienceSegmentOps(rn, [], ["customers/123/adGroupCriteria/9~111"]);
+    expect(ops).toEqual([
+      { entity: "ad_group_criterion", operation: "remove", resource: { resource_name: "customers/123/adGroupCriteria/9~111" } },
+    ]);
+  });
+
+  it("is a no-op with no adds and no removes", () => {
+    expect(buildAudienceSegmentOps(rn, [], [])).toEqual([]);
+  });
+});
+
+describe("createAudienceSegments", () => {
+  it("is a no-op when the ad group lists no audience segments", async () => {
+    const { client, calls } = makeFakeWithSearch({});
+    const rns = await createAudienceSegments(
+      client,
+      "123",
+      briefFixture({}).adGroups[0]!,
+      "customers/123/adGroups/9",
+    );
+    expect(rns).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("resolves and creates a criterion for each audienceSegments entry", async () => {
+    const { client, calls } = makeFakeWithSearch({
+      user_list: [{ user_list: { resource_name: "customers/123/userLists/111" } }],
+    });
+    const brief = briefFixture({}, { audienceSegments: [{ audienceId: 111 }] });
+    const rns = await createAudienceSegments(client, "123", brief.adGroups[0]!, "customers/123/adGroups/9");
+    expect(rns).toEqual(["rn/0"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.ops[0]!.resource["ad_group"]).toBe("customers/123/adGroups/9");
+    expect(calls[0]!.ops[0]!.resource["user_list"]).toEqual({ user_list: "customers/123/userLists/111" });
   });
 });

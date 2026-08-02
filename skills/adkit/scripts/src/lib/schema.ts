@@ -82,6 +82,19 @@ export const KeywordSchema = z
   .strict();
 export type Keyword = z.infer<typeof KeywordSchema>;
 
+// A reference to an existing Google Ads audience segment (in-market, affinity,
+// custom-intent/custom-audience, or user-list/remarketing/customer-match),
+// identified by its numeric Google Ads audience ID. Segments are created once
+// (via `ads.sh audiences create-custom-intent`/`upload-customer-match`, or
+// already exist) and referenced by ID thereafter — this schema is the
+// attachment, not the creation, of a segment.
+export const AudienceSegmentSchema = z
+  .object({
+    audienceId: z.number().int().gt(0),
+  })
+  .strict();
+export type AudienceSegment = z.infer<typeof AudienceSegmentSchema>;
+
 export const BID_STRATEGIES = [
   "manual-cpc",
   "maximize-clicks",
@@ -172,7 +185,11 @@ export const StructuredSnippetAssetSchema = z
   });
 export type StructuredSnippetAsset = z.infer<typeof StructuredSnippetAssetSchema>;
 
-export const NETWORK_SETTINGS = ["search-only", "search-partners-display"] as const;
+// "display-remarketing" enables the Display Network for this campaign only —
+// gated by BriefSchema.superRefine below, which requires at least one ad
+// group to carry a non-empty audienceSegments list. Every other value's
+// behavior (Display always off) is unchanged — see entities.ts.
+export const NETWORK_SETTINGS = ["search-only", "search-partners-display", "display-remarketing"] as const;
 export const DEVICES = ["computer", "mobile", "tablet", "tv"] as const;
 
 export const CampaignSchema = z
@@ -180,8 +197,11 @@ export const CampaignSchema = z
     name: z.string().min(1),
     budgetMicros: z.number().int().gt(0),
     // "search-partners-display" serves on Google search + search partner sites.
-    // (Despite the name, the Display Network is always disabled — see entities.ts.)
-    // "search-only" restricts to Google search results only.
+    // (Despite the name, the Display Network is disabled for this value — see
+    // entities.ts.) "search-only" restricts to Google search results only.
+    // "display-remarketing" is the one value that enables the Display Network
+    // for this campaign — only valid when at least one ad group carries a
+    // non-empty audienceSegments (enforced in BriefSchema.superRefine below).
     networkSettings: z.enum(NETWORK_SETTINGS).default("search-partners-display"),
     // New campaigns launch on Maximize Clicks to escape the Smart-Bidding cold
     // start; graduate to maximize-conversions in the UI after ~15-30 conv/30d.
@@ -394,6 +414,12 @@ export const AdGroupSchema = z
     // (disable_search_term_matching = true) unless it opts in here. No effect
     // when campaign.aiMax is false.
     aiMax: z.boolean().default(false),
+    // Audience segments to attach to this ad group (AdGroupCriterion). Empty
+    // by default — omitting this field entirely is unchanged from before this
+    // field existed. On a Search campaign this behaves as an observation/
+    // signal (does not restrict targeting); on a "display-remarketing"
+    // campaign it is true targeting. See reference/create.md.
+    audienceSegments: z.array(AudienceSegmentSchema).default([]),
   })
   .strict();
 export type AdGroup = z.infer<typeof AdGroupSchema>;
@@ -419,6 +445,22 @@ export const BriefSchema = z
         code: z.ZodIssueCode.custom,
         message: "adGroups[].name must be unique within a brief",
         path: ["adGroups"],
+      });
+    }
+    // "display-remarketing" enables the Display Network for the whole
+    // campaign — never allow that to happen for a brief that carries no
+    // audience segment anywhere, so a plain search brief can never silently
+    // pick up Display serving.
+    if (
+      b.campaign.networkSettings === "display-remarketing" &&
+      !b.adGroups.some((ag) => ag.audienceSegments.length > 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'campaign.networkSettings "display-remarketing" requires at least one ' +
+          "adGroups[].audienceSegments entry",
+        path: ["campaign", "networkSettings"],
       });
     }
   });
@@ -487,6 +529,7 @@ export const FAILURE_STEPS = [
   "create-ad-group",
   "create-responsive-search-ad",
   "create-keywords",
+  "create-audience-segments",
 ] as const;
 export type FailureStep = (typeof FAILURE_STEPS)[number];
 

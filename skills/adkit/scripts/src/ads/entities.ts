@@ -131,8 +131,16 @@ export async function findExistingCampaign(
 }
 
 /**
- * Create the paused Search campaign wired to `budgetRn`. Display Network is always
- * off; geo targeting is PRESENCE-only; AI Max follows the brief.
+ * Create the paused Search campaign wired to `budgetRn`. Display Network is off
+ * for every `networkSettings` value except `"display-remarketing"` (which
+ * `BriefSchema.superRefine` only allows when the brief carries at least one
+ * audience segment); geo targeting is PRESENCE-only; AI Max follows the brief.
+ *
+ * `"display-remarketing"` intentionally keeps `advertising_channel_type: SEARCH`
+ * (the existing RSA authoring pipeline is reused, per the feature's v1 scope —
+ * true Display-creative campaigns are a separate follow-up) and only flips
+ * `target_content_network` on — this is "Search Network with Display Select",
+ * not a channel-type change.
  */
 export async function createSearchCampaign(
   client: AdsClient,
@@ -142,8 +150,12 @@ export async function createSearchCampaign(
 ): Promise<string> {
   // "search-only" = Google search results only. "search-partners-display" also
   // serves on Google search partner sites (target_search_network). The Display
-  // Network (target_content_network) is intentionally always OFF.
+  // Network (target_content_network) is OFF for both. "display-remarketing" is
+  // the one value that turns Display on — see BriefSchema.superRefine, which
+  // requires a non-empty audienceSegments somewhere in the brief before this
+  // value is even reachable here.
   const expanded = brief.campaign.networkSettings !== "search-only";
+  const displayRemarketing = brief.campaign.networkSettings === "display-remarketing";
   const resource: Record<string, unknown> = {
     name: brief.campaign.name,
     advertising_channel_type: enums.AdvertisingChannelType.SEARCH,
@@ -154,9 +166,10 @@ export async function createSearchCampaign(
       target_google_search: true,
       // Search Partners follow the brief: "search-only" restricts serving to
       // Google Search results; "search-partners-display" also serves on Google's
-      // search partner sites. Display (target_content_network) is always OFF.
+      // search partner sites. Display (target_content_network) is OFF unless
+      // networkSettings is "display-remarketing".
       target_search_network: expanded,
-      target_content_network: false,
+      target_content_network: displayRemarketing,
       target_partner_search_network: false,
     },
     // PRESENCE = serve only to people physically in the targeted locations.
@@ -675,6 +688,133 @@ export async function createKeywords(
       keyword: { text: kw.text, match_type: enums.KeywordMatchType[kw.matchType] },
     },
   }));
+  return (await client.mutate(customerId, ops)).results.map((r) => r.resource_name);
+}
+
+// ---- Audience segments (AdGroupCriterion.user_list / .custom_audience /
+// .combined_audience / .audience) ----
+//
+// A brief/plan only carries a bare numeric `audienceId` — resolving which
+// criterion oneof branch it belongs to (an old-style UserList/CustomAudience/
+// CombinedAudience resource, or the newer unified Audience resource) requires
+// one lookup per ID, since the four resource types are otherwise
+// indistinguishable from an ID alone. `AUDIENCE_LOOKUP_TABLES` is checked in
+// order (most-common-first) and the first live match wins.
+
+/** The AdGroupCriterion oneof branch an audience segment attaches through. */
+export type AudienceCriterionField = "user_list" | "custom_audience" | "combined_audience" | "audience";
+
+/** An `audienceId` resolved to the criterion oneof branch + resource name it lives at. */
+export interface ResolvedAudienceSegment {
+  audienceId: number;
+  field: AudienceCriterionField;
+  resourceName: string;
+}
+
+const AUDIENCE_LOOKUP_TABLES: ReadonlyArray<{ field: AudienceCriterionField; table: string }> = [
+  { field: "user_list", table: "user_list" },
+  { field: "custom_audience", table: "custom_audience" },
+  { field: "combined_audience", table: "combined_audience" },
+  { field: "audience", table: "audience" },
+];
+
+/**
+ * Resolve one `audienceId` to its criterion oneof branch + resource name by
+ * checking each candidate resource table in turn. Throws a {@link StepError}
+ * when the ID matches none of them (e.g. it was removed, or belongs to a
+ * different account) — this is FR-012's "reject with a clear error naming the
+ * invalid ID" boundary check for the audience-attach path.
+ */
+export async function resolveAudienceSegment(
+  client: AdsClient,
+  customerId: string,
+  audienceId: number,
+): Promise<ResolvedAudienceSegment> {
+  for (const { field, table } of AUDIENCE_LOOKUP_TABLES) {
+    const query = `SELECT ${table}.resource_name FROM ${table} WHERE ${table}.id = ${audienceId}`;
+    const rows = await client.search<Record<string, { resource_name: string }>>(customerId, query);
+    if (rows.length > 0) {
+      return { audienceId, field, resourceName: rows[0]![table]!.resource_name };
+    }
+  }
+  throw new StepError(
+    "create-audience-segments",
+    `no audience segment found for audienceId ${audienceId} (checked user lists, custom audiences, combined audiences, and audiences)`,
+    null,
+  );
+}
+
+/** Resolve every `audienceSegments` entry on an ad group. Order-preserving. */
+export async function resolveAudienceSegments(
+  client: AdsClient,
+  customerId: string,
+  audienceIds: number[],
+): Promise<ResolvedAudienceSegment[]> {
+  const resolved: ResolvedAudienceSegment[] = [];
+  for (const audienceId of audienceIds) {
+    resolved.push(await resolveAudienceSegment(client, customerId, audienceId));
+  }
+  return resolved;
+}
+
+/**
+ * Build AdGroupCriterion ops for an audience-segment edit on one ad group:
+ * create each ADD (already resolved to its oneof branch) and remove each
+ * REMOVE criterion (by resource name). Pure op-construction (no mutate),
+ * mirrors {@link buildKeywordOps}. `negative: false` is explicit — Search ad
+ * groups treat this as an observation/signal criterion (no restrictive
+ * targeting semantics on that channel); Display ad groups (a
+ * `"display-remarketing"` campaign) treat the same non-negative criterion as
+ * true targeting. The mode therefore follows the campaign's channel, not a
+ * separate field on the criterion.
+ */
+export function buildAudienceSegmentOps(
+  adGroupRn: string,
+  adds: ResolvedAudienceSegment[],
+  removeResources: string[],
+): AdsMutateOperation[] {
+  const addOps: AdsMutateOperation[] = adds.map((seg) => ({
+    entity: "ad_group_criterion",
+    operation: "create",
+    resource: {
+      ad_group: adGroupRn,
+      status: enums.AdGroupCriterionStatus.ENABLED,
+      negative: false,
+      // Every candidate info message nests its resource-name field under the
+      // same name as the oneof branch itself (e.g. `user_list: { user_list:
+      // "customers/.../userLists/123" }`), so one templated key covers all four.
+      [seg.field]: { [seg.field]: seg.resourceName },
+    },
+  }));
+  const removeOps: AdsMutateOperation[] = removeResources.map((rn) => ({
+    entity: "ad_group_criterion",
+    operation: "remove",
+    resource: { resource_name: rn },
+  }));
+  return [...addOps, ...removeOps];
+}
+
+/**
+ * Create the ad group's audience segments (create-path convenience wrapper —
+ * resolves each `audienceId` then mutates). No-op when the ad group lists
+ * none, mirroring {@link createKeywords}. Returns the created criterion
+ * resource names.
+ */
+export async function createAudienceSegments(
+  client: AdsClient,
+  customerId: string,
+  adGroup: AdGroup,
+  adGroupRn: string,
+): Promise<string[]> {
+  if (adGroup.audienceSegments.length === 0) {
+    return [];
+  }
+  const resolved = await resolveAudienceSegments(
+    client,
+    customerId,
+    adGroup.audienceSegments.map((seg) => seg.audienceId),
+  );
+  const ops = buildAudienceSegmentOps(adGroupRn, resolved, []);
   return (await client.mutate(customerId, ops)).results.map((r) => r.resource_name);
 }
 

@@ -274,6 +274,10 @@ function scoreAd(
   banned: string[],
   agKeywords: Record<string, string[]>,
   profile: DifferentiationProfile,
+  // FR-011: true for a "display-remarketing" campaign — see
+  // isDisplayRemarketingCampaign — so pathToExcellent skips its
+  // keyword-inclusion and ad-strength-scoring nudges.
+  skipSearchChecks = false,
 ): ScoredAd {
   const a = r.ad_group_ad;
   // The API returns the raw numeric AdStrength ordinal, not its name — decode once,
@@ -346,8 +350,24 @@ function scoreAd(
       pins,
       [...actionItems],
       strength,
+      skipSearchChecks,
     ),
   };
+}
+
+/**
+ * True when `camp` is a `"display-remarketing"` campaign — i.e. its
+ * network_settings.target_content_network is on. This, not
+ * advertising_channel_type, is the right discriminator: this feature's
+ * `"display-remarketing"` campaigns intentionally keep
+ * advertising_channel_type = SEARCH (they reuse the existing RSA authoring
+ * pipeline; see entities.ts createSearchCampaign) and only flip
+ * target_content_network on. FR-011: the audit skips the search-specific RSA
+ * count, keyword-inclusion, and ad-strength-scoring checks for these
+ * campaigns rather than false-flagging them.
+ */
+export function isDisplayRemarketingCampaign(camp: CampaignRow): boolean {
+  return Boolean(camp.campaign.network_settings?.target_content_network);
 }
 
 export async function auditCampaign(
@@ -359,12 +379,13 @@ export async function auditCampaign(
   profile: DifferentiationProfile,
 ): Promise<CampaignReport> {
   const cid = camp.campaign.id;
+  const skipSearchChecks = isDisplayRemarketingCampaign(camp);
   const sitelinks = await extCount(client, customerId, String(cid), "SITELINK");
   const callouts = await extCount(client, customerId, String(cid), "CALLOUT");
   const rows = (
     await search<RawAdGroupAdRow>(client, customerId, auditAdGroupAdQuery(String(cid)))
   ).map(normalizeAdGroupAdRow);
-  const adsOut = rows.map((r) => scoreAd(r, banned, agKeywords, profile));
+  const adsOut = rows.map((r) => scoreAd(r, banned, agKeywords, profile, skipSearchChecks));
 
   // Headlines reused across many ad groups read as boilerplate — fold every
   // (headline, ad group name) pair across all rows, then dedupe per headline.
@@ -399,21 +420,28 @@ export async function auditCampaign(
       ),
     ),
   };
-  const rsaCountMismatches: CampaignFinding[] = Object.entries(rsaCountsByAdGroup)
-    .filter(([, count]) => count !== RSAS_PER_AD_GROUP)
-    .map(([adGroupName, count]) => ({
-      level: "campaign",
-      issue: "rsa_count_mismatch",
-      detail: `ad group '${adGroupName}': ${count}/${RSAS_PER_AD_GROUP} RSAs`,
-      items: { [adGroupName]: [String(count)] },
-    }));
+  // FR-011: skip the RSA-count check entirely for a display-remarketing
+  // campaign — it's a search-specific expectation, not a display one.
+  const rsaCountMismatches: CampaignFinding[] = skipSearchChecks
+    ? []
+    : Object.entries(rsaCountsByAdGroup)
+        .filter(([, count]) => count !== RSAS_PER_AD_GROUP)
+        .map(([adGroupName, count]) => ({
+          level: "campaign",
+          issue: "rsa_count_mismatch",
+          detail: `ad group '${adGroupName}': ${count}/${RSAS_PER_AD_GROUP} RSAs`,
+          items: { [adGroupName]: [String(count)] },
+        }));
 
   // Total ENABLED keywords across the campaign's ad groups — the reach lever. Google's
   // guidance: successful campaigns carry >= MIN_KEYWORDS to match more real searches.
   const keywordCount = Object.values(agKeywords).flat().length;
 
   const findings: CampaignFinding[] = [
-    ...(keywordCount < MIN_KEYWORDS
+    // FR-011: skip the keyword-inclusion check for a display-remarketing
+    // campaign — reach there comes from the attached audience, not keyword
+    // volume.
+    ...(!skipSearchChecks && keywordCount < MIN_KEYWORDS
       ? [
           {
             level: "campaign",

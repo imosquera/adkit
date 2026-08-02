@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AD_GROUP_MAX_KEYWORDS,
+  AudienceSegmentSchema,
   MAX_AD_GROUPS,
   RSAS_PER_AD_GROUP,
   displayPathPairErrors,
@@ -335,5 +336,61 @@ describe("default bid ceiling", () => {
     const raw = validBrief();
     raw.adGroups[0].defaultBidMicros = 15_000_000;
     expect(() => parseBrief(raw)).not.toThrow();
+  });
+});
+
+describe("AudienceSegmentSchema", () => {
+  it("accepts a valid audienceId", () => {
+    expect(() => AudienceSegmentSchema.parse({ audienceId: 123 })).not.toThrow();
+  });
+
+  it("rejects a non-positive audienceId", () => {
+    expect(() => AudienceSegmentSchema.parse({ audienceId: 0 })).toThrow();
+    expect(() => AudienceSegmentSchema.parse({ audienceId: -5 })).toThrow();
+  });
+
+  it("rejects a non-integer audienceId", () => {
+    expect(() => AudienceSegmentSchema.parse({ audienceId: 1.5 })).toThrow();
+  });
+
+  it("rejects an unknown field (.strict())", () => {
+    expect(() => AudienceSegmentSchema.parse({ audienceId: 123, extra: "nope" })).toThrow();
+  });
+});
+
+describe("AdGroup.audienceSegments", () => {
+  it("defaults to [] when omitted (existing briefs parse unchanged)", () => {
+    const brief = parseBrief(validBrief());
+    expect(brief.adGroups[0]!.audienceSegments).toEqual([]);
+  });
+
+  it("parses with audienceSegments entries present", () => {
+    const raw = validBrief();
+    raw.adGroups[0] = { ...raw.adGroups[0], audienceSegments: [{ audienceId: 123 }] } as never;
+    const brief = parseBrief(raw);
+    expect(brief.adGroups[0]!.audienceSegments).toEqual([{ audienceId: 123 }]);
+  });
+});
+
+describe("display-remarketing network setting", () => {
+  it("rejects display-remarketing with no audience segment anywhere", () => {
+    const raw = validBrief();
+    raw.campaign.networkSettings = "display-remarketing" as never;
+    expect(() => parseBrief(raw)).toThrow(/display-remarketing.*requires at least one/);
+  });
+
+  it("accepts display-remarketing with one non-empty audienceSegments", () => {
+    const raw = validBrief();
+    raw.campaign.networkSettings = "display-remarketing" as never;
+    raw.adGroups[0] = { ...raw.adGroups[0], audienceSegments: [{ audienceId: 123 }] } as never;
+    expect(() => parseBrief(raw)).not.toThrow();
+  });
+
+  it("every existing networkSettings value still parses unchanged (SC-002)", () => {
+    for (const ns of ["search-only", "search-partners-display"]) {
+      const raw = validBrief();
+      raw.campaign.networkSettings = ns as never;
+      expect(() => parseBrief(raw)).not.toThrow();
+    }
   });
 });

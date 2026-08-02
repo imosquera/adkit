@@ -18,6 +18,7 @@
 import {
   archiveCampaignsByName,
   createAdGroup,
+  createAudienceSegments,
   createCallouts,
   createCampaignBudget,
   createKeywords,
@@ -44,6 +45,7 @@ export interface ExecAdGroup {
   // empty for a reused ad group that got no freshly-created RSA).
   responsiveSearchAdIds: readonly string[];
   keywordResourceNames: readonly string[];
+  audienceSegmentResourceNames: readonly string[];
 }
 
 /**
@@ -69,7 +71,13 @@ export interface RunOutcome {
 
 /** Build a fresh {@link ExecAdGroup} slot for `name`, nothing created yet. */
 export function makeExecAdGroup(name: string): ExecAdGroup {
-  return { name, adGroupId: null, responsiveSearchAdIds: [], keywordResourceNames: [] };
+  return {
+    name,
+    adGroupId: null,
+    responsiveSearchAdIds: [],
+    keywordResourceNames: [],
+    audienceSegmentResourceNames: [],
+  };
 }
 
 /** Build an empty {@link ExecResults}, one slot per ad group in `brief`. */
@@ -203,6 +211,11 @@ export async function publishV1(
         slot.keywordResourceNames = await step(
           "create-keywords",
           () => createKeywords(client, customerId, briefAg, slot.adGroupId!),
+          briefAg.name,
+        );
+        slot.audienceSegmentResourceNames = await step(
+          "create-audience-segments",
+          () => createAudienceSegments(client, customerId, briefAg, slot.adGroupId!),
           briefAg.name,
         );
       }

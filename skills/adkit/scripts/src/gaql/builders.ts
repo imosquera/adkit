@@ -372,7 +372,21 @@ export function auditCampaignsQuery(
 ): SearchArgs {
   return {
     resource: "campaign",
-    fields: ["campaign.id", "campaign.name", "campaign.status"],
+    // network_settings.target_content_network lets the audit recognize a
+    // "display-remarketing" campaign and skip the search-specific checks (RSA
+    // count, keyword inclusion, ad-strength scoring) that don't apply to it,
+    // rather than false-flagging them. advertising_channel_type is NOT the
+    // right signal here — a "display-remarketing" campaign intentionally
+    // keeps advertising_channel_type = SEARCH (it reuses the existing RSA
+    // authoring pipeline; see entities.ts createSearchCampaign) and only
+    // flips target_content_network on ("Search Network with Display Select"),
+    // so the network_settings field is the only reliable discriminator.
+    fields: [
+      "campaign.id",
+      "campaign.name",
+      "campaign.status",
+      "campaign.network_settings.target_content_network",
+    ],
     conditions: campaignScope(onlyEnabled, campaignId),
     orderings: ["campaign.name"],
   };
@@ -697,6 +711,35 @@ export function applyPositiveKeywordsQuery(
     adGroupIds,
     [
       "ad_group_criterion.type = KEYWORD",
+      "ad_group_criterion.negative = FALSE",
+      "ad_group_criterion.status != 'REMOVED'",
+    ],
+  );
+}
+
+/**
+ * Live audience-segment criteria for the ad groups a fixes-plan `audiences`
+ * block touches → caller groups by {adGroupId: {audienceId: criterionResource}}.
+ * Mirrors {@link applyPositiveKeywordsQuery}, but the identity is the criterion
+ * ID itself (`ad_group_criterion.criterion_id`) rather than a (text, matchType)
+ * pair — an audience segment has no match-type axis. Covers every criterion
+ * type an `audienceSegments` entry can resolve to (see
+ * `entities.ts`'s `AUDIENCE_LOOKUP_TABLES`).
+ */
+export function applyAudienceSegmentsQuery(adGroupIds: ReadonlyArray<string | number>): SearchArgs {
+  return inListQuery(
+    "ad_group_criterion",
+    [
+      "ad_group.id",
+      "ad_group_criterion.criterion_id",
+      "ad_group_criterion.resource_name",
+      "ad_group_criterion.type",
+      "ad_group_criterion.status",
+    ],
+    "ad_group.id",
+    adGroupIds,
+    [
+      "ad_group_criterion.type IN (USER_LIST, CUSTOM_AUDIENCE, COMBINED_AUDIENCE, AUDIENCE)",
       "ad_group_criterion.negative = FALSE",
       "ad_group_criterion.status != 'REMOVED'",
     ],

@@ -86,17 +86,22 @@ const CASES: ReadonlyArray<[string, string]> = [
     toGaql(auditKeywordMetricsQuery(30, IDS)),
     "SELECT campaign.id, ad_group.id, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, metrics.average_cpc, metrics.impressions, metrics.ctr FROM keyword_view WHERE campaign.id IN (12345,67890) AND ad_group_criterion.status = 'ENABLED' AND segments.date DURING LAST_30_DAYS",
   ],
+  // auditCampaignsQuery's expected strings below intentionally include
+  // `campaign.network_settings.target_content_network` (feature 049) — the
+  // field that lets /adkit audit recognize a "display-remarketing" campaign
+  // and skip its search-specific checks. This is a deliberate, one-time break
+  // from pre-refactor parity for this one query, not a regression.
   [
     toGaql(auditCampaignsQuery(true, null)),
-    "SELECT campaign.id, campaign.name, campaign.status FROM campaign WHERE campaign.status = 'ENABLED' ORDER BY campaign.name",
+    "SELECT campaign.id, campaign.name, campaign.status, campaign.network_settings.target_content_network FROM campaign WHERE campaign.status = 'ENABLED' ORDER BY campaign.name",
   ],
   [
     toGaql(auditCampaignsQuery(false, "12345")),
-    "SELECT campaign.id, campaign.name, campaign.status FROM campaign WHERE campaign.id = 12345 ORDER BY campaign.name",
+    "SELECT campaign.id, campaign.name, campaign.status, campaign.network_settings.target_content_network FROM campaign WHERE campaign.id = 12345 ORDER BY campaign.name",
   ],
   [
     toGaql(auditCampaignsQuery(false, null)),
-    "SELECT campaign.id, campaign.name, campaign.status FROM campaign ORDER BY campaign.name",
+    "SELECT campaign.id, campaign.name, campaign.status, campaign.network_settings.target_content_network FROM campaign ORDER BY campaign.name",
   ],
   [
     toGaql(auditExtCountQuery("12345", "SITELINK")),

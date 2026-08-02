@@ -1,7 +1,7 @@
 ---
 name: adkit
-description: "Manage Google Ads search campaigns — init project config, create, audit, update, report, research, and GTM keyword/ad-copy generation. Usage: /adkit init | /adkit create | /adkit audit | /adkit update | /adkit report | /adkit research | /adkit gtm"
-argument-hint: "init | create | audit | update | report | research | gtm"
+description: "Manage Google Ads search campaigns — init project config, create, audit, update, report, research, GTM keyword/ad-copy generation, and audience-segment management. Usage: /adkit init | /adkit create | /adkit audit | /adkit update | /adkit report | /adkit research | /adkit gtm | /adkit audiences"
+argument-hint: "init | create | audit | update | report | research | gtm | audiences"
 user-invocable: true
 ---
 
@@ -42,3 +42,4 @@ Read the [shared conventions](reference/conventions.md) once before any subcomma
 | `report` | Analysis | Pull performance metrics and generate a markdown + Chart.js dashboard | [reference/report.md](reference/report.md) |
 | `research` | Analysis | Research competitors + keywords: seed from competitors/campaign, expand to adjacent keywords/competitors, rank the landscape by theme (volume, cost, competitiveness) | [reference/research.md](reference/research.md) |
 | `gtm` | Planning | Generate keyword tiers and RSA ad copy for a processed idea | [reference/gtm.md](reference/gtm.md) |
+| `audiences` | Publishing | List/create/upload audience segments (remarketing, customer-match, custom-intent) — attach via `create`'s `audienceSegments` or `update`'s `audiences` lever | [reference/audiences.md](reference/audiences.md) |

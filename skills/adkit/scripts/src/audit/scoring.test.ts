@@ -120,6 +120,42 @@ describe("pathToExcellent", () => {
     expect(steps.some((s) => s.includes("in >=3 headlines"))).toBe(true);
   });
 
+  it("FR-011: skipSearchChecks suppresses the keyword-inclusion nudge for a display-remarketing campaign", () => {
+    // Same fixture as "flags keyword inclusion gap" above, but skipSearchChecks=true.
+    const hs = Array.from({ length: 15 }, (_, i) => `generic line ${i}`);
+    const steps = pathToExcellent(
+      "Best Ai Chatbot",
+      ["ai chatbot"],
+      hs,
+      ["a", "b", "c", "d"],
+      [],
+      [],
+      [],
+      [],
+      [],
+      "POOR",
+      true, // skipSearchChecks
+    );
+    expect(steps.some((s) => s.includes("in >=3 headlines"))).toBe(false);
+  });
+
+  it("FR-011: skipSearchChecks suppresses the ad-strength-scoring fallback nudge", () => {
+    const steps = pathToExcellent(
+      "Best Ai Chatbot",
+      ["ai chatbot"],
+      fullH(),
+      ["a", "b", "c", "d"],
+      [],
+      [],
+      [],
+      [],
+      [],
+      "GOOD", // not EXCELLENT — would normally trigger the fallback nudge
+      true, // skipSearchChecks
+    );
+    expect(steps).toEqual([]);
+  });
+
   it("dedups Google hint against emitted step", () => {
     // under-filled headlines already emitted → Google's headline hint is skipped
     const steps = pathToExcellent(

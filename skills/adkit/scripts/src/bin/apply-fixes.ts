@@ -82,10 +82,12 @@ import {
   createAdGroup,
   createKeywords,
   createResponsiveSearchAd,
+  resolveAudienceSegments,
   setAdGroupStatus,
   setAdGroupAdStatus,
   setCampaignStatus,
   setSearchPartners,
+  buildAudienceSegmentOps,
   buildKeywordOps,
   buildLanguageOps,
   buildNegativeKeywordOps,
@@ -99,12 +101,15 @@ import {
   adStatusPlan,
   biddingPlan,
   campaignStatusPlan,
+  coerceAudienceSegment,
   coerceKeyword,
   keyStr,
   negKey,
+  newAudienceSegments,
   newNegatives,
   newPositiveKeywords,
   posKey,
+  segKey,
   searchPartnersPlan,
   validate,
   type AdGroupCreatePlanEntry,
@@ -115,6 +120,7 @@ import {
   applyAdGroupNamesQuery,
   applyAdGroupStatusesQuery,
   applyAdStatusesQuery,
+  applyAudienceSegmentsQuery,
   applyBiddingGuardQuery,
   applyBudgetsQuery,
   applyCampaignStatusesQuery,
@@ -212,6 +218,11 @@ interface PositiveKeywordRow {
     resource_name: string;
     keyword: { text: string; match_type: string | number };
   };
+}
+
+interface AudienceSegmentRow {
+  ad_group: { id: number };
+  ad_group_criterion: { criterion_id: number; resource_name: string };
 }
 
 interface HeadlineRow {
@@ -422,6 +433,31 @@ export async function livePositiveKeywords(
 }
 
 /**
+ * adGroupId -> {audienceId: criterionResource} for the live audience-segment
+ * criteria on each ad group — used to dedup ADDs and resolve REMOVEs to their
+ * criterion resource name. Mirrors {@link livePositiveKeywords}; identity is
+ * the bare criterion ID (== the audience/user-list/custom-audience/
+ * combined-audience resource's own ID for these criterion types), not a
+ * (text, matchType) pair.
+ */
+export async function liveAudienceSegments(
+  client: AdsClient,
+  customerId: string,
+  adGroupIds: ReadonlyArray<string | number>,
+): Promise<Map<number, Map<string, string>>> {
+  if (adGroupIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.searchStructured<AudienceSegmentRow>(customerId, applyAudienceSegmentsQuery(adGroupIds));
+  return rows.reduce((acc, r) => {
+    const inner = acc.get(r.ad_group.id) ?? new Map<string, string>();
+    inner.set(segKey(r.ad_group_criterion.criterion_id), r.ad_group_criterion.resource_name);
+    acc.set(r.ad_group.id, inner);
+    return acc;
+  }, new Map<number, Map<string, string>>());
+}
+
+/**
  * campaignId -> Set of lowercased live (non-removed) ad-group names, so an
  * `adGroups` (add-ad-group) block can skip a name that already exists in the target
  * campaign (the add is idempotent — re-running never creates a duplicate group).
@@ -494,6 +530,7 @@ export interface FixesPlan extends Record<string, unknown> {
   callouts?: Array<Record<string, unknown>>;
   negatives?: Array<Record<string, unknown>>;
   keywords?: Array<Record<string, unknown>>;
+  audiences?: Array<Record<string, unknown>>;
   budgets?: Array<Record<string, unknown>>;
   bidding?: Array<Record<string, unknown>>;
   campaignStatus?: Array<Record<string, unknown>>;
@@ -775,6 +812,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     customer,
     section(plan, "keywords").map((k) => k.adGroupId as string | number),
   );
+  const liveAudSeg = await liveAudienceSegments(
+    client,
+    customer,
+    section(plan, "audiences").map((a) => a.adGroupId as string | number),
+  );
   const liveStatus = await liveCampaignStatuses(
     client,
     customer,
@@ -818,7 +860,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // statusSkips split below, just computed earlier since validate() needs it.
   const [biddingChanges, biddingSkips] = biddingPlan(section(plan, "bidding"), bidding);
 
-  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch, liveAdSt.adGroup, bidding, biddingChanges);
+  const errs = validate(
+    plan,
+    live,
+    budgets,
+    livePos,
+    liveSpGoogleSearch,
+    liveAdSt.adGroup,
+    bidding,
+    biddingChanges,
+    liveAudSeg,
+  );
   if (errs.length > 0) {
     console.log("VALIDATION FAILED:");
     for (const e of errs) {
@@ -1236,6 +1288,40 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       );
     } catch (exc) {
       recordFailure(`keywords (adGroup ${pyStr(agid)})`, exc, slugsForIds([agid], stateIndex.byAdGroupId));
+    }
+  }
+
+  // 4c) audience-segment edits (add / remove on ad-group criteria). Mirrors
+  // 4b) above; a `remove` targeting a segment already absent live is silently
+  // dropped (no resource name to remove), not an error — FR-007's
+  // bidirectional idempotency.
+  for (const ab of section(plan, "audiences")) {
+    const agid = ab.adGroupId;
+    try {
+      const adds = newAudienceSegments(ab, liveAudSeg);
+      const resolvedAdds =
+        adds.length > 0 ? await resolveAudienceSegments(client, customer, adds.map((s) => s.audienceId)) : [];
+      const liveSegs = liveAudSeg.get(asId(agid)) ?? new Map<string, string>();
+      const removeItems = Array.isArray(ab.remove) ? ab.remove : [];
+      const removeRns = removeItems.flatMap((item) => {
+        const [seg] = coerceAudienceSegment(item);
+        if (seg === null) {
+          return [];
+        }
+        const rn = liveSegs.get(segKey(seg.audienceId));
+        return rn ? [rn] : [];
+      });
+      const ops = buildAudienceSegmentOps(`customers/${customer}/adGroups/${pyStr(agid)}`, resolvedAdds, removeRns);
+      if (ops.length === 0) {
+        console.log(
+          `  audiences adGroup ${pyStr(agid)}: nothing to do (all adds already present, all removes already absent)`,
+        );
+        continue;
+      }
+      await client.mutate(customer, ops);
+      console.log(`  audiences adGroup ${pyStr(agid)}: +${resolvedAdds.length} add, -${removeRns.length} remove`);
+    } catch (exc) {
+      recordFailure(`audiences (adGroup ${pyStr(agid)})`, exc, slugsForIds([agid], stateIndex.byAdGroupId));
     }
   }
 

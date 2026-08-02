@@ -6,13 +6,16 @@ import {
   adStatusPlan,
   biddingPlan,
   campaignStatusPlan,
+  coerceAudienceSegment,
   coerceKeyword,
   CONVERSION_GUARD_THRESHOLD,
   negKey,
+  newAudienceSegments,
   newNegatives,
   newPositiveKeywords,
   posKey,
   searchPartnersPlan,
+  segKey,
   validate,
 } from "./plan.js";
 
@@ -635,6 +638,116 @@ describe("positive keywords", () => {
 
   it("posKey includes match type", () => {
     expect(posKey("AI Writing", "BROAD")).toEqual(["ai writing", "BROAD"]);
+  });
+});
+
+// ---------- audience segments (US2) ----------
+
+// live ad-group audience segments: {adGroupId: Set<segKey(audienceId)>}
+const LIVE_AUDIENCE_SEGMENTS = { 12345: new Set([segKey(111), segKey(222)]) };
+
+describe("coerceAudienceSegment", () => {
+  it("accepts a bare number", () => {
+    const [seg, err] = coerceAudienceSegment(123);
+    expect(err).toBeNull();
+    expect(seg).toEqual({ audienceId: 123 });
+  });
+
+  it("accepts a numeric string", () => {
+    const [seg, err] = coerceAudienceSegment("456");
+    expect(err).toBeNull();
+    expect(seg).toEqual({ audienceId: 456 });
+  });
+
+  it("accepts an object shape", () => {
+    const [seg, err] = coerceAudienceSegment({ audienceId: 789 });
+    expect(err).toBeNull();
+    expect(seg).toEqual({ audienceId: 789 });
+  });
+
+  it("rejects a non-numeric string", () => {
+    const [seg, err] = coerceAudienceSegment("not-a-number");
+    expect(seg).toBeNull();
+    expect(err).not.toBeNull();
+  });
+
+  it("rejects a non-positive audienceId", () => {
+    const [seg, err] = coerceAudienceSegment(0);
+    expect(seg).toBeNull();
+    expect(err).not.toBeNull();
+  });
+});
+
+describe("audience segments", () => {
+  it("add valid passes", () => {
+    const plan = { audiences: [{ adGroupId: 12345, add: [333] }] };
+    expect(validate(plan, {}, {}, undefined, undefined, undefined, undefined, undefined, LIVE_AUDIENCE_SEGMENTS)).toEqual([]);
+  });
+
+  it("missing adGroupId and empty ops flagged", () => {
+    const errs = validate(
+      { audiences: [{ add: [333] }, { adGroupId: 12345 }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      LIVE_AUDIENCE_SEGMENTS,
+    );
+    expect(errs.some((e) => e.includes("missing adGroupId"))).toBe(true);
+    expect(errs.some((e) => e.includes("empty operation lists"))).toBe(true);
+  });
+
+  it("non-numeric adGroupId flagged", () => {
+    const errs = validate(
+      { audiences: [{ adGroupId: "9x", add: [333] }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      LIVE_AUDIENCE_SEGMENTS,
+    );
+    expect(errs.some((e) => e.includes("must be numeric"))).toBe(true);
+  });
+
+  it("bad add item flagged", () => {
+    const errs = validate(
+      { audiences: [{ adGroupId: 12345, add: ["not-a-number"] }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      LIVE_AUDIENCE_SEGMENTS,
+    );
+    expect(errs.some((e) => e.includes("add"))).toBe(true);
+  });
+
+  it("FR-007: remove of an ALREADY-ABSENT segment is NOT an error (bidirectional idempotency)", () => {
+    const plan = { audiences: [{ adGroupId: 12345, remove: [999] }] };
+    expect(validate(plan, {}, {}, undefined, undefined, undefined, undefined, undefined, LIVE_AUDIENCE_SEGMENTS)).toEqual([]);
+  });
+
+  it("remove of a present segment passes", () => {
+    const plan = { audiences: [{ adGroupId: 12345, remove: [111] }] };
+    expect(validate(plan, {}, {}, undefined, undefined, undefined, undefined, undefined, LIVE_AUDIENCE_SEGMENTS)).toEqual([]);
+  });
+
+  it("newAudienceSegments filters an already-live add to empty (FR-007 add-side idempotency)", () => {
+    const group = { adGroupId: 12345, add: [111, 444, 444] }; // 111 live; 444 in-group dup
+    const fresh = newAudienceSegments(group, LIVE_AUDIENCE_SEGMENTS);
+    expect(fresh.map((s) => s.audienceId)).toEqual([444]);
+  });
+
+  it("segKey is the bare numeric id as a string", () => {
+    expect(segKey(123)).toBe("123");
   });
 });
 
