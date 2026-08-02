@@ -63,7 +63,7 @@ Two related growth blockers it also flags:
 Two findings, both layered onto the same per-campaign flags/recs `rank_constrained`/`budget_constrained` already use:
 
 - **`losing_to_competitor`** — fires only when a campaign is already flagged `rank_constrained` AND some domain's `outrankingShare` exceeds 60% — naming that domain and its share. Never fires on a campaign that isn't rank-constrained, no matter how high a domain's outranking share is; this is deliberately a "here's who's beating you" tie-in to the existing rank-loss flag, not a standalone alert.
-- **`new_competitor`** — fires when a domain shows up in this run's Auction Insights data that wasn't present in a small local run-over-run cache (`.adkit-auction-insights-cache.json`, git-ignored, next to `.adkit.yaml`). Silent on a campaign's first-ever audited run (nothing to diff against yet) — that run just seeds the cache.
+- **`new_competitor`** — fires when a domain appears in the current `--days` window's Auction Insights data but not in the `--days`-day window immediately before it. Both windows are queried in the same run — there's no local cache or cross-run state, so this works identically no matter which machine (or CI) runs the audit. A campaign with no prior-window data (e.g. it's brand new) simply has every current domain read as new; there's no special-cased "first run."
 
 Domain + share metrics only — this does **not** fetch, scrape, or analyze a competitor's ad copy or landing pages. Naming who's winning is in scope; reading their ads is not.
 

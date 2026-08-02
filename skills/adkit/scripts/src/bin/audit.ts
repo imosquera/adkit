@@ -21,12 +21,12 @@
  *                 [--differentiation-profile profile.json]
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 import { adStrengthName } from "../ads/enums.js";
 import { parseArgs } from "node:util";
-import { auctionInsightsCachePath, loadConfig, resolveTier } from "../lib/config.js";
+import { loadConfig, resolveTier } from "../lib/config.js";
 
 import {
   IS_OPPORTUNITY,
@@ -42,21 +42,16 @@ import {
   differentiationGaps,
   keywordAlignment,
   losingToCompetitorFlag,
+  newCompetitorDomains,
   pathToExcellent,
   requireDigits,
   type CannibalizationPair,
 } from "../audit/scoring.js";
-import {
-  diffNewCompetitors,
-  parseAuctionInsightsCache,
-  updateCache,
-  EMPTY_CACHE,
-  type AuctionInsightsCache,
-} from "../audit/auction-insights-cache.js";
 import { resolveCustomer, type ResolveCustomerOptions } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import {
   applyAdGroupNamesQuery,
+  auctionInsightDomainPriorWindowQuery,
   auctionInsightDomainQuery,
   auditAdGroupAdQuery,
   auditCampaignsQuery,
@@ -68,6 +63,7 @@ import {
   auditQualityScoreQuery,
   auditSearchTermsQuery,
   auditServingQuery,
+  priorWindow,
 } from "../gaql/builders.js";
 import type { AdsClient } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
@@ -580,10 +576,38 @@ export async function campaignAuctionInsights(
 }
 
 /**
+ * Just the competing domains from the window immediately BEFORE the current
+ * one ({@link priorWindow}) — fetched in the same run as
+ * {@link campaignAuctionInsights}'s current-window data, so `new_competitor`
+ * needs no cross-run state. Grouped by campaign; a campaign with no rows in
+ * that prior window is simply absent (its current domains all read as new).
+ */
+export async function campaignPriorAuctionInsights(
+  client: AdsClient,
+  customerId: string,
+  asOf: Date,
+  days: number,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Record<number, string[]>> {
+  if (campaignIds.length === 0) return {};
+  const [start, end] = priorWindow(asOf, days);
+  const rows = await search<RawAuctionInsightRow>(
+    client,
+    customerId,
+    auctionInsightDomainPriorWindowQuery(start, end, campaignIds),
+  );
+  return rows.reduce<Record<number, string[]>>((acc, r) => {
+    const cid = r.campaign.id;
+    const domain = r.auction_insight_domain.domain;
+    return { ...acc, [cid]: [...(acc[cid] ?? []), domain] };
+  }, {});
+}
+
+/**
  * Layer the `losing_to_competitor` and `new_competitor` findings onto an
  * already-scored campaign — pure, no IO. `newCompetitorDomains` is the
- * already-computed cache diff for this campaign (empty on a first-ever run,
- * per spec FR-007).
+ * already-computed current-vs-prior-window diff for this campaign (see
+ * {@link "../audit/scoring.js".newCompetitorDomains}).
  */
 export function withAuctionInsightFindings(
   sc: ScoredServing,
@@ -605,35 +629,6 @@ export function withAuctionInsightFindings(
   ];
   if (newFlags.length === sc.flags.length) return sc;
   return { ...sc, flags: newFlags, impressionShareRecs: newRecs };
-}
-
-/**
- * Load the Auction Insights run-over-run cache. A missing file or a parse
- * failure both fall back to {@link EMPTY_CACHE} — a deliberate resilience
- * choice for a best-effort local file (plan.md Parse Boundaries #2), not a
- * re-validation of anything already parsed.
- */
-export function loadAuctionInsightsCache(): AuctionInsightsCache {
-  try {
-    return parseAuctionInsightsCache(JSON.parse(readFileSync(auctionInsightsCachePath(), "utf8")));
-  } catch {
-    return EMPTY_CACHE;
-  }
-}
-
-/**
- * Best-effort write — a failure here (read-only fs, disk full, permissions)
- * must not abort the run and discard everything else the audit already
- * computed, mirroring the degrade-gracefully precedent `fetchPsi` sets for
- * this file's other soft-fail IO. Only the next run's `new_competitor` diff
- * is affected by a lost write, never this run's own findings/output.
- */
-export function saveAuctionInsightsCache(cache: AuctionInsightsCache): void {
-  try {
-    writeFileSync(auctionInsightsCachePath(), JSON.stringify(cache, null, 2));
-  } catch {
-    // best-effort — see doc comment above.
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,28 +1261,21 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     [addNegatives, promoteKeywords] = negativesAndPromotions(terms, kwByCampaign);
 
     auctionInsightsMap = await campaignAuctionInsights(client, customer, args.days, campIds);
-    const priorCache = loadAuctionInsightsCache();
-    const nextCache = serving.reduce(
-      (cache, sc) =>
-        updateCache(
-          cache,
-          customer,
-          sc.campaignId,
-          (auctionInsightsMap[sc.campaignId] ?? []).map((d) => d.domain),
-        ),
-      priorCache,
+    const priorDomainsMap = await campaignPriorAuctionInsights(
+      client,
+      customer,
+      new Date(),
+      args.days,
+      campIds,
     );
     serving = serving.map((sc) => {
       const domains = auctionInsightsMap[sc.campaignId] ?? [];
-      const { isFirstRun, newDomains } = diffNewCompetitors(
-        priorCache,
-        customer,
-        sc.campaignId,
+      const newDomains = newCompetitorDomains(
         domains.map((d) => d.domain),
+        priorDomainsMap[sc.campaignId] ?? [],
       );
-      return withAuctionInsightFindings(sc, domains, isFirstRun ? [] : newDomains);
+      return withAuctionInsightFindings(sc, domains, newDomains);
     });
-    saveAuctionInsightsCache(nextCache);
 
     clickCtrCandidates = clicksAndCtrCandidates(terms, kwByAdGroupId, keywordCpcMap);
   }

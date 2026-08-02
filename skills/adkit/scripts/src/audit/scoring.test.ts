@@ -8,6 +8,7 @@ import {
   differentiationGaps,
   keywordAlignment,
   losingToCompetitorFlag,
+  newCompetitorDomains,
   pathToExcellent,
   requireDigits,
 } from "./scoring.js";
@@ -498,5 +499,23 @@ describe("losingToCompetitorFlag", () => {
     const finding = losingToCompetitorFlag(true, domains);
     expect(finding!.domain).toBe("worst.com");
     expect(finding!.outrankingShare).toBe(0.9);
+  });
+});
+
+describe("newCompetitorDomains", () => {
+  it("returns domains present now but absent from the prior window", () => {
+    expect(newCompetitorDomains(["a.com", "b.com", "c.com"], ["a.com", "b.com"])).toEqual(["c.com"]);
+  });
+
+  it("returns nothing when every current domain was already there", () => {
+    expect(newCompetitorDomains(["a.com"], ["a.com", "b.com"])).toEqual([]);
+  });
+
+  it("treats an empty prior window as everything being new (no first-run special case)", () => {
+    expect(newCompetitorDomains(["a.com", "b.com"], [])).toEqual(["a.com", "b.com"]);
+  });
+
+  it("returns nothing when there are no current domains", () => {
+    expect(newCompetitorDomains([], ["a.com"])).toEqual([]);
   });
 });

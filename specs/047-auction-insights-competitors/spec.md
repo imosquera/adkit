@@ -48,27 +48,26 @@ An operator wants the full Auction Insights table (impression share, overlap rat
 
 ### User Story 3 - Get alerted when a new competitor shows up (Priority: P2)
 
-An operator running the audit on a recurring cadence (weekly, per the existing "Weekly for 60 days, then monthly" convention) wants to be told when a domain starts competing on their terms that wasn't there in a prior run, without having to diff the raw table by hand.
+An operator running the audit on a recurring cadence (weekly, per the existing "Weekly for 60 days, then monthly" convention) wants to be told when a domain starts competing on their terms that wasn't there just before, without having to diff the raw table by hand.
 
 **Why this priority**: This is the "review monthly" manual step from `reference/google/6-analyze.md` ("New competitors entering your terms") turned into an automatic signal — valuable, but secondary to simply having the data (User Story 2) and the rank-loss tie-in (User Story 1) land first.
 
-**Independent Test**: Run the audit twice against the same account on different (real or simulated) days where the second run's Auction Insights data includes a domain absent from the first run's cached snapshot; confirm a `new_competitor` finding names that domain and campaign on the second run only.
+**Independent Test**: Run the audit once against an account where a campaign's current `--days` window shows a domain absent from the immediately-preceding `--days`-day window; confirm a `new_competitor` finding names that domain and campaign, in that single run.
 
 **Acceptance Scenarios**:
 
-1. **Given** a prior audit run's cached Auction Insights snapshot for a campaign, **When** the current run sees a domain not present in that snapshot, **Then** a `new_competitor` finding is emitted naming the domain and campaign.
-2. **Given** no prior cached snapshot exists for a campaign (first-ever run), **When** the audit runs, **Then** no `new_competitor` finding is emitted for that campaign (nothing to diff against) and the current run's data is cached for next time.
-3. **Given** a domain present in both the prior snapshot and the current run, **When** the audit runs, **Then** no `new_competitor` finding is emitted for that domain.
+1. **Given** a domain present in the current window's Auction Insights data but absent from the immediately-preceding window, **When** the audit runs, **Then** a `new_competitor` finding is emitted naming the domain and campaign.
+2. **Given** a campaign with no data at all in the preceding window (e.g. it's brand new), **When** the audit runs, **Then** every domain in its current window is emitted as `new_competitor` — there is no special-cased suppression for a campaign's first audited run.
+3. **Given** a domain present in both the preceding window and the current window, **When** the audit runs, **Then** no `new_competitor` finding is emitted for that domain.
 
 ---
 
 ### Edge Cases
 
-- What happens when a campaign has zero Auction Insights rows (no auction overlap data returned, e.g. brand-new or very low-volume campaign)? No `auctionInsights` entry for that campaign, no findings — same "no evidence, no flag" convention the audit already applies to landing-page alignment.
-- What happens on the very first run ever (no cache file exists)? `new_competitor` is suppressed for that run (no prior baseline to diff against) and the run's data seeds the cache.
-- What happens when `--no-serving` is passed? Auction Insights is skipped entirely, same as `keywordCpc`, `addNegatives`, `promoteKeywords`.
+- What happens when a campaign has zero Auction Insights rows in the current window (no auction overlap data returned, e.g. brand-new or very low-volume campaign)? No `auctionInsights` entry for that campaign, no findings — same "no evidence, no flag" convention the audit already applies to landing-page alignment.
+- What happens when a campaign has no data in the preceding window but does in the current one? Every current-window domain is reported as `new_competitor` (Acceptance Scenario 2 above) — this is not an error case, just the expected outcome of "nothing was there before."
+- What happens when `--no-serving` is passed? Auction Insights (both the current and the preceding window) is skipped entirely, same as `keywordCpc`, `addNegatives`, `promoteKeywords`.
 - What happens when a domain crosses the `losing_to_competitor` outranking threshold but the campaign is not currently `rank_constrained`? No finding — per the issue's ask, this finding is explicitly cross-referenced with an existing `rank_constrained` flag so it reads as "you're rank-constrained, and here's who's beating you," not a standalone alert.
-- What happens to the local cache across different accounts/customer IDs? The cache is keyed so that snapshots for one Google Ads customer never diff against another's.
 
 ## Requirements *(mandatory)*
 
@@ -79,10 +78,10 @@ An operator running the audit on a recurring cadence (weekly, per the existing "
 - **FR-003**: The Auction Insights pull MUST be on by default and MUST be skipped when `--no-serving` is passed, consistent with the audit's other serving-layer outputs.
 - **FR-004**: The audit MUST emit a `losing_to_competitor` finding for a campaign when a competing domain's outranking share exceeds 60% AND that campaign is already flagged `rank_constrained`; the finding MUST name the domain and its outranking share.
 - **FR-005**: The audit MUST NOT emit a `losing_to_competitor` finding for a campaign that is not flagged `rank_constrained`, regardless of any domain's outranking share.
-- **FR-006**: The audit MUST emit a `new_competitor` finding naming a domain and campaign when that domain appears in the current run's Auction Insights data but was absent from a prior run's cached snapshot for that campaign.
-- **FR-007**: The audit MUST NOT emit a `new_competitor` finding on a campaign's first-ever audited run (no prior cached snapshot to diff against), and MUST seed the cache from that run instead.
-- **FR-008**: The audit MUST persist each run's Auction Insights snapshot locally, keyed so that snapshots never diff across different Google Ads customer accounts.
-- **FR-009**: A campaign with no Auction Insights rows returned MUST produce no `auctionInsights` entry and no related findings for that campaign (no evidence, no flag).
+- **FR-006**: The audit MUST, in the same run, also pull Auction Insights domain identity (no share metrics needed) for the `--days`-day window immediately preceding the current one, and emit a `new_competitor` finding naming any domain and campaign present in the current window but absent from that preceding window.
+- **FR-007**: The audit MUST NOT persist any Auction Insights state across separate runs — the `new_competitor` comparison is entirely derived from the two windows fetched within a single run, so the result is identical regardless of which machine or environment runs the audit.
+- **FR-008**: A campaign with no Auction Insights rows in the preceding window MUST have every one of its current-window domains reported as `new_competitor` — there is no first-run suppression.
+- **FR-009**: A campaign with no Auction Insights rows returned in the current window MUST produce no `auctionInsights` entry and no related findings for that campaign (no evidence, no flag).
 - **FR-010**: The feature MUST NOT fetch, scrape, or analyze a competitor's ad copy or landing pages — only the domain and share metrics Auction Insights itself returns.
 
 ## Success Criteria *(mandatory)*

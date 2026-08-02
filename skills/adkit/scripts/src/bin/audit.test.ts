@@ -12,31 +12,26 @@
  * finding is produced (the Python baked in a single-advertiser constant).
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import { parseDifferentiationProfile } from "../lib/brand.js";
 import { MIN_KEYWORDS, requireDigits } from "../audit/scoring.js";
-import { diffNewCompetitors, updateCache, EMPTY_CACHE } from "../audit/auction-insights-cache.js";
 import {
   auditCampaign,
   averageCpc,
   campaignAuctionInsights,
+  campaignPriorAuctionInsights,
   campaignServing,
   isManagerMetricsError,
   keywordCpc,
   landingPageMobile,
   landingPagePolicy,
-  loadAuctionInsightsCache,
   qualityScore,
   resolveAuditCustomer,
   resolveCampaign,
   resolvePsiKey,
-  saveAuctionInsightsCache,
   searchTerms,
   withAuctionInsightFindings,
 } from "./audit.js";
@@ -727,53 +722,67 @@ describe("resolvePsiKey (issue #40: PSI key sourceable from .adkit.yaml / Secret
   });
 });
 
-describe("Auction Insights cache IO shell", () => {
-  let dir: string;
-  let cachePath: string;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "adkit-audit-cache-"));
-    cachePath = join(dir, "cache.json");
-    process.env["ADKIT_AUCTION_INSIGHTS_CACHE"] = cachePath;
+describe("campaignPriorAuctionInsights", () => {
+  it("groups the prior window's domains by campaign, no share metrics needed", async () => {
+    const rows = [
+      { campaign: { id: 1 }, auction_insight_domain: { domain: "a.com" } },
+      { campaign: { id: 1 }, auction_insight_domain: { domain: "b.com" } },
+      { campaign: { id: 2 }, auction_insight_domain: { domain: "c.com" } },
+    ];
+    const result = await campaignPriorAuctionInsights(
+      fakeClient(() => rows),
+      "123",
+      new Date("2026-06-22T00:00:00Z"),
+      7,
+      [1, 2],
+    );
+    expect(result[1]).toEqual(["a.com", "b.com"]);
+    expect(result[2]).toEqual(["c.com"]);
   });
 
-  afterEach(() => {
-    delete process.env["ADKIT_AUCTION_INSIGHTS_CACHE"];
-    rmSync(dir, { recursive: true, force: true });
+  it("no campaign ids -> no query, empty map", async () => {
+    let called = false;
+    const result = await campaignPriorAuctionInsights(
+      fakeClient(() => [], () => {
+        called = true;
+      }),
+      "123",
+      new Date("2026-06-22T00:00:00Z"),
+      7,
+      [],
+    );
+    expect(result).toEqual({});
+    expect(called).toBe(false);
   });
+});
 
-  it("loadAuctionInsightsCache returns EMPTY_CACHE when no file exists yet", () => {
-    expect(loadAuctionInsightsCache()).toEqual(EMPTY_CACHE);
-  });
+describe("current-vs-prior-window Auction Insights composition (no cross-run state)", () => {
+  it("a domain in the current window but absent from the prior window drives new_competitor via withAuctionInsightFindings", async () => {
+    const currentRows = [
+      {
+        campaign: { id: 1 },
+        auction_insight_domain: { domain: "newcomer.com" },
+        metrics: {
+          auction_insight_search_impression_share: 0.3,
+          auction_insight_search_overlap_rate: 0.2,
+          auction_insight_search_position_above_rate: 0.2,
+          auction_insight_search_top_impression_percentage: 0.2,
+          auction_insight_search_outranking_share: 0.1,
+        },
+      },
+    ];
+    const priorRows = [{ campaign: { id: 1 }, auction_insight_domain: { domain: "old-timer.com" } }];
 
-  it("saveAuctionInsightsCache then loadAuctionInsightsCache round-trips", () => {
-    const cache = updateCache(EMPTY_CACHE, "111", 222, ["a.com", "b.com"]);
-    saveAuctionInsightsCache(cache);
-    expect(loadAuctionInsightsCache()).toEqual(cache);
-  });
+    let queryCount = 0;
+    const client = fakeClient((query) => {
+      queryCount += 1;
+      return query.includes("segments.date BETWEEN") ? priorRows : currentRows;
+    });
 
-  it("loadAuctionInsightsCache falls back to EMPTY_CACHE on malformed JSON on disk", () => {
-    saveAuctionInsightsCache(EMPTY_CACHE);
-    // overwrite with garbage the parser must reject
-    writeFileSync(cachePath, "{not valid json");
-    expect(loadAuctionInsightsCache()).toEqual(EMPTY_CACHE);
-  });
-
-  it("two sequential runs sharing a persisted cache: first seeds it silently, second sees only the truly new domain", () => {
-    // Run 1: campaign 222 sees two domains, no prior cache.
-    const run1Domains = ["a.com", "b.com"];
-    const run1Diff = diffNewCompetitors(loadAuctionInsightsCache(), "111", 222, run1Domains);
-    expect(run1Diff).toEqual({ isFirstRun: true, newDomains: [] });
-    saveAuctionInsightsCache(updateCache(loadAuctionInsightsCache(), "111", 222, run1Domains));
-
-    // Run 2: a third domain shows up alongside the two already-seen ones.
-    const run2Domains = ["a.com", "b.com", "c.com"];
-    const run2Diff = diffNewCompetitors(loadAuctionInsightsCache(), "111", 222, run2Domains);
-    expect(run2Diff).toEqual({ isFirstRun: false, newDomains: ["c.com"] });
-    saveAuctionInsightsCache(updateCache(loadAuctionInsightsCache(), "111", 222, run2Domains));
-
-    // Run 3: nothing new — everything from run 2 is now the baseline.
-    const run3Diff = diffNewCompetitors(loadAuctionInsightsCache(), "111", 222, run2Domains);
-    expect(run3Diff).toEqual({ isFirstRun: false, newDomains: [] });
+    const current = await campaignAuctionInsights(client, "123", 7, [1]);
+    const prior = await campaignPriorAuctionInsights(client, "123", new Date("2026-06-22T00:00:00Z"), 7, [1]);
+    expect(queryCount).toBe(2);
+    expect(current[1].map((r) => r.domain)).toEqual(["newcomer.com"]);
+    expect(prior[1]).toEqual(["old-timer.com"]);
   });
 });

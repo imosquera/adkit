@@ -106,50 +106,30 @@ describe("main (temp cwd)", () => {
     expect(createInterface).not.toHaveBeenCalled();
   });
 
-  it("creates .gitignore with both entries when none exists", async () => {
+  it("creates .gitignore with the entry when none exists", async () => {
     mockAnswers(["", "", "", "", "", "", "", "", "", "", "", ""]);
     await main();
-    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(
-      "/.adkit.yaml\n\n/.adkit-auction-insights-cache.json\n",
-    );
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("/.adkit.yaml\n");
   });
 
-  it("appends both entries to an existing .gitignore missing them", async () => {
+  it("appends the entry to an existing .gitignore missing it", async () => {
     writeFileSync(join(dir, ".gitignore"), "node_modules/\n");
     mockAnswers(["", "", "", "", "", "", "", "", "", "", "", ""]);
     await main();
-    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(
-      "node_modules/\n\n/.adkit.yaml\n\n/.adkit-auction-insights-cache.json\n",
-    );
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n\n/.adkit.yaml\n");
   });
 
   it("leaves an already-protecting .gitignore untouched", async () => {
-    writeFileSync(
-      join(dir, ".gitignore"),
-      "node_modules/\n/.adkit.yaml\n/.adkit-auction-insights-cache.json\n",
-    );
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\n/.adkit.yaml\n");
     mockAnswers(["", "", "", "", "", "", "", "", "", "", "", ""]);
     await main();
-    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(
-      "node_modules/\n/.adkit.yaml\n/.adkit-auction-insights-cache.json\n",
-    );
-  });
-
-  it("only appends the entry still missing when one is already present", async () => {
-    writeFileSync(join(dir, ".gitignore"), "/.adkit.yaml\n");
-    mockAnswers(["", "", "", "", "", "", "", "", "", "", "", ""]);
-    await main();
-    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(
-      "/.adkit.yaml\n\n/.adkit-auction-insights-cache.json\n",
-    );
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n/.adkit.yaml\n");
   });
 
   it("retrofits gitignore protection even when the config already exists", async () => {
     writeFileSync(join(dir, ".adkit.yaml"), 'secrets_project: "already-here"\n');
     mockAnswers([]);
     await main();
-    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(
-      "/.adkit.yaml\n\n/.adkit-auction-insights-cache.json\n",
-    );
+    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("/.adkit.yaml\n");
   });
 });

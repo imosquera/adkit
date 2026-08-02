@@ -72,18 +72,20 @@
 
 ## Phase 5: User Story 3 - Get alerted when a new competitor shows up (Priority: P2)
 
-**Goal**: A domain that wasn't in a campaign's prior cached Auction Insights snapshot triggers a `new_competitor` finding; the very first run for a campaign never fires one and instead seeds the cache.
+**Goal**: A domain present in the current `--days` window but absent from the immediately-preceding `--days`-day window triggers a `new_competitor` finding — computed entirely within a single run, no cross-run state.
 
-**Independent Test**: Run the audit twice against the same account/campaign with the cache file persisted between runs, where the second run's data includes a domain absent from the first; confirm `new_competitor` fires only on the second run for that domain.
+**Independent Test**: Run the audit once against an account where a campaign's current window shows a domain not present in the immediately-preceding window; confirm `new_competitor` fires naming that domain, in that one run.
 
-- [x] T019 [P] [US3] Create `src/audit/auction-insights-cache.ts`: `AuctionInsightsCacheSchema` (Zod, `z.record(z.string(), z.record(z.string(), z.array(z.string())))`, customerId → campaignId → domain list), `AuctionInsightsCache` type, `EMPTY_CACHE = {}`, and `parseAuctionInsightsCache(data: unknown): AuctionInsightsCache` (throws on malformed shape) — following the `DifferentiationProfileSchema`/`parseDifferentiationProfile` convention in `src/lib/brand.ts` (per plan.md Parse Boundaries #3–5)
-- [x] T020 [US3] In `src/audit/auction-insights-cache.ts`, add pure `diffNewCompetitors(cache: AuctionInsightsCache, customerId: string, campaignId: number, currentDomains: readonly string[]): { isFirstRun: boolean; newDomains: string[] }` — `isFirstRun: true` (and `newDomains: []`) when `cache[customerId]?.[campaignId]` is absent (spec FR-007); otherwise `newDomains` is the set difference (depends on T019)
-- [x] T021 [US3] In `src/audit/auction-insights-cache.ts`, add pure `updateCache(cache: AuctionInsightsCache, customerId: string, campaignId: number, currentDomains: readonly string[]): AuctionInsightsCache` — returns a new object (no mutation) with that campaign's domain list replaced by `currentDomains` (depends on T019)
-- [x] T022 [P] [US3] Add `auctionInsightsCachePath()` to `src/lib/config.ts` next to `configPath()`, resolving `.adkit-auction-insights-cache.json` the same env-override-aware way, plus its `/.adkit-auction-insights-cache.json` `.gitignore` entry constant alongside the existing `GITIGNORE_ENTRY`
-- [x] T023 [US3] In `src/bin/audit.ts`, add IO shell functions `loadAuctionInsightsCache()` / `saveAuctionInsightsCache(cache)` — `readFileSync`/`JSON.parse` + `parseAuctionInsightsCache()`, catching a missing file or parse failure and substituting `EMPTY_CACHE` (per plan.md Parse Boundaries #2); `writeFileSync` with `JSON.stringify(cache, null, 2)` (depends on T019, T022)
-- [x] T024 [US3] In `src/bin/audit.ts`, wire `campaignServing()`: load the cache once per run, call `diffNewCompetitors()` per campaign against that campaign's `auctionInsightsByCampaign()` domains, append `"new_competitor"` to `flags` (with a rec naming the domain(s)) when `newDomains` is non-empty and not `isFirstRun`, then call `updateCache()` per campaign and `saveAuctionInsightsCache()` once at the end of the run (depends on T010, T020, T021, T023)
-- [x] T025 [US3] Tests in `src/audit/auction-insights-cache.test.ts`: `parseAuctionInsightsCache()` round-trips valid shapes and throws on malformed input; `diffNewCompetitors()` returns `isFirstRun: true` with no prior entry, returns the correct new-domain set with a prior entry, returns no new domains when all overlap (spec Acceptance Scenarios); `updateCache()` doesn't mutate its input (depends on T020, T021)
-- [x] T026 [US3] Integration test in `src/bin/audit.test.ts`: two sequential audit runs sharing a cache — first run seeds the cache and emits no `new_competitor` finding even with domains present; second run with an added domain emits `new_competitor` naming only that domain (depends on T024)
+> **Redesigned 2026-08-02** (post-implementation, pre-merge): the original design used a local git-ignored cache file (`.adkit-auction-insights-cache.json`) diffed across separate CLI invocations. Replaced with a stateless two-window design — both the current and the immediately-preceding `--days`-day window are queried via Auction Insights in the *same* run, and diffed directly. This removes all local/cross-run state: no cache file, no `.gitignore` wiring, no "first run never fires" special case (a campaign with no prior-window data simply has every current domain read as new — spec FR-008), and the result is identical regardless of which machine or CI runs the audit. Tasks below reflect the design actually shipped.
+
+- [x] T019 [P] [US3] Add `priorWindow(asOf: Date, days: number): [string, string]` to `src/gaql/builders.ts` next to `dateWindow()` — pure date math for the `--days`-day window immediately before `dateWindow(asOf, days)`'s window (no gap, no overlap)
+- [x] T020 [US3] Add `auctionInsightDomainPriorWindowQuery(start: string, end: string, campaignIds): SearchArgs` to `src/gaql/builders.ts` — domain identity only (`campaign.id`, `auction_insight_domain.domain`; no share metrics needed for a pure diff), `segments.date BETWEEN start AND end` (depends on T019 for the date bounds it's called with, though the builder itself takes explicit strings)
+- [x] T021 [US3] Add pure `newCompetitorDomains(currentDomains: readonly string[], priorDomains: readonly string[]): string[]` to `src/audit/scoring.ts` — set difference; an empty `priorDomains` (no prior-window data) simply returns every current domain, no special case
+- [x] T022 [US3] In `src/bin/audit.ts`, add `campaignPriorAuctionInsights(client, customerId, asOf, days, campaignIds): Promise<Record<number, string[]>>` — fetches `auctionInsightDomainPriorWindowQuery()` rows and groups domains by campaign id (depends on T019, T020)
+- [x] T023 [US3] In `src/bin/audit.ts`'s `runAudit()`, wire the current-window (`campaignAuctionInsights()`) and prior-window (`campaignPriorAuctionInsights()`) fetches together: for each scored campaign, compute `newCompetitorDomains()` and merge into `flags`/`impressionShareRecs` via `withAuctionInsightFindings()` (depends on T010, T021, T022)
+- [x] T024 [US3] Tests in `src/gaql/builders.test.ts`: `priorWindow()` produces a gapless, non-overlapping window immediately before `dateWindow()`'s; `auctionInsightDomainPriorWindowQuery()` selects only domain identity over the explicit range (depends on T019, T020)
+- [x] T025 [US3] Tests in `src/audit/scoring.test.ts`: `newCompetitorDomains()` returns the correct set difference, returns nothing when everything overlaps, and returns every current domain when the prior window is empty (spec Acceptance Scenarios + FR-008) (depends on T021)
+- [x] T026 [US3] Tests in `src/bin/audit.test.ts`: `campaignPriorAuctionInsights()` groups domains by campaign from fake rows; a composition test confirms the current-window and prior-window queries are distinguishable (two separate fetches in one run) and drive `new_competitor` via `withAuctionInsightFindings()` (depends on T022, T023)
 
 **Checkpoint**: US3 is independently complete and testable — all three user stories now ship together.
 
@@ -93,7 +95,7 @@
 
 **Purpose**: Documentation and final gate checks, per the issue's Pointers and CLAUDE.md conventions.
 
-- [x] T027 [P] Update `reference/audit.md` to document the `auctionInsights` envelope field and the `losing_to_competitor`/`new_competitor` findings, next to the existing `budget_constrained`/`rank_constrained` section — explicitly note domain + share metrics only, no competitor ad-copy/landing-page scraping (spec FR-010) (depends on T010, T016, T024)
+- [x] T027 [P] Update `reference/audit.md` to document the `auctionInsights` envelope field and the `losing_to_competitor`/`new_competitor` findings, next to the existing `budget_constrained`/`rank_constrained` section — explicitly note domain + share metrics only, no competitor ad-copy/landing-page scraping (spec FR-010), and that `new_competitor` is a same-run two-window diff with no local state (depends on T010, T016, T023)
 - [x] T028 Run `cd skills/adkit/scripts && npm run typecheck && npx vitest run` and fix any failures before calling the feature complete
 
 ## Execution Wave DAG
@@ -104,15 +106,15 @@ Wave 2 (parallel): T004 (needs T002), T005 (needs T002)
 Wave 3 (parallel): T006 (needs T003), T007 (needs T004), T008 (needs T005)
 Wave 4: T009 (needs T003, T004)
 Wave 5: T010 (needs T005, T009)
-Wave 6 (parallel): T011, T012, T013 (all need T010); T014 (no deps, can run any time after Wave 1); T019 (no deps, can run any time after Wave 1); T022 (no deps, can run any time)
+Wave 6 (parallel): T011, T012, T013 (all need T010); T014 (no deps, can run any time after Wave 1); T019 (no deps, can run any time after Wave 1)
 Wave 7: T015 (needs T002, T005) — can actually start as early as Wave 2, listed here for readability
 Wave 8: T016 (needs T010, T015)
 Wave 9 (parallel): T017 (needs T015), T018 (needs T016)
-Wave 10 (parallel): T020, T021 (both need T019)
-Wave 11: T023 (needs T019, T022)
-Wave 12: T024 (needs T010, T020, T021, T023)
-Wave 13 (parallel): T025 (needs T020, T021), T026 (needs T024)
-Wave 14: T027 (needs T010, T016, T024)
+Wave 10: T020 (needs T019), T021 (no deps, can run any time after Wave 1)
+Wave 11: T022 (needs T019, T020)
+Wave 12: T023 (needs T010, T021, T022)
+Wave 13 (parallel): T024 (needs T019, T020), T025 (needs T021), T026 (needs T022, T023)
+Wave 14: T027 (needs T010, T016, T023)
 Wave 15: T028 (needs everything)
 ```
 
@@ -121,11 +123,11 @@ Wave 15: T028 (needs everything)
 - **Phase 2 (Foundational)** blocks all user story phases — every story reads `AuctionInsightRow`/`auctionInsightsByCampaign`.
 - **US2** (envelope wiring, T009-T013) is built before US1 and US3's audit.ts wiring because both later stories merge findings into the same `campaignServing()` call site US2 establishes — but US2 is still independently testable and shippable on its own (spec Independent Test).
 - **US1** (T014-T018) depends on US2's envelope wiring (T010) but not on US3.
-- **US3** (T019-T026) depends on US2's envelope wiring (T010) but not on US1 — the cache module (T019-T023) has no dependency on either.
+- **US3** (T019-T026) depends on US2's envelope wiring (T010) but not on US1 — the prior-window builder/diff (T019-T021) has no dependency on either.
 - **Polish** (T027-T028) depends on all three stories being wired in.
 
 ## Implementation Strategy
 
-**MVP = US2 + US1** (both P1): the raw per-domain table plus the rank-loss tie-in are the core ask from issue #56. US3 (new-competitor alerting, P2) is valuable but can ship in a follow-up if time-boxed — the cache module is fully isolated (T019-T023) and doesn't block US1/US2's envelope or finding.
+**MVP = US2 + US1** (both P1): the raw per-domain table plus the rank-loss tie-in are the core ask from issue #56. US3 (new-competitor alerting, P2) is valuable but can ship in a follow-up if time-boxed — the prior-window builder and diff function (T019-T021) are fully isolated and don't block US1/US2's envelope or finding.
 
 Suggested order: Phase 1 → Phase 2 → Phase 3 (US2) → Phase 4 (US1) → Phase 5 (US3) → Phase 6. Within Phase 2 and within each story phase, `[P]`-marked tasks can run concurrently.

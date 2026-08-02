@@ -395,6 +395,22 @@ export function losingToCompetitorFlag(
   };
 }
 
+/**
+ * The `new_competitor` finding: domains present in the current window's
+ * Auction Insights data but absent from the immediately-prior window (both
+ * fetched in the same run, no cross-run state — see {@link "../gaql/builders.js".priorWindow}).
+ * A campaign with no prior-window data (e.g. it didn't exist yet) simply has
+ * every current domain reported as new — symmetric with every other run,
+ * no special-cased "first run."
+ */
+export function newCompetitorDomains(
+  currentDomains: readonly string[],
+  priorDomains: readonly string[],
+): string[] {
+  const prior = new Set(priorDomains);
+  return currentDomains.filter((d) => !prior.has(d));
+}
+
 export type ServingCampaign = {
   campaignId: number;
   campaignName: string;

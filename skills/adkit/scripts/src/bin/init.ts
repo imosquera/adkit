@@ -23,15 +23,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isMainModule } from "../cli/entry.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
-import {
-  AUCTION_INSIGHTS_CACHE_GITIGNORE_ENTRY,
-  buildConfigYamlBody,
-  configExists,
-  configPath,
-  CONFIG_FIELDS,
-  ensureGitignoreEntry,
-  GITIGNORE_ENTRY,
-} from "../lib/config.js";
+import { buildConfigYamlBody, configExists, configPath, CONFIG_FIELDS, ensureGitignoreEntry, GITIGNORE_ENTRY } from "../lib/config.js";
 
 /** The prompt text for a field, showing its default inline. Pure. */
 export function promptFor(label: string, defaultValue: string): string {
@@ -55,11 +47,9 @@ export function gitignoredLine(path: string): string {
 
 /**
  * Ensure the repo's `.gitignore` (alongside `.adkit.yaml`, same directory) excludes
- * it and the local Auction Insights cache file — the former carries real
- * credentials, the latter is per-machine local state — so neither gets committed
- * by accident, even if it already existed before this run. Writes only when an
- * entry is missing; a fresh `.gitignore` is created if none exists yet. Returns
- * whether it wrote.
+ * it, so a file carrying real credentials never gets committed by accident — even
+ * if it already existed before this run. Writes only when the entry is missing;
+ * a fresh `.gitignore` is created if none exists yet. Returns whether it wrote.
  */
 function ensureGitignored(configDir: string): boolean {
   const gitignorePath = join(configDir, ".gitignore");
@@ -69,10 +59,7 @@ function ensureGitignored(configDir: string): boolean {
   } catch {
     // No .gitignore yet — ensureGitignoreEntry starts one.
   }
-  const updated = ensureGitignoreEntry(
-    ensureGitignoreEntry(existing, GITIGNORE_ENTRY),
-    AUCTION_INSIGHTS_CACHE_GITIGNORE_ENTRY,
-  );
+  const updated = ensureGitignoreEntry(existing, GITIGNORE_ENTRY);
   if (updated === existing) {
     return false;
   }
