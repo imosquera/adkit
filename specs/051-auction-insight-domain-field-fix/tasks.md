@@ -11,7 +11,7 @@ implementation and testing.
 
 ## Phase 1: Setup
 
-- [ ] T001 Confirm the working tree builds/tests cleanly before changes: run
+- [x] T001 Confirm the working tree builds/tests cleanly before changes: run
   `npm --prefix skills/adkit/scripts run typecheck` and
   `npm --prefix skills/adkit/scripts test` to capture the pre-fix baseline.
 
@@ -41,30 +41,30 @@ client) returns non-empty grouped rows.
 
 ### Implementation for User Story 1
 
-- [ ] T002 [US1] In `skills/adkit/scripts/src/gaql/builders.ts`, change
+- [x] T002 [US1] In `skills/adkit/scripts/src/gaql/builders.ts`, change
   `auctionInsightDomainQuery` (~line 326) from
   `inListQuery("auction_insight_domain", ["campaign.id", "auction_insight_domain.domain", ...metrics], "campaign.id", campaignIds, [lastNDays(days)])`
   to `inListQuery("campaign", ["campaign.id", "segments.auction_insight_domain", ...metrics], "campaign.id", campaignIds, [lastNDays(days)])`
   — resource becomes `"campaign"`, the domain field becomes
   `"segments.auction_insight_domain"`; the five `metrics.auction_insight_search_*`
   fields are unchanged.
-- [ ] T003 [US1] In the same file, change `auctionInsightDomainPriorWindowQuery`
+- [x] T003 [US1] In the same file, change `auctionInsightDomainPriorWindowQuery`
   (~line 354) the same way: resource `"campaign"`, fields
   `["campaign.id", "segments.auction_insight_domain"]` (depends on T002 for
   consistency, though independently editable).
-- [ ] T004 [US1] In `skills/adkit/scripts/src/audit/rows.ts`, change
+- [x] T004 [US1] In `skills/adkit/scripts/src/audit/rows.ts`, change
   `RawAuctionInsightRow` (~line 216) from
   `auction_insight_domain: { domain: string }` to
   `segments: { auction_insight_domain: string }`, and update
   `normalizeAuctionInsightRow` (~line 232) from
   `domain: r.auction_insight_domain.domain` to
   `domain: r.segments.auction_insight_domain` (depends on T002).
-- [ ] T005 [US1] In `skills/adkit/scripts/src/bin/audit.ts`,
+- [x] T005 [US1] In `skills/adkit/scripts/src/bin/audit.ts`,
   `campaignPriorAuctionInsights`'s row reducer (~line 601) — change
   `const domain = r.auction_insight_domain.domain;` to
   `const domain = r.segments.auction_insight_domain;` (depends on T004, since it
   reads the same `RawAuctionInsightRow` type).
-- [ ] T006 [P] [US1] Update the golden-GAQL-string assertions in
+- [x] T006 [P] [US1] Update the golden-GAQL-string assertions in
   `skills/adkit/scripts/src/gaql/builders.test.ts`'s `auctionInsightDomainQuery`
   and `auctionInsightDomainPriorWindowQuery` describe blocks (~lines 37-70): the
   expected `toGaql(...)` string changes to
@@ -72,11 +72,11 @@ client) returns non-empty grouped rows.
   with `segments.auction_insight_domain` in the SELECT list, and the
   `q.fields` assertion in the prior-window test becomes
   `["campaign.id", "segments.auction_insight_domain"]` (depends on T002, T003).
-- [ ] T007 [P] [US1] Update the fixture rows in
+- [x] T007 [P] [US1] Update the fixture rows in
   `skills/adkit/scripts/src/audit/rows.test.ts` (`normalizeAuctionInsightRow`
   cases, ~lines 13, 37) from `auction_insight_domain: { domain: "..." }` to
   `segments: { auction_insight_domain: "..." }` (depends on T004).
-- [ ] T008 [P] [US1] Update the fixture rows in
+- [x] T008 [P] [US1] Update the fixture rows in
   `skills/adkit/scripts/src/bin/audit.test.ts` (`campaignAuctionInsights` /
   `campaignPriorAuctionInsights` cases, ~lines 389, 400, 728-730, 764, 774) from
   `auction_insight_domain: { domain: "..." }` to
@@ -103,7 +103,7 @@ the warning falls back to a description built from it (never `undefined`).
 
 ### Implementation for User Story 2
 
-- [ ] T009 [US2] In `skills/adkit/scripts/src/bin/audit.ts`'s `runAudit`
+- [x] T009 [US2] In `skills/adkit/scripts/src/bin/audit.ts`'s `runAudit`
   (~lines 1262-1275), wrap the `auctionInsightsMap = await campaignAuctionInsights(...)`
   and `const priorDomainsMap = await campaignPriorAuctionInsights(...)` calls in
   a single try/catch: on error, set both `auctionInsightsMap = {}` and
@@ -111,14 +111,14 @@ the warning falls back to a description built from it (never `undefined`).
   `emitLines([\`WARNING: auction insights unavailable, skipping (${formatGoogleAdsError(err)})\`])`
   (`formatGoogleAdsError` and `emitLines` are already imported in this file)
   (depends on T002, T003 so the guarded call reflects the fixed query).
-- [ ] T010 [P] [US2] Add a regression test to
+- [x] T010 [P] [US2] Add a regression test to
   `skills/adkit/scripts/src/bin/audit.test.ts`'s `campaignAuctionInsights` /
   `runAudit`-adjacent coverage: a fake client that throws a
   `{ errors: [{ error_code: { query_error: 32 }, message: "Unrecognized field..." }] }`-shaped
   error for the auction-insights query asserts the run does not throw, both
   maps degrade to empty, and the emitted warning line contains
   `"Unrecognized field..."` (not `"undefined"`) (depends on T009).
-- [ ] T011 [P] [US2] Add a second case to the same test file: a fake client that
+- [x] T011 [P] [US2] Add a second case to the same test file: a fake client that
   throws a plain `new Error("network blip")` (no `errors[]`) for the same call
   asserts the warning line still contains a non-`undefined`, non-empty
   description derived from that error (depends on T009).
@@ -131,10 +131,10 @@ from the audit's own output (US2) rather than silently swallowed.
 
 ## Phase 5: Polish & Cross-Cutting Concerns
 
-- [ ] T012 Run the full gate suite from `skills/adkit/scripts/`:
+- [x] T012 Run the full gate suite from `skills/adkit/scripts/`:
   `npm run typecheck`, `npm test` (vitest), and any configured lint command; fix
   any findings (depends on T006, T007, T008, T010, T011).
-- [ ] T013 Re-read the `campaignAuctionInsights` / `campaignPriorAuctionInsights`
+- [x] T013 Re-read the `campaignAuctionInsights` / `campaignPriorAuctionInsights`
   JSDoc comments in `skills/adkit/scripts/src/bin/audit.ts` and the
   `auctionInsightDomainQuery` / `auctionInsightDomainPriorWindowQuery` doc
   comments in `builders.ts` for any stale reference to the old resource/field

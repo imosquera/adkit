@@ -598,9 +598,42 @@ export async function campaignPriorAuctionInsights(
   );
   return rows.reduce<Record<number, string[]>>((acc, r) => {
     const cid = r.campaign.id;
-    const domain = r.auction_insight_domain.domain;
+    const domain = r.segments.auction_insight_domain;
     return { ...acc, [cid]: [...(acc[cid] ?? []), domain] };
   }, {});
+}
+
+/**
+ * {@link campaignAuctionInsights} + {@link campaignPriorAuctionInsights},
+ * guarded: a query rejection (e.g. an unrecognized field on a future API
+ * version) degrades to empty maps and a diagnostic warning instead of
+ * aborting the whole audit or being silently swallowed. Uses
+ * {@link formatGoogleAdsError} so the printed reason is the Ads API's own
+ * structured error text when available, never `(undefined)`.
+ */
+export async function fetchAuctionInsights(
+  client: AdsClient,
+  customerId: string,
+  days: number,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<{
+  auctionInsightsMap: Record<number, AuctionInsightRow[]>;
+  priorDomainsMap: Record<number, string[]>;
+}> {
+  try {
+    const auctionInsightsMap = await campaignAuctionInsights(client, customerId, days, campaignIds);
+    const priorDomainsMap = await campaignPriorAuctionInsights(
+      client,
+      customerId,
+      new Date(),
+      days,
+      campaignIds,
+    );
+    return { auctionInsightsMap, priorDomainsMap };
+  } catch (err) {
+    emitLines([`WARNING: auction insights unavailable, skipping (${formatGoogleAdsError(err)})`]);
+    return { auctionInsightsMap: {}, priorDomainsMap: {} };
+  }
 }
 
 /**
@@ -1260,14 +1293,9 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     const terms = await searchTerms(client, customer, args.days, campIds);
     [addNegatives, promoteKeywords] = negativesAndPromotions(terms, kwByCampaign);
 
-    auctionInsightsMap = await campaignAuctionInsights(client, customer, args.days, campIds);
-    const priorDomainsMap = await campaignPriorAuctionInsights(
-      client,
-      customer,
-      new Date(),
-      args.days,
-      campIds,
-    );
+    const { auctionInsightsMap: fetchedAuctionInsights, priorDomainsMap } =
+      await fetchAuctionInsights(client, customer, args.days, campIds);
+    auctionInsightsMap = fetchedAuctionInsights;
     serving = serving.map((sc) => {
       const domains = auctionInsightsMap[sc.campaignId] ?? [];
       const newDomains = newCompetitorDomains(
