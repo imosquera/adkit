@@ -620,20 +620,21 @@ export async function fetchAuctionInsights(
   auctionInsightsMap: Record<number, AuctionInsightRow[]>;
   priorDomainsMap: Record<number, string[]>;
 }> {
+  let auctionInsightsMap: Record<number, AuctionInsightRow[]> = {};
   try {
-    const auctionInsightsMap = await campaignAuctionInsights(client, customerId, days, campaignIds);
-    const priorDomainsMap = await campaignPriorAuctionInsights(
-      client,
-      customerId,
-      new Date(),
-      days,
-      campaignIds,
-    );
-    return { auctionInsightsMap, priorDomainsMap };
+    auctionInsightsMap = await campaignAuctionInsights(client, customerId, days, campaignIds);
   } catch (err) {
-    emitLines([`WARNING: auction insights unavailable, skipping (${formatGoogleAdsError(err)})`]);
-    return { auctionInsightsMap: {}, priorDomainsMap: {} };
+    emitLines([`WARNING: auction insights (current window) unavailable, skipping (${formatGoogleAdsError(err)})`]);
   }
+
+  let priorDomainsMap: Record<number, string[]> = {};
+  try {
+    priorDomainsMap = await campaignPriorAuctionInsights(client, customerId, new Date(), days, campaignIds);
+  } catch (err) {
+    emitLines([`WARNING: auction insights (prior window) unavailable, skipping (${formatGoogleAdsError(err)})`]);
+  }
+
+  return { auctionInsightsMap, priorDomainsMap };
 }
 
 /**

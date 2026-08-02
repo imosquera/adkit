@@ -848,4 +848,31 @@ describe("fetchAuctionInsights (guarded fetch — never crashes the audit)", () 
     expect(warning).not.toContain("undefined");
     errSpy.mockRestore();
   });
+
+  it("the two fetches fail independently: a prior-window rejection doesn't discard an already-successful current-window result", async () => {
+    const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const currentRows = [{ campaign: { id: 1 }, segments: { auction_insight_domain: "a.com" } }];
+    const client: AdsClient = {
+      async search() {
+        return [];
+      },
+      async searchStructured(_customerId, args) {
+        if (toGaql(args).includes("segments.date BETWEEN")) {
+          throw new Error("prior window rejected");
+        }
+        return currentRows as never;
+      },
+      async mutate() {
+        throw new Error("audit must be read-only — no mutate calls");
+      },
+    };
+
+    const result = await fetchAuctionInsights(client, "123", 7, [1]);
+    expect(result.auctionInsightsMap[1].map((r) => r.domain)).toEqual(["a.com"]);
+    expect(result.priorDomainsMap).toEqual({});
+    const warning = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(warning).toContain("prior window");
+    expect(warning).toContain("prior window rejected");
+    errSpy.mockRestore();
+  });
 });
