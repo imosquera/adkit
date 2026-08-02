@@ -12,7 +12,7 @@
  * finding is produced (the Python baked in a single-advertiser constant).
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
@@ -24,6 +24,7 @@ import {
   campaignAuctionInsights,
   campaignPriorAuctionInsights,
   campaignServing,
+  fetchAuctionInsights,
   isManagerMetricsError,
   keywordCpc,
   landingPageMobile,
@@ -386,7 +387,7 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
     const rows = [
       {
         campaign: { id: 1 },
-        auction_insight_domain: { domain: "low.com" },
+        segments: { auction_insight_domain: "low.com" },
         metrics: {
           auction_insight_search_impression_share: 0.1,
           auction_insight_search_overlap_rate: 0.1,
@@ -397,7 +398,7 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
       },
       {
         campaign: { id: 1 },
-        auction_insight_domain: { domain: "high.com" },
+        segments: { auction_insight_domain: "high.com" },
         metrics: {
           auction_insight_search_impression_share: 0.9,
           auction_insight_search_overlap_rate: 0.2,
@@ -725,9 +726,9 @@ describe("resolvePsiKey (issue #40: PSI key sourceable from .adkit.yaml / Secret
 describe("campaignPriorAuctionInsights", () => {
   it("groups the prior window's domains by campaign, no share metrics needed", async () => {
     const rows = [
-      { campaign: { id: 1 }, auction_insight_domain: { domain: "a.com" } },
-      { campaign: { id: 1 }, auction_insight_domain: { domain: "b.com" } },
-      { campaign: { id: 2 }, auction_insight_domain: { domain: "c.com" } },
+      { campaign: { id: 1 }, segments: { auction_insight_domain: "a.com" } },
+      { campaign: { id: 1 }, segments: { auction_insight_domain: "b.com" } },
+      { campaign: { id: 2 }, segments: { auction_insight_domain: "c.com" } },
     ];
     const result = await campaignPriorAuctionInsights(
       fakeClient(() => rows),
@@ -761,7 +762,7 @@ describe("current-vs-prior-window Auction Insights composition (no cross-run sta
     const currentRows = [
       {
         campaign: { id: 1 },
-        auction_insight_domain: { domain: "newcomer.com" },
+        segments: { auction_insight_domain: "newcomer.com" },
         metrics: {
           auction_insight_search_impression_share: 0.3,
           auction_insight_search_overlap_rate: 0.2,
@@ -771,7 +772,7 @@ describe("current-vs-prior-window Auction Insights composition (no cross-run sta
         },
       },
     ];
-    const priorRows = [{ campaign: { id: 1 }, auction_insight_domain: { domain: "old-timer.com" } }];
+    const priorRows = [{ campaign: { id: 1 }, segments: { auction_insight_domain: "old-timer.com" } }];
 
     let queryCount = 0;
     const client = fakeClient((query) => {
@@ -784,5 +785,94 @@ describe("current-vs-prior-window Auction Insights composition (no cross-run sta
     expect(queryCount).toBe(2);
     expect(current[1].map((r) => r.domain)).toEqual(["newcomer.com"]);
     expect(prior[1]).toEqual(["old-timer.com"]);
+  });
+});
+
+describe("fetchAuctionInsights (guarded fetch — never crashes the audit)", () => {
+  it("a rejected query (structured Ads API error) degrades to empty maps and logs the real reason, not (undefined)", async () => {
+    const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const client: AdsClient = {
+      async search() {
+        throw {
+          errors: [
+            {
+              error_code: { query_error: 32 },
+              message: "Unrecognized field in the query: 'auction_insight_domain.domain'.",
+            },
+          ],
+        };
+      },
+      async searchStructured() {
+        throw {
+          errors: [
+            {
+              error_code: { query_error: 32 },
+              message: "Unrecognized field in the query: 'auction_insight_domain.domain'.",
+            },
+          ],
+        };
+      },
+      async mutate() {
+        throw new Error("audit must be read-only — no mutate calls");
+      },
+    };
+
+    const result = await fetchAuctionInsights(client, "123", 7, [1]);
+    expect(result.auctionInsightsMap).toEqual({});
+    expect(result.priorDomainsMap).toEqual({});
+    const warning = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(warning).toContain("Unrecognized field in the query");
+    expect(warning).not.toContain("undefined");
+    errSpy.mockRestore();
+  });
+
+  it("a plain (non-Ads) error also degrades to empty maps with a non-undefined reason", async () => {
+    const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const client: AdsClient = {
+      async search() {
+        throw new Error("network blip");
+      },
+      async searchStructured() {
+        throw new Error("network blip");
+      },
+      async mutate() {
+        throw new Error("audit must be read-only — no mutate calls");
+      },
+    };
+
+    const result = await fetchAuctionInsights(client, "123", 7, [1]);
+    expect(result.auctionInsightsMap).toEqual({});
+    expect(result.priorDomainsMap).toEqual({});
+    const warning = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(warning).toContain("network blip");
+    expect(warning).not.toContain("undefined");
+    errSpy.mockRestore();
+  });
+
+  it("the two fetches fail independently: a prior-window rejection doesn't discard an already-successful current-window result", async () => {
+    const errSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const currentRows = [{ campaign: { id: 1 }, segments: { auction_insight_domain: "a.com" } }];
+    const client: AdsClient = {
+      async search() {
+        return [];
+      },
+      async searchStructured(_customerId, args) {
+        if (toGaql(args).includes("segments.date BETWEEN")) {
+          throw new Error("prior window rejected");
+        }
+        return currentRows as never;
+      },
+      async mutate() {
+        throw new Error("audit must be read-only — no mutate calls");
+      },
+    };
+
+    const result = await fetchAuctionInsights(client, "123", 7, [1]);
+    expect(result.auctionInsightsMap[1].map((r) => r.domain)).toEqual(["a.com"]);
+    expect(result.priorDomainsMap).toEqual({});
+    const warning = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(warning).toContain("prior window");
+    expect(warning).toContain("prior window rejected");
+    errSpy.mockRestore();
   });
 });

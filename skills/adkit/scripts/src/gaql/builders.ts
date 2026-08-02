@@ -328,10 +328,10 @@ export function auctionInsightDomainQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
   return inListQuery(
-    "auction_insight_domain",
+    "campaign",
     [
       "campaign.id",
-      "auction_insight_domain.domain",
+      "segments.auction_insight_domain",
       "metrics.auction_insight_search_impression_share",
       "metrics.auction_insight_search_overlap_rate",
       "metrics.auction_insight_search_position_above_rate",
@@ -357,8 +357,8 @@ export function auctionInsightDomainPriorWindowQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
   return inListQuery(
-    "auction_insight_domain",
-    ["campaign.id", "auction_insight_domain.domain"],
+    "campaign",
+    ["campaign.id", "segments.auction_insight_domain"],
     "campaign.id",
     campaignIds,
     [`segments.date BETWEEN '${start}' AND '${end}'`],

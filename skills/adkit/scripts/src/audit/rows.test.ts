@@ -10,7 +10,7 @@ describe("normalizeAuctionInsightRow", () => {
   it("maps every metric field to its AuctionInsightRow name", () => {
     const raw: RawAuctionInsightRow = {
       campaign: { id: 111 },
-      auction_insight_domain: { domain: "competitor.com" },
+      segments: { auction_insight_domain: "competitor.com" },
       metrics: {
         auction_insight_search_impression_share: 0.42,
         auction_insight_search_overlap_rate: 0.3,
@@ -34,7 +34,7 @@ describe("normalizeAuctionInsightRow", () => {
   it("zero-fills an absent metrics object", () => {
     const raw: RawAuctionInsightRow = {
       campaign: { id: 222 },
-      auction_insight_domain: { domain: "no-metrics-yet.com" },
+      segments: { auction_insight_domain: "no-metrics-yet.com" },
     };
     const row = normalizeAuctionInsightRow(raw);
     expect(row.impressionShare).toBe(0);
