@@ -88,6 +88,15 @@ export interface SearchTermAgg {
   conversions: number;
   cost: number;
   impressions: number;
+  // ctr is the raw per-row value (this search term within this ad group), not
+  // recomputed post-aggregation — callers that aggregate across ad groups
+  // (keywordsToPromote/negativesToAdd) ignore it; keywordsByClicksAndCtr, which
+  // groups per ad group, derives its own clicks/impressions-based ctr instead of
+  // trusting this field, since ctr can't be summed across rows.
+  ctr: number;
+  // null only when the API omits ad_group (shouldn't happen — the query always
+  // selects it); null is an honest "unknown" rather than a bogus id 0.
+  ad_group_id: number | null;
   // These rows feed the generic (Record-consuming) cluster helpers.
   [key: string]: unknown;
 }

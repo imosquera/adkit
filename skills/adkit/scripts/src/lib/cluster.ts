@@ -153,6 +153,134 @@ export function keywordsToPromote(
   }));
 }
 
+export interface ClickCtrCandidate {
+  text: string;
+  adGroupId: number | null;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  verdict: "strong" | "weak-relevance" | "watch";
+  cheapToScale: boolean;
+}
+
+export interface KeywordsByClicksAndCtrOptions {
+  minClicks?: number;
+  limit?: number;
+}
+
+/** Composite key scoping a term to one ad group — "campaign-wide" existing-keyword
+ * checks would drop a term from ad group B just because it's already a keyword in
+ * unrelated ad group A of the same campaign. */
+function adGroupTermKey(adGroupId: number | null, text: string): string {
+  return `${adGroupId}::${comparisonKey(text)}`;
+}
+
+/**
+ * Search terms worth adding as keywords, ranked by engagement (clicks, CTR)
+ * rather than conversions — a conversion-agnostic companion to
+ * {@link keywordsToPromote} for a clicks/CTR-first promote pass. Grouped per ad
+ * group (not merged campaign-wide the way `keywordsToPromote` is): a term already
+ * a keyword in one ad group can still be a genuine new candidate in another, so
+ * `existingKeywords` rows are matched against the (ad_group_id, text) pair, not
+ * text alone. "above-average CTR" and "cheap CPC" are still judged relative to
+ * the whole campaign the ad group sits in.
+ *
+ * verdict:
+ *   - "weak-relevance": clicks >= minClicks but CTR is below the campaign's
+ *     own average — volume without relevance, not a promote candidate.
+ *   - "strong": clicks >= minClicks, CTR >= campaign average, and this term's
+ *     own cost/click undercuts campaignAvgCpc (cheapToScale).
+ *   - "watch": CTR is at/above average but CPC isn't cheap — or
+ *     campaignAvgCpc is unknown (0), so there's no baseline to call it cheap
+ *     against — relevant, not yet a confirmed win.
+ *
+ * cheapToScale flags any kept term whose own CPC undercuts campaignAvgCpc
+ * (the campaign's existing-keyword average CPC, from keywordCpc) independent
+ * of verdict, since "cheap" and "relevant" are different questions. Pass 0 for
+ * campaignAvgCpc when it's unknown — every candidate then stays at "watch" at
+ * best, since there's nothing to confirm cheapness against.
+ */
+export function keywordsByClicksAndCtr(
+  searchTerms: Iterable<Row>,
+  existingKeywords: Iterable<Row>,
+  campaignAvgCpc: number,
+  options: KeywordsByClicksAndCtrOptions = {},
+): ClickCtrCandidate[] {
+  const { minClicks = 3, limit = 25 } = options;
+  const existing = new Set(
+    [...existingKeywords].map((k) => {
+      const adGroupId =
+        k.ad_group_id === null || k.ad_group_id === undefined ? null : toInt(k.ad_group_id);
+      return adGroupTermKey(adGroupId, String(k.text ?? ""));
+    }),
+  );
+  const rows = [...searchTerms];
+
+  const totalClicks = rows.reduce((sum, r) => sum + toInt(r.clicks), 0);
+  const totalImpressions = rows.reduce((sum, r) => sum + toInt(r.impressions), 0);
+  const campaignCtr = totalImpressions > 0 ? totalClicks / totalImpressions : 0;
+
+  interface GroupAgg {
+    text: string;
+    adGroupId: number | null;
+    clicks: number;
+    impressions: number;
+    cost: number;
+  }
+
+  function foldGroup(agg: Record<string, GroupAgg>, row: Row): Record<string, GroupAgg> {
+    const raw = String(row.search_term ?? "").trim();
+    const key = comparisonKey(raw);
+    if (!key) {
+      return agg;
+    }
+    const adGroupId =
+      row.ad_group_id === null || row.ad_group_id === undefined ? null : toInt(row.ad_group_id);
+    const groupKey = adGroupTermKey(adGroupId, raw);
+    const prev: GroupAgg = agg[groupKey] ?? { text: raw, adGroupId, clicks: 0, impressions: 0, cost: 0 };
+    return {
+      ...agg,
+      [groupKey]: {
+        text: prev.text,
+        adGroupId: prev.adGroupId,
+        clicks: prev.clicks + toInt(row.clicks),
+        impressions: prev.impressions + toInt(row.impressions),
+        cost: prev.cost + toFloat(row.cost),
+      },
+    };
+  }
+
+  const grouped = rows.reduce(foldGroup, {} as Record<string, GroupAgg>);
+  const kept = Object.values(grouped).filter(
+    (a) => a.clicks >= minClicks && !existing.has(adGroupTermKey(a.adGroupId, a.text)),
+  );
+
+  const candidates = kept.map((a): ClickCtrCandidate => {
+    const ctr = a.impressions > 0 ? a.clicks / a.impressions : 0;
+    const cpc = a.clicks > 0 ? a.cost / a.clicks : 0;
+    const aboveAvgCtr = ctr >= campaignCtr;
+    const cheapToScale = campaignAvgCpc > 0 && cpc < campaignAvgCpc;
+    const verdict: ClickCtrCandidate["verdict"] = !aboveAvgCtr
+      ? "weak-relevance"
+      : cheapToScale
+        ? "strong"
+        : "watch";
+    return {
+      text: a.text,
+      adGroupId: a.adGroupId,
+      clicks: a.clicks,
+      ctr: roundHalfEven(ctr, 4),
+      cpc: roundHalfEven(cpc, 2),
+      verdict,
+      cheapToScale,
+    };
+  });
+
+  return candidates
+    .sort((x, y) => (y.clicks !== x.clicks ? y.clicks - x.clicks : y.ctr - x.ctr))
+    .slice(0, limit);
+}
+
 export interface NegativesToAddOptions {
   minCost?: number;
   limit?: number;
