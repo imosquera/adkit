@@ -4,8 +4,10 @@ import {
   addAdGroupsPlan,
   adGroupStatusPlan,
   adStatusPlan,
+  biddingPlan,
   campaignStatusPlan,
   coerceKeyword,
+  CONVERSION_GUARD_THRESHOLD,
   negKey,
   newNegatives,
   newPositiveKeywords,
@@ -281,6 +283,270 @@ describe("budget guardrail", () => {
     expect(bad.some((e) => e.includes("positive int"))).toBe(true);
     const missing = validate({ budgets: [{ campaignId: 7, dailyMicros: 1_000_000 }] }, {}, BUDGETS);
     expect(missing.some((e) => e.includes("no current budget"))).toBe(true);
+  });
+});
+
+// ---------- bidding guardrail ----------
+
+const BIDDING_STARVED = { 5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d: 5 } };
+const bidding = (conversions30d: number) => ({
+  5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d },
+});
+
+describe("bidding guardrail", () => {
+  it("refuses an unsupported or malformed strategy before ever checking live state", () => {
+    const unsupported = validate(
+      { bidding: [{ campaignId: 5, strategy: "manual-cpc" }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      bidding(0),
+    );
+    expect(unsupported.some((e) => e.includes("strategy must be one of"))).toBe(true);
+
+    const typo = validate(
+      { bidding: [{ campaignId: 5, strategy: "Maximize-Clicks" }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      bidding(0),
+    );
+    expect(typo.some((e) => e.includes("strategy must be"))).toBe(true);
+
+    const missing = validate({ bidding: [{ campaignId: 5 }] }, {}, {}, undefined, undefined, undefined, bidding(0));
+    expect(missing.some((e) => e.includes("strategy must be"))).toBe(true);
+
+    // Unlike the state lookup, this check fires even for a campaign with no live
+    // bidding state at all — it never depends on getState() succeeding.
+    const unknownCampaign = validate(
+      { bidding: [{ campaignId: 999, strategy: "not-a-strategy" }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      bidding(0),
+    );
+    expect(unknownCampaign.some((e) => e.includes("strategy must be"))).toBe(true);
+    expect(unknownCampaign.some((e) => e.includes("no current bidding state found"))).toBe(false);
+  });
+
+  it("refuses a downgrade at exactly the 30-conversion threshold without acknowledgement", () => {
+    const plan = { bidding: [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_000_000 }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(CONVERSION_GUARD_THRESHOLD));
+    expect(errs.some((e) => e.includes("refusing maximize-conversions -> maximize-clicks"))).toBe(true);
+  });
+
+  it("allows a downgrade at one conversion below the threshold", () => {
+    const plan = { bidding: [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_000_000 }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(CONVERSION_GUARD_THRESHOLD - 1));
+    expect(errs).toEqual([]);
+  });
+
+  it("allows a downgrade at/above the threshold when acknowledged", () => {
+    const plan = {
+      bidding: [
+        {
+          campaignId: 5,
+          strategy: "maximize-clicks",
+          cpcBidCeilingMicros: 5_000_000,
+          acknowledgeStrategyDowngrade: true,
+        },
+      ],
+    };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(CONVERSION_GUARD_THRESHOLD));
+    expect(errs).toEqual([]);
+  });
+
+  it("never guards the reverse (graduate-up) direction regardless of conversion count", () => {
+    const plan = { bidding: [{ campaignId: 5, strategy: "maximize-conversions" }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(1000));
+    expect(errs).toEqual([]);
+  });
+
+  it("does not guard a ceiling-only edit that leaves the campaign on maximize-clicks", () => {
+    const alreadyOnClicks = { 5: { biddingStrategyType: "TARGET_SPEND", conversions30d: 1000 } };
+    const plan = { bidding: [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 6_000_000 }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, alreadyOnClicks);
+    expect(errs).toEqual([]);
+  });
+
+  it("errors on an unknown campaignId", () => {
+    const plan = { bidding: [{ campaignId: 9, strategy: "maximize-clicks" }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, BIDDING_STARVED);
+    expect(errs.some((e) => e.includes("no current bidding state found"))).toBe(true);
+  });
+
+  it("accepts target-cpa and target-roas (spec.md 048 FR-001)", () => {
+    const targetCpaState = { 5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d: 0 } };
+    const targetCpa = validate(
+      { bidding: [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: 12_000_000 }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      targetCpaState,
+    );
+    expect(targetCpa).toEqual([]);
+
+    const targetRoas = validate(
+      { bidding: [{ campaignId: 5, strategy: "target-roas", targetRoas: 3.5 }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      targetCpaState,
+    );
+    expect(targetRoas).toEqual([]);
+  });
+
+  it("never guards graduating into target-cpa/target-roas regardless of conversion count", () => {
+    const plan = { bidding: [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: 12_000_000 }] };
+    const errs = validate(plan, {}, {}, undefined, undefined, undefined, bidding(1000));
+    expect(errs).toEqual([]);
+  });
+
+  it("refuses a target-cpa block missing targetCpaMicros before ever checking live state", () => {
+    const errs = validate(
+      { bidding: [{ campaignId: 5, strategy: "target-cpa" }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      new Map(), // no live state at all — the required-field check must fire first
+    );
+    expect(errs.some((e) => e.includes('requires a positive integer targetCpaMicros'))).toBe(true);
+    expect(errs.some((e) => e.includes("no current bidding state found"))).toBe(false);
+  });
+
+  it("refuses a target-cpa block with a non-positive or non-integer targetCpaMicros", () => {
+    for (const bad of [0, -1, 1.5, "12000000", NaN]) {
+      const errs = validate(
+        { bidding: [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: bad }] },
+        {},
+        {},
+        undefined,
+        undefined,
+        undefined,
+        new Map(),
+      );
+      expect(errs.some((e) => e.includes("requires a positive integer targetCpaMicros"))).toBe(true);
+    }
+  });
+
+  it("refuses a target-roas block missing or with a non-positive targetRoas", () => {
+    for (const bad of [undefined, 0, -1, "3.5", NaN]) {
+      const block: Record<string, unknown> = { campaignId: 5, strategy: "target-roas" };
+      if (bad !== undefined) {
+        block.targetRoas = bad;
+      }
+      const errs = validate({ bidding: [block] }, {}, {}, undefined, undefined, undefined, new Map());
+      expect(errs.some((e) => e.includes("requires a positive numeric targetRoas"))).toBe(true);
+    }
+  });
+
+  it("accepts a fractional targetRoas (unlike targetCpaMicros, it is not required to be an integer)", () => {
+    const errs = validate(
+      { bidding: [{ campaignId: 5, strategy: "target-roas", targetRoas: 3.5 }] },
+      {},
+      {},
+      undefined,
+      undefined,
+      undefined,
+      { 5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d: 0 } },
+    );
+    expect(errs).toEqual([]);
+  });
+});
+
+// ---------- bidding idempotent-skip partition (spec.md 048 FR-002/FR-003) ----------
+
+describe("biddingPlan", () => {
+  it("skips an entry whose strategy and target value already match live state", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_CPA", conversions30d: 10, targetValue: 12_000_000 } };
+    const [changes, skips] = biddingPlan(
+      [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: 12_000_000 }],
+      live,
+    );
+    expect(changes).toEqual([]);
+    expect(skips).toHaveLength(1);
+  });
+
+  it("treats a target-value-only change (same strategy) as a real change, not a skip", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_CPA", conversions30d: 10, targetValue: 12_000_000 } };
+    const [changes, skips] = biddingPlan(
+      [{ campaignId: 5, strategy: "target-cpa", targetCpaMicros: 15_000_000 }],
+      live,
+    );
+    expect(skips).toEqual([]);
+    expect(changes).toHaveLength(1);
+  });
+
+  it("treats a strategy change as a real change even when no target value is set", () => {
+    const live = { 5: { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d: 10 } };
+    const [changes, skips] = biddingPlan([{ campaignId: 5, strategy: "maximize-clicks" }], live);
+    expect(skips).toEqual([]);
+    expect(changes).toHaveLength(1);
+  });
+
+  it("skips a maximize-clicks entry already on maximize-clicks with a matching ceiling", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_SPEND", conversions30d: 0, targetValue: 5_000_000 } };
+    const [changes, skips] = biddingPlan(
+      [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_000_000 }],
+      live,
+    );
+    expect(changes).toEqual([]);
+    expect(skips).toHaveLength(1);
+  });
+
+  it("treats a ceiling-only change on maximize-clicks as a real change, not a skip", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_SPEND", conversions30d: 0, targetValue: 5_000_000 } };
+    const [changes, skips] = biddingPlan(
+      [{ campaignId: 5, strategy: "maximize-clicks", cpcBidCeilingMicros: 6_000_000 }],
+      live,
+    );
+    expect(skips).toEqual([]);
+    expect(changes).toHaveLength(1);
+  });
+
+  it("treats an unknown campaign or unsupported strategy as a change, not a skip", () => {
+    const live = { 5: { biddingStrategyType: "TARGET_CPA", conversions30d: 0, targetValue: 12_000_000 } };
+    const [changesUnknown, skipsUnknown] = biddingPlan(
+      [{ campaignId: 999, strategy: "target-cpa", targetCpaMicros: 12_000_000 }],
+      live,
+    );
+    expect(skipsUnknown).toEqual([]);
+    expect(changesUnknown).toHaveLength(1);
+
+    const [changesBad, skipsBad] = biddingPlan([{ campaignId: 5, strategy: "manual-cpc" }], live);
+    expect(skipsBad).toEqual([]);
+    expect(changesBad).toHaveLength(1);
+  });
+
+  it("treats a switch between spend-optimizing strategies (target-cpa -> target-roas) as a real change, never a cross-field skip", () => {
+    // Guards against comparing a target-cpa micros value against a target-roas ratio
+    // (or vice versa) across the strategy switch — the live strategy check must gate
+    // the target-value comparison, not run alongside it.
+    const live = { 5: { biddingStrategyType: "TARGET_CPA", conversions30d: 10, targetValue: 12_000_000 } };
+    const [changes, skips] = biddingPlan([{ campaignId: 5, strategy: "target-roas", targetRoas: 3.5 }], live);
+    expect(skips).toEqual([]);
+    expect(changes).toHaveLength(1);
+
+    // Numeric-coincidence variant: an absurd but type-legal targetRoas that happens to
+    // equal the live targetCpaMicros value must still never accidentally match.
+    const [changesCoincidence, skipsCoincidence] = biddingPlan(
+      [{ campaignId: 5, strategy: "target-roas", targetRoas: 12_000_000 }],
+      live,
+    );
+    expect(skipsCoincidence).toEqual([]);
+    expect(changesCoincidence).toHaveLength(1);
   });
 });
 

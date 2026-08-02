@@ -51,10 +51,10 @@ Ad strength and **impression share (IS)** are different axes: an EXCELLENT ad ca
 
 Two related growth blockers it also flags:
 
-- **`cold_start_throttle`** — `MAXIMIZE_CONVERSIONS` + 0 conversions + 0 impressions: Smart Bidding with no conversion history bids weakly and starves a *new* campaign. Feed it conversions or warm it up.
+- **`cold_start_throttle`** — `MAXIMIZE_CONVERSIONS` + 0 conversions + 0 impressions: Smart Bidding with no conversion history bids weakly and starves a *new* campaign. Feed it conversions or warm it up — or, if the campaign has been live a while without building volume, drop it back to `maximize-clicks` with a CPC ceiling via `ads.sh update`'s `bidding` lever (see `reference/update.md`) to buy traffic and re-seed conversion data, then graduate back up once it has enough.
 - **`cannibalization`** — the account's own ENABLED campaigns sharing keywords; Google serves only the higher-Ad-Rank one, starving the other (often a newer `-stag` duplicate). Run one campaign per product.
 
-**These are mostly not creative fixes.** Of them, `/adkit update` can raise a budget (for `budget_constrained`), add negative keywords (helps `rank_constrained` by lifting CTR → Quality Score → Ad Rank), and close per-ad `pathToExcellent` gaps. Everything else (bid strategy, geo/schedule) the operator does in the UI.
+**These are mostly not creative fixes.** Of them, `/adkit update` can raise a budget (for `budget_constrained`), change bid strategy (for `cold_start_throttle`), add negative keywords (helps `rank_constrained` by lifting CTR → Quality Score → Ad Rank), and close per-ad `pathToExcellent` gaps. Geo/schedule the operator still does in the UI.
 
 ## Auction Insights — who you're losing share to
 
