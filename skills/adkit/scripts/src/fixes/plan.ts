@@ -33,6 +33,10 @@ export const SITELINK_DESC_MAX = 35;
 // hard ceiling: a budget raise beyond this % over current is refused
 // (a plan's maxRaisePct can only lower this, never exceed it)
 export const MAX_RAISE_PCT_CAP = 50;
+// a maximize-conversions -> maximize-clicks downgrade is refused when the campaign
+// has at least this many conversions in the trailing 30 days, unless the plan block
+// sets acknowledgeStrategyDowngrade: true. The reverse (graduating up) is never guarded.
+export const CONVERSION_GUARD_THRESHOLD = 30;
 
 /** Plain-object guard (excludes arrays and null). */
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -530,6 +534,178 @@ function budgetsErrors(
   return budgetBlocks.flatMap(one);
 }
 
+interface BiddingLiveState {
+  biddingStrategyType?: string;
+  conversions30d?: number;
+  // The campaign's live target value, normalized to whichever field its live
+  // strategy actually uses: target_cpa_micros when on TARGET_CPA, target_roas when
+  // on TARGET_ROAS, undefined otherwise. Used only for the idempotent-skip check in
+  // apply-fixes.ts (bidding change vs. no-op) — never consulted by biddingErrors.
+  targetValue?: number;
+}
+
+// The four strategies the bidding plan section supports (spec.md 048 FR-001) — each
+// has a live-mutation branch in apply-fixes.ts's bidding apply loop. BID_STRATEGIES
+// (schema.ts) also includes "manual-cpc" and "maximize-conversion-value", which are
+// valid Brief.campaign.bidStrategy values but have no update-plan mutation path, so a
+// plan block naming one must be REJECTED here, not silently mutated as if it were
+// maximize-conversions (the mutation loop's fallback branch).
+const BIDDING_PLAN_STRATEGIES = new Set(["maximize-clicks", "maximize-conversions", "target-cpa", "target-roas"]);
+
+/**
+ * Refuse a bidding block whose `strategy` isn't one of the four this plan section
+ * supports (typo, wrong case, missing field, or a legitimate-but-unsupported
+ * BidStrategy like "manual-cpc") before it can ever reach the live mutation loop.
+ * Refuse a target-cpa/target-roas block missing its required positive numeric target
+ * value — this check MUST live here, not deferred to CampaignSchema's re-parse (see
+ * below), because that re-parse doesn't run for every campaign and its failure mode
+ * doesn't block the live mutation loop either way. Then refuse a
+ * maximize-conversions -> maximize-clicks block when the campaign has proven
+ * conversion volume (FR-004), unless the block explicitly acknowledges the downgrade.
+ * The reverse direction (graduating up, including into target-cpa/target-roas) and
+ * same-strategy ceiling/target-only edits are never guarded by this function (FR-005)
+ * — the loud, non-blocking spend-affecting WARNING for those directions lives in
+ * apply-fixes.ts, not here. Callers (apply-fixes.ts) are expected to only pass blocks
+ * that represent a real change — an entry matching the campaign's current live
+ * strategy/target value is filtered out upstream as a skip, so this function never
+ * needs its own idempotency check. cpcBidCeilingMicros's optional pairing with
+ * maximize-clicks is the one field intentionally NOT checked here (unlike the
+ * required target-cpa/target-roas fields above) — a missing ceiling is a valid,
+ * ceiling-less maximize-clicks entry, so there's nothing to require; an invalid
+ * *mismatched* pairing (e.g. cpcBidCeilingMicros set alongside target-cpa) is still
+ * caught for free when the staged brief is re-parsed through CampaignSchema (see
+ * apply-plan.ts / stageResolvedGroups) for campaigns that reach that step.
+ */
+function biddingErrors(
+  biddingBlocks: Array<Record<string, unknown>>,
+  biddingState: Map<unknown, BiddingLiveState> | Record<string, BiddingLiveState>,
+): string[] {
+  const one = (b: Record<string, unknown>): string[] => {
+    const cid = b.campaignId;
+    if (!BIDDING_PLAN_STRATEGIES.has(b.strategy as string)) {
+      return [
+        `bidding campaign ${pyStr(cid)}: strategy must be one of ` +
+          `${[...BIDDING_PLAN_STRATEGIES].map((s) => `"${s}"`).join(", ")} (got ${pyRepr(b.strategy)})`,
+      ];
+    }
+    // Required-companion-field check (mirrors CampaignSchema.superRefine, schema.ts):
+    // a target-cpa/target-roas block MUST carry a positive numeric target value before
+    // it can ever reach the live mutation loop. This can NOT be left to the "enforced
+    // for free by CampaignSchema" brief re-parse below — that re-parse only runs for
+    // campaigns resolved to a tracked adbriefs slug, and even when it does run and
+    // rejects the brief, that failure only downgrades to a non-fatal staging WARNING
+    // (apply-fixes.ts) and does not stop the live mutation. Without this check, a
+    // block missing its target value would reach the mutation loop with
+    // `targetCpaMicros: undefined`/`targetRoas: undefined`, which the Ads API decodes
+    // as an explicit 0 — silently zeroing a campaign's live target, not a caught error.
+    if (
+      b.strategy === "target-cpa" &&
+      !(typeof b.targetCpaMicros === "number" && Number.isInteger(b.targetCpaMicros) && b.targetCpaMicros > 0)
+    ) {
+      return [
+        `bidding campaign ${pyStr(cid)}: strategy "target-cpa" requires a positive integer ` +
+          `targetCpaMicros (got ${pyRepr(b.targetCpaMicros)})`,
+      ];
+    }
+    if (b.strategy === "target-roas" && !(typeof b.targetRoas === "number" && b.targetRoas > 0)) {
+      return [
+        `bidding campaign ${pyStr(cid)}: strategy "target-roas" requires a positive numeric ` +
+          `targetRoas (got ${pyRepr(b.targetRoas)})`,
+      ];
+    }
+    const state = getBiddingState(biddingState, cid);
+    if (state === undefined) {
+      return [`bidding campaign ${pyStr(cid)}: no current bidding state found`];
+    }
+    const conversions = state.conversions30d ?? 0;
+    const isRiskyDowngrade =
+      b.strategy === "maximize-clicks" &&
+      state.biddingStrategyType === "MAXIMIZE_CONVERSIONS" &&
+      conversions >= CONVERSION_GUARD_THRESHOLD;
+    if (isRiskyDowngrade && b.acknowledgeStrategyDowngrade !== true) {
+      return [
+        `bidding campaign ${pyStr(cid)}: refusing maximize-conversions -> maximize-clicks ` +
+          `(${conversions} conversions in trailing 30 days >= ${CONVERSION_GUARD_THRESHOLD}); ` +
+          `set acknowledgeStrategyDowngrade: true to override`,
+      ];
+    }
+    return [];
+  };
+  return biddingBlocks.flatMap(one);
+}
+
+function getBiddingState(
+  biddingState: Map<unknown, BiddingLiveState> | Record<string, BiddingLiveState>,
+  cid: unknown,
+): BiddingLiveState | undefined {
+  if (biddingState instanceof Map) {
+    return biddingState.get(cid);
+  }
+  return (biddingState as Record<string, BiddingLiveState>)[cid as string];
+}
+
+// Maps each supported plan strategy to the live campaign.bidding_strategy_type enum
+// value it corresponds to (see BiddingGuardRow/liveBiddingTargetValue in
+// apply-fixes.ts, which populate BiddingLiveState.biddingStrategyType from this same
+// API field).
+const BIDDING_LIVE_STRATEGY_ENUM: Record<string, string> = {
+  "maximize-clicks": "TARGET_SPEND",
+  "maximize-conversions": "MAXIMIZE_CONVERSIONS",
+  "target-cpa": "TARGET_CPA",
+  "target-roas": "TARGET_ROAS",
+};
+
+/**
+ * The single comparable value a bidding plan block carries for its strategy —
+ * targetCpaMicros/targetRoas for target-cpa/target-roas, cpcBidCeilingMicros for
+ * maximize-clicks (undefined if the ceiling isn't set on the block), undefined for
+ * maximize-conversions (no comparable value). Mirrors liveBiddingTargetValue's
+ * normalization on the live-state side (apply-fixes.ts) so the two can be compared
+ * directly for the idempotent-skip check in biddingPlan.
+ */
+function biddingPlanTargetValue(b: Record<string, unknown>): number | undefined {
+  switch (b.strategy) {
+    case "target-cpa":
+      return typeof b.targetCpaMicros === "number" ? b.targetCpaMicros : undefined;
+    case "target-roas":
+      return typeof b.targetRoas === "number" ? b.targetRoas : undefined;
+    case "maximize-clicks":
+      return typeof b.cpcBidCeilingMicros === "number" ? b.cpcBidCeilingMicros : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Partition bidding plan blocks into [changes, skips] (spec.md 048 FR-002/FR-003):
+ * a block whose strategy AND comparable target value already match the campaign's
+ * live state is a no-op skip; everything else (including an unrecognized strategy or
+ * a campaign with no known live state) is a change, left for biddingErrors to
+ * validate/reject as appropriate. Mirrors the campaignStatusPlan changes/skips split
+ * above — bidding just also compares a target value, not only a status string.
+ */
+export function biddingPlan(
+  biddingBlocks: Array<Record<string, unknown>>,
+  biddingState: Map<unknown, BiddingLiveState> | Record<string, BiddingLiveState>,
+): [Array<Record<string, unknown>>, Array<Record<string, unknown>>] {
+  const isSkip = (b: Record<string, unknown>): boolean => {
+    if (!BIDDING_PLAN_STRATEGIES.has(b.strategy as string)) {
+      return false;
+    }
+    const state = getBiddingState(biddingState, b.campaignId);
+    if (state === undefined) {
+      return false;
+    }
+    if (state.biddingStrategyType !== BIDDING_LIVE_STRATEGY_ENUM[b.strategy as string]) {
+      return false;
+    }
+    return biddingPlanTargetValue(b) === state.targetValue;
+  };
+  const changes = biddingBlocks.filter((b) => !isSkip(b));
+  const skips = biddingBlocks.filter((b) => isSkip(b));
+  return [changes, skips];
+}
+
 function keywordsErrors(
   keywordBlocks: Array<Record<string, unknown>>,
   livePositive: LiveKeywordMap | null | undefined,
@@ -794,6 +970,7 @@ export interface ValidateLiveState {
   liveHeadlines: Map<unknown, string[]> | Record<string, string[]>;
   budgets: Map<unknown, { amountMicros?: number }> | Record<string, { amountMicros?: number }>;
   livePositive?: LiveKeywordMap | null;
+  biddingState?: Map<unknown, BiddingLiveState> | Record<string, BiddingLiveState> | null;
 }
 
 /**
@@ -807,6 +984,11 @@ export function validate(
   livePositive: LiveKeywordMap | null | undefined = undefined,
   liveSearchPartnersGoogleSearch: LiveBoolMap | null | undefined = undefined,
   liveAdParents: LiveAdParentMap | null | undefined = undefined,
+  biddingState: ValidateLiveState["biddingState"] = undefined,
+  // Idempotent-skip filtered bidding blocks (biddingPlan's "changes" half, spec.md 048
+  // FR-002) — defaults to the raw plan section so existing callers that don't compute
+  // the skip partition (tests, other call sites) keep validating every bidding block.
+  biddingBlocks: Array<Record<string, unknown>> | undefined = undefined,
 ): string[] {
   const arr = (key: string): Array<Record<string, unknown>> =>
     Array.isArray(plan[key]) ? (plan[key] as Array<Record<string, unknown>>) : [];
@@ -817,6 +999,7 @@ export function validate(
     ...sitelinksErrors(arr("sitelinks")),
     ...calloutsErrors(arr("callouts")),
     ...budgetsErrors(arr("budgets"), budgets),
+    ...biddingErrors(biddingBlocks ?? arr("bidding"), biddingState ?? new Map()),
     ...keywordsErrors(arr("keywords"), livePositive),
     ...statusChangeErrors(arr("campaignStatus"), CampaignStatusChangeSchema, "campaignStatus", "campaign", "campaignId"),
     ...statusChangeErrors(arr("adGroupStatus"), AdGroupStatusChangeSchema, "adGroupStatus", "adGroup", "adGroupId"),

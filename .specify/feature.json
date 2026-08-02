@@ -1,7 +1,7 @@
 {
-  "branch_name": "046-ad-strength-enum-fix",
-  "feature_num": "046",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/046-ad-strength-enum-fix",
-  "source_issue": 51,
-  "feature_directory": "specs/046-ad-strength-enum-fix"
+  "branch_name": "048-bid-strategy-lever",
+  "feature_num": "048",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/048-bid-strategy-lever",
+  "source_issue": 59,
+  "feature_directory": "specs/048-bid-strategy-lever"
 }

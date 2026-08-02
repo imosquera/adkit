@@ -1550,4 +1550,326 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
     expect(briefB.briefSynced).toBe(true);
     expect(readFileSync(briefPathB(), "utf8")).not.toBe(beforeB);
   });
+
+  // -------------------------------------------------------------------------
+  // bidding (US1/US2/US3, #53): campaign 500 (demo-search) is the on-disk brief's
+  // default bidStrategy ("maximize-clicks", no ceiling). biddingGuardState's canned
+  // rows are passed through stagingClient's `budgetRows` param — only one of
+  // campaignBudgets/biddingGuardState ever calls searchStructured per test here, since
+  // the other section's campaign-id list is always empty in these plans.
+  // -------------------------------------------------------------------------
+
+  function biddingPlan(bidding: Record<string, unknown>): string {
+    const p = join(root, "plan.json");
+    writeFileSync(p, JSON.stringify({ customerId: "1111111111", bidding: [bidding] }));
+    return p;
+  }
+
+  it("US1 dry-run: stages the bidding diff and issues zero mutations", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+    const before = readFileSync(briefPath(), "utf8");
+
+    const cap = captureStdout();
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_500_000 })]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    expect(out).toContain("bidding campaign 500");
+    expect(mutations.length).toBe(0);
+    expect(readFileSync(briefPath(), "utf8")).toBe(before); // untouched (FR-004)
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.briefs[0].briefDiff.changed).toBe(true);
+  });
+
+  it("US1 apply: issues a campaign update mutate op with the ceiling and persists it to the brief", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const code = await main([
+      biddingPlan({ campaignId: 500, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_500_000 }),
+      "--apply",
+    ]);
+
+    expect(code).toBe(0);
+    const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "campaign");
+    expect(op).toBeDefined();
+    const resource = op!.resource as Record<string, unknown>;
+    expect(resource.target_spend).toEqual({ cpc_bid_ceiling_micros: 5_500_000 });
+    expect(onDiskBrief().campaign.cpcBidCeilingMicros).toBe(5_500_000);
+  });
+
+  it("US2 guardrail: refuses a downgrade at >=30 trailing-30-day conversions and issues zero mutations", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CONVERSIONS" }, metrics: { conversions: 30, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "maximize-clicks" }), "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(1);
+    expect(out).toContain("refusing maximize-conversions -> maximize-clicks");
+    expect(mutations.length).toBe(0);
+  });
+
+  it("US2 override: acknowledgeStrategyDowngrade lets the same downgrade proceed", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CONVERSIONS" }, metrics: { conversions: 30, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const code = await main([
+      biddingPlan({ campaignId: 500, strategy: "maximize-clicks", acknowledgeStrategyDowngrade: true }),
+      "--apply",
+    ]);
+
+    expect(code).toBe(0);
+    const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "campaign");
+    expect(op).toBeDefined();
+    expect((op!.resource as Record<string, unknown>).target_spend).toEqual({});
+  });
+
+  it("US1 graduate-up: maximize-conversions issues a maximize_conversions mutate op with no ceiling", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "maximize-conversions" }), "--apply"]);
+
+    expect(code).toBe(0);
+    const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "campaign");
+    expect(op).toBeDefined();
+    const resource = op!.resource as Record<string, unknown>;
+    expect(resource.maximize_conversions).toEqual({});
+    expect(resource.target_spend).toBeUndefined();
+  });
+
+  it("refuses an unsupported or malformed strategy end to end, with zero mutations", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "manual-cpc" }), "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(1);
+    expect(out).toContain("strategy must be one of");
+    expect(mutations.length).toBe(0);
+  });
+
+  it("US3 warning: a ceiling below trailing-30-day average CPC warns but still applies", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 6_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_000_000 })]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    expect(out).toContain("WARNING: cpcBidCeilingMicros for campaign 500");
+    expect(mutations.length).toBe(0); // still just a dry run
+  });
+
+  it("US3 no warning: a ceiling at/above the trailing-30-day average CPC prints nothing", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const cap = captureStdout();
+    await main([biddingPlan({ campaignId: 500, strategy: "maximize-clicks", cpcBidCeilingMicros: 5_000_000 })]);
+    const out = cap.text();
+
+    expect(out).not.toContain("WARNING: cpcBidCeilingMicros");
+  });
+
+  // -------------------------------------------------------------------------
+  // target-cpa / target-roas graduation (spec.md 048 US1/US2/US3, #59)
+  // -------------------------------------------------------------------------
+
+  it("US1 apply: target-cpa issues a target_cpa mutate op and persists it to the brief", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CONVERSIONS" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const code = await main([
+      biddingPlan({ campaignId: 500, strategy: "target-cpa", targetCpaMicros: 12_000_000 }),
+      "--apply",
+    ]);
+
+    expect(code).toBe(0);
+    const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "campaign");
+    expect(op).toBeDefined();
+    const resource = op!.resource as Record<string, unknown>;
+    expect(resource.target_cpa).toEqual({ target_cpa_micros: 12_000_000 });
+    expect(onDiskBrief().campaign.bidStrategy).toBe("target-cpa");
+    expect(onDiskBrief().campaign.targetCpaMicros).toBe(12_000_000);
+  });
+
+  it("US1 apply: target-roas issues a target_roas mutate op and persists it to the brief", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CONVERSIONS" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "target-roas", targetRoas: 3.5 }), "--apply"]);
+
+    expect(code).toBe(0);
+    const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "campaign");
+    expect(op).toBeDefined();
+    const resource = op!.resource as Record<string, unknown>;
+    expect(resource.target_roas).toEqual({ target_roas: 3.5 });
+    expect(onDiskBrief().campaign.targetRoas).toBe(3.5);
+  });
+
+  it("US1 dry-run: target-cpa/target-roas produce zero mutations", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CONVERSIONS" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "target-cpa", targetCpaMicros: 12_000_000 })]);
+
+    expect(code).toBe(0);
+    expect(mutations.length).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Spend-affecting warning + bidStrategyChangeAffectsSpend envelope key
+  // (spec.md 048 US2, #59)
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ["maximize-conversions", { strategy: "maximize-conversions" }],
+    ["target-cpa", { strategy: "target-cpa", targetCpaMicros: 12_000_000 }],
+    ["target-roas", { strategy: "target-roas", targetRoas: 3.5 }],
+  ])("US2 warning: a change into %s prints WARNING and populates bidStrategyChangeAffectsSpend", async (_label, block) => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "TARGET_SPEND" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([biddingPlan({ campaignId: 500, ...block })]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    expect(out).toContain("WARNING: bid strategy change affects spend optimization on campaign(s): 500");
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.bidStrategyChangeAffectsSpend).toEqual([500]);
+  });
+
+  it("US2 no warning: a downgrade to maximize-clicks never populates bidStrategyChangeAffectsSpend", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CONVERSIONS" }, metrics: { conversions: 0, average_cpc: 4_000_000 } },
+    ];
+    const { client } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "maximize-clicks" })]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    expect(out).not.toContain("bid strategy change affects spend optimization");
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.bidStrategyChangeAffectsSpend).toEqual([]);
+  });
+
+  it("US2 regression: the existing downgrade guardrail behavior is unchanged", async () => {
+    const biddingRows = [
+      { campaign: { id: 500, bidding_strategy_type: "MAXIMIZE_CONVERSIONS" }, metrics: { conversions: 30, average_cpc: 4_000_000 } },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([biddingPlan({ campaignId: 500, strategy: "maximize-clicks" }), "--apply"]);
+    const out = cap.text();
+
+    expect(code).toBe(1);
+    expect(out).toContain("refusing maximize-conversions -> maximize-clicks");
+    expect(mutations.length).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Idempotent skip (spec.md 048 US3, #59)
+  // -------------------------------------------------------------------------
+
+  it("US3 skip: an entry matching the campaign's current strategy and target value is skipped, zero mutations, no warning", async () => {
+    const biddingRows = [
+      {
+        campaign: { id: 500, bidding_strategy_type: "TARGET_CPA", target_cpa: { target_cpa_micros: 12_000_000 } },
+        metrics: { conversions: 0, average_cpc: 4_000_000 },
+      },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+    const before = readFileSync(briefPath(), "utf8");
+
+    const cap = captureStdout();
+    const code = await main([
+      biddingPlan({ campaignId: 500, strategy: "target-cpa", targetCpaMicros: 12_000_000 }),
+      "--apply",
+    ]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    expect(out).toContain("bidding campaign 500: already target-cpa, skipped");
+    expect(out).not.toContain("bid strategy change affects spend optimization");
+    expect(mutations.length).toBe(0);
+    expect(readFileSync(briefPath(), "utf8")).toBe(before);
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.biddingSkipped).toHaveLength(1);
+    expect(payload.biddingChanges).toEqual([]);
+    expect(payload.bidStrategyChangeAffectsSpend).toEqual([]);
+  });
+
+  it("US3 real change: a target-value-only change (same strategy) is applied, not skipped, and still warns", async () => {
+    const biddingRows = [
+      {
+        campaign: { id: 500, bidding_strategy_type: "TARGET_CPA", target_cpa: { target_cpa_micros: 12_000_000 } },
+        metrics: { conversions: 0, average_cpc: 4_000_000 },
+      },
+    ];
+    const { client, mutations } = stagingClient(biddingRows);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const code = await main([
+      biddingPlan({ campaignId: 500, strategy: "target-cpa", targetCpaMicros: 15_000_000 }),
+      "--apply",
+    ]);
+    const out = cap.text();
+
+    expect(code).toBe(0);
+    expect(out).toContain("WARNING: bid strategy change affects spend optimization on campaign(s): 500");
+    const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "campaign");
+    expect(op).toBeDefined();
+    expect((op!.resource as Record<string, unknown>).target_cpa).toEqual({ target_cpa_micros: 15_000_000 });
+  });
 });

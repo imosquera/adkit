@@ -250,6 +250,98 @@ describe("applyPlanToBrief", () => {
     expect(result.campaign.budgetMicros).toBe(40_000_000);
   });
 
+  it("bidding stages bidStrategy and cpcBidCeilingMicros from the plan block", () => {
+    const plan = {
+      bidding: [{ campaignId: "100", strategy: "maximize-clicks", cpcBidCeilingMicros: 5_500_000 }],
+    };
+    const result = applyPlanToBrief(baseBrief(), groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("maximize-clicks");
+    expect(result.campaign.cpcBidCeilingMicros).toBe(5_500_000);
+  });
+
+  it("bidding switching away from maximize-clicks clears a previously staged ceiling", () => {
+    const brief = baseBrief({
+      campaign: {
+        ...baseBrief().campaign,
+        bidStrategy: "maximize-clicks",
+        cpcBidCeilingMicros: 4_000_000,
+      },
+    });
+    const plan = { bidding: [{ campaignId: "100", strategy: "maximize-conversions" }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("maximize-conversions");
+    expect(result.campaign.cpcBidCeilingMicros).toBeUndefined();
+  });
+
+  it("no bidding blocks leaves campaign.bidStrategy/cpcBidCeilingMicros unchanged", () => {
+    const brief = baseBrief();
+    const plan = { budgets: [{ campaignId: "100", dailyMicros: 40_000_000 }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe(brief.campaign.bidStrategy);
+    expect(result.campaign.cpcBidCeilingMicros).toBe(brief.campaign.cpcBidCeilingMicros);
+  });
+
+  it("bidding stages bidStrategy and targetCpaMicros for target-cpa (spec.md 048)", () => {
+    const plan = {
+      bidding: [{ campaignId: "100", strategy: "target-cpa", targetCpaMicros: 12_000_000 }],
+    };
+    const result = applyPlanToBrief(baseBrief(), groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("target-cpa");
+    expect(result.campaign.targetCpaMicros).toBe(12_000_000);
+  });
+
+  it("bidding stages bidStrategy and targetRoas for target-roas (spec.md 048)", () => {
+    const plan = {
+      bidding: [{ campaignId: "100", strategy: "target-roas", targetRoas: 3.5 }],
+    };
+    const result = applyPlanToBrief(baseBrief(), groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("target-roas");
+    expect(result.campaign.targetRoas).toBe(3.5);
+  });
+
+  it("bidding switching away from target-cpa/target-roas clears their companion fields", () => {
+    const brief = baseBrief({
+      campaign: {
+        ...baseBrief().campaign,
+        bidStrategy: "target-cpa",
+        targetCpaMicros: 12_000_000,
+      },
+    });
+    const plan = { bidding: [{ campaignId: "100", strategy: "maximize-clicks" }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("maximize-clicks");
+    expect(result.campaign.targetCpaMicros).toBeUndefined();
+  });
+
+  it("bidding switching away from target-roas to maximize-clicks clears targetRoas", () => {
+    const brief = baseBrief({
+      campaign: {
+        ...baseBrief().campaign,
+        bidStrategy: "target-roas",
+        targetRoas: 3.5,
+      },
+    });
+    const plan = { bidding: [{ campaignId: "100", strategy: "maximize-clicks" }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("maximize-clicks");
+    expect(result.campaign.targetRoas).toBeUndefined();
+  });
+
+  it("bidding switching directly between target-cpa and target-roas clears the old companion field and sets the new one", () => {
+    const brief = baseBrief({
+      campaign: {
+        ...baseBrief().campaign,
+        bidStrategy: "target-cpa",
+        targetCpaMicros: 12_000_000,
+      },
+    });
+    const plan = { bidding: [{ campaignId: "100", strategy: "target-roas", targetRoas: 3.5 }] };
+    const result = applyPlanToBrief(brief, groupFor(plan));
+    expect(result.campaign.bidStrategy).toBe("target-roas");
+    expect(result.campaign.targetRoas).toBe(3.5);
+    expect(result.campaign.targetCpaMicros).toBeUndefined();
+  });
+
   it("adGroups create appends a new ad group not already present by name", () => {
     const plan = { adGroups: [{ campaignId: "100", adGroup: { name: "placeholder" } }] };
     const created: AdGroupCreatePlanEntry = {
@@ -343,7 +435,7 @@ describe("applyPlanToBrief", () => {
     expect(groups).toEqual([]);
     // With no group at all there is nothing to apply — applyPlanToBrief is only ever
     // called for a resolved group, so simulate the "resolved but empty" case directly.
-    const emptyGroup = { slug: "alpha", campaignName: "Alpha", sections: { rewrites: [], appendHeadlines: [], sitelinks: [], callouts: [], negatives: [], keywords: [], budgets: [], adGroups: [] }, unresolvedIds: [] };
+    const emptyGroup = { slug: "alpha", campaignName: "Alpha", sections: { rewrites: [], appendHeadlines: [], sitelinks: [], callouts: [], negatives: [], keywords: [], budgets: [], bidding: [], adGroups: [] }, unresolvedIds: [] };
     const result = applyPlanToBrief(brief, emptyGroup);
     expect(result).toEqual(brief);
   });

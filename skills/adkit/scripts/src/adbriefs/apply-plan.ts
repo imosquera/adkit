@@ -72,6 +72,7 @@ export interface ResolvedPlanGroup {
     negatives: Array<Record<string, unknown>>;
     keywords: ResolvedKeywordsBlock[];
     budgets: Array<Record<string, unknown>>;
+    bidding: Array<Record<string, unknown>>;
     adGroups: ResolvedAdGroupCreateBlock[];
   };
   unresolvedIds: UnresolvedId[];
@@ -89,6 +90,7 @@ function emptySections(): ResolvedPlanGroup["sections"] {
     negatives: [],
     keywords: [],
     budgets: [],
+    bidding: [],
     adGroups: [],
   };
 }
@@ -102,6 +104,7 @@ export interface PlanSections {
   negatives?: Array<Record<string, unknown>>;
   keywords?: Array<Record<string, unknown>>;
   budgets?: Array<Record<string, unknown>>;
+  bidding?: Array<Record<string, unknown>>;
   campaignStatus?: Array<Record<string, unknown>>;
   adGroupStatus?: Array<Record<string, unknown>>;
   adStatus?: Array<Record<string, unknown>>;
@@ -203,6 +206,7 @@ export function resolvePlanGroups(plan: PlanSections, index: StateIndex): Resolv
   campaignSection("callouts", (g, b) => g.sections.callouts.push(b));
   campaignSection("negatives", (g, b) => g.sections.negatives.push(b));
   campaignSection("budgets", (g, b) => g.sections.budgets.push(b));
+  campaignSection("bidding", (g, b) => g.sections.bidding.push(b));
   campaignSection("adGroups", (g, b) => g.sections.adGroups.push({ block: b }));
   // campaignStatus/searchPartners/languages: resolved for the warning only (no Brief field).
   campaignSection("campaignStatus", null);
@@ -376,8 +380,36 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
       ? (lastBudget["dailyMicros"] as number)
       : campaign.budgetMicros;
 
+  const lastBidding = group.sections.bidding[group.sections.bidding.length - 1];
+  const bidStrategy =
+    lastBidding && typeof lastBidding["strategy"] === "string"
+      ? (lastBidding["strategy"] as Brief["campaign"]["bidStrategy"])
+      : campaign.bidStrategy;
+  const cpcBidCeilingMicros = lastBidding
+    ? typeof lastBidding["cpcBidCeilingMicros"] === "number"
+      ? (lastBidding["cpcBidCeilingMicros"] as number)
+      : undefined
+    : campaign.cpcBidCeilingMicros;
+  const targetCpaMicros = lastBidding
+    ? typeof lastBidding["targetCpaMicros"] === "number"
+      ? (lastBidding["targetCpaMicros"] as number)
+      : undefined
+    : campaign.targetCpaMicros;
+  const targetRoas = lastBidding
+    ? typeof lastBidding["targetRoas"] === "number"
+      ? (lastBidding["targetRoas"] as number)
+      : undefined
+    : campaign.targetRoas;
+
   const campaignChanged =
-    newSitelinks.length > 0 || newCallouts.length > 0 || newNegatives.length > 0 || budgetMicros !== campaign.budgetMicros;
+    newSitelinks.length > 0 ||
+    newCallouts.length > 0 ||
+    newNegatives.length > 0 ||
+    budgetMicros !== campaign.budgetMicros ||
+    bidStrategy !== campaign.bidStrategy ||
+    cpcBidCeilingMicros !== campaign.cpcBidCeilingMicros ||
+    targetCpaMicros !== campaign.targetCpaMicros ||
+    targetRoas !== campaign.targetRoas;
 
   return {
     ...base,
@@ -389,6 +421,15 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
           callouts: [...campaign.callouts, ...newCallouts],
           negativeKeywords: [...campaign.negativeKeywords, ...newNegatives],
           budgetMicros,
+          bidStrategy,
+          // Explicit keys (not conditional spreads): a bidding block that switches
+          // strategy must CLEAR whichever companion field(s) belonged to the
+          // PREVIOUS strategy, not inherit them from `...campaign` above — an
+          // inherited ceiling/target alongside a mismatched strategy would fail
+          // CampaignSchema's re-parse.
+          cpcBidCeilingMicros,
+          targetCpaMicros,
+          targetRoas,
         }
       : campaign,
   };
