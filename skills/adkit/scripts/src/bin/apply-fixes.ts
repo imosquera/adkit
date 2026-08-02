@@ -26,7 +26,8 @@
  *   "adGroupStatus": [{"adGroupId": "789", "status": "PAUSED"}],     // flip an ad group on/off
  *   "adStatus": [{"adId": "123", "status": "ENABLED"}],             // flip a single ad on/off (e.g. enable a new group's PAUSED ad)
  *   "adGroups":  [{"campaignId": 456, "adGroup": {<brief ad group: name, defaultBidMicros, responsiveSearchAds (exactly 2), keywords>}}],  // add a new ad group
- *   "languages": [{"campaignId": 456}]                               // make the campaign English-only
+ *   "languages": [{"campaignId": 456}],                              // make the campaign English-only
+ *   "addRsa":    [{"adGroupId": 789, "headlines": [<15>], "descriptions": [<4>], "path1"?: "demo", "path2"?: "trial", "finalUrl"?: "https://..."}]  // add a 2nd RSA (PAUSED) when the ad group has <2 live
  * }
  *
  * languages makes a campaign serve in English only: it adds the English language
@@ -52,6 +53,14 @@
  * rejected (a plan's `maxRaisePct` can only lower that). Lowering is always allowed.
  * A budget shared by multiple campaigns is changed for all of them.
  *
+ * addRsa adds a second, distinct RSA to an ad group live with fewer than
+ * RSAS_PER_AD_GROUP (2) non-REMOVED RSAs — the fix for an audit `rsa_count_mismatch`
+ * finding. Authored like `rewrites`/`adGroups`' embedded RSAs (bare-string
+ * headlines/descriptions); `finalUrl` defaults to the ad group's sole existing live
+ * RSA's `finalUrl` when the live count is exactly 1 (a missing `finalUrl` with a live
+ * count of 0 is a validation error). The new RSA is created PAUSED. Idempotent — an
+ * ad group already at 2+ live RSAs is skipped, never given a 3rd.
+ *
  * campaignStatus / adGroupStatus flip on (ENABLED) / off (PAUSED). Idempotent — the
  * live status is read first and a no-op flip is reported as skipped, not mutated.
  * PAUSE is always allowed; ENABLE starts live spend, so it is surfaced loudly (a
@@ -76,7 +85,7 @@ import {
   type ApplyPlanComputed,
   type ResolvedPlanGroup,
 } from "../adbriefs/apply-plan.js";
-import { parseBrief, type Brief } from "../lib/schema.js";
+import { parseBrief, RSAS_PER_AD_GROUP, type Brief } from "../lib/schema.js";
 
 import {
   createAdGroup,
@@ -95,6 +104,8 @@ import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import { pyRepr, pyStr } from "../cli/py-format.js";
 import {
   addAdGroupsPlan,
+  addRsaCreateEntries,
+  addRsaPlan,
   adGroupStatusPlan,
   adStatusPlan,
   biddingPlan,
@@ -107,6 +118,7 @@ import {
   posKey,
   searchPartnersPlan,
   validate,
+  type AddRsaCreatePlanEntry,
   type AdGroupCreatePlanEntry,
   type SearchPartnersPlanEntry,
   type StatusPlanEntry,
@@ -122,6 +134,7 @@ import {
   applyLanguagesQuery,
   applyNegativesQuery,
   applyPositiveKeywordsQuery,
+  applyRsaCountsQuery,
   applySearchPartnersQuery,
 } from "../gaql/builders.js";
 import { enums } from "google-ads-api";
@@ -221,6 +234,11 @@ interface HeadlineRow {
 interface AdGroupNameRow {
   campaign: { id: number };
   ad_group: { name: string };
+}
+
+interface RsaCountRow {
+  ad_group: { id: number };
+  ad_group_ad: { ad: { id: number; final_urls?: string[] } };
 }
 
 interface LanguageRow {
@@ -443,6 +461,31 @@ export async function liveAdGroupNames(
   }, new Map<number, Set<string>>());
 }
 
+/**
+ * adGroupId -> {count, soleFinalUrl?} of live (non-REMOVED) RSAs, for an `addRsa`
+ * fixes block's create-vs-skip decision (FR-005/FR-006) and its `finalUrl` default
+ * (FR-007, only unambiguous when the group's count is exactly 1). Short-circuits to
+ * an empty Map when `addRsa` is absent from the plan, mirroring every other
+ * live-state fetch's empty-ids guard.
+ */
+export async function liveRsaState(
+  client: AdsClient,
+  customerId: string,
+  adGroupIds: ReadonlyArray<string | number>,
+): Promise<Map<number, { count: number; soleFinalUrl?: string }>> {
+  if (adGroupIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.searchStructured<RsaCountRow>(customerId, applyRsaCountsQuery(adGroupIds));
+  return rows.reduce((acc, r) => {
+    const agid = r.ad_group.id;
+    const count = (acc.get(agid)?.count ?? 0) + 1;
+    const finalUrl = r.ad_group_ad.ad.final_urls?.[0];
+    acc.set(agid, count === 1 && finalUrl !== undefined ? { count, soleFinalUrl: finalUrl } : { count });
+    return acc;
+  }, new Map<number, { count: number; soleFinalUrl?: string }>());
+}
+
 /** campaignId -> Map<languageConstantRn, criterionRn> of live language criteria. */
 export async function liveLanguages(
   client: AdsClient,
@@ -502,6 +545,7 @@ export interface FixesPlan extends Record<string, unknown> {
   searchPartners?: Array<Record<string, unknown>>;
   adGroups?: Array<Record<string, unknown>>;
   languages?: Array<Record<string, unknown>>;
+  addRsa?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -805,6 +849,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     customer,
     section(plan, "languages").map((l) => l.campaignId as string | number),
   );
+  const rsaState = await liveRsaState(
+    client,
+    customer,
+    section(plan, "addRsa").map((b) => b.adGroupId as string | number),
+  );
   // Split into the two plain boolean maps the pure plan.ts functions expect:
   // current target_search_network (searchPartnersPlan's no-op-skip check) and
   // current target_google_search (searchPartnersPreconditionErrors' ENABLE guard).
@@ -817,8 +866,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // guardrail or issues a mutate call — mirrors campaignStatus's statusChanges/
   // statusSkips split below, just computed earlier since validate() needs it.
   const [biddingChanges, biddingSkips] = biddingPlan(section(plan, "bidding"), bidding);
+  // Idempotent-skip partition (spec.md 050 FR-005/FR-006), mirroring biddingChanges/
+  // biddingSkips above — computed ahead of validate() so a skip (an ad group already
+  // at 2+ live RSAs) never reaches addRsaErrors or issues a mutate call.
+  const [addRsaChanges, addRsaSkips] = addRsaPlan(section(plan, "addRsa"), rsaState);
 
-  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch, liveAdSt.adGroup, bidding, biddingChanges);
+  const errs = validate(
+    plan,
+    live,
+    budgets,
+    livePos,
+    liveSpGoogleSearch,
+    liveAdSt.adGroup,
+    bidding,
+    biddingChanges,
+    rsaState,
+    addRsaChanges,
+  );
   if (errs.length > 0) {
     console.log("VALIDATION FAILED:");
     for (const e of errs) {
@@ -826,6 +890,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     return 1;
   }
+
+  // Only reached once every addRsaChanges block is known to parse cleanly (validate()
+  // above would have already returned) — the single parse of each block's RSA copy,
+  // reused unchanged by both the mutation loop and brief staging below (never
+  // re-parsed).
+  const addRsaCreates = addRsaCreateEntries(addRsaChanges, rsaState);
 
   const [statusChanges, statusSkips] = campaignStatusPlan(section(plan, "campaignStatus"), liveStatus);
   const enableChanges = statusChanges.filter((c) => c.status === "ENABLED");
@@ -857,10 +927,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // live (spec.md 048 FR-002). resolvePlanGroups reads plan.bidding directly, so a
   // stagingPlan with only biddingChanges substituted is passed in place of the raw
   // plan; every other section is staged from the plan unchanged.
-  const stagingPlan = { ...plan, bidding: biddingChanges };
+  const stagingPlan = { ...plan, bidding: biddingChanges, addRsa: addRsaChanges };
   const planGroups = resolvePlanGroups(stagingPlan, stateIndex);
   const unresolvedIds = planGroups.find((g) => g.slug === "")?.unresolvedIds ?? [];
-  const staged = stageResolvedGroups(adbriefsRoot, planGroups, { defaultLandingUrl: defaultUrl, adGroupCreates: agCreates });
+  const staged = stageResolvedGroups(adbriefsRoot, planGroups, {
+    defaultLandingUrl: defaultUrl,
+    adGroupCreates: agCreates,
+    addRsaCreates,
+  });
 
   for (const s of staged) {
     if (s.skipReason === "collision") {
@@ -928,6 +1002,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         biddingChanges,
         biddingSkipped: biddingSkips,
         bidStrategyChangeAffectsSpend: bidStrategyChangeAffectsSpendIds,
+        addRsaChanges,
+        addRsaSkipped: addRsaSkips,
         briefs: briefResults,
         briefStagingSkipped,
         briefStagingSkipReason,
@@ -998,6 +1074,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       l.addEnglish || l.remove.length > 0
         ? `languages campaign ${pyStr(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`
         : `languages campaign ${pyStr(l.campaignId)}: already English only, skipped`,
+    ),
+    ...addRsaCreates.map((e) => `+ RSA -> ad group ${pyStr(e.adGroupId)}`),
+    ...addRsaSkips.map(
+      (b) => `ad group ${pyStr(b.adGroupId)}: already ${RSAS_PER_AD_GROUP}/${RSAS_PER_AD_GROUP} RSAs, skipped`,
     ),
   ];
   console.log("validation ok. planned actions:");
@@ -1398,6 +1478,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.log(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
   }
 
+  // 10) addRsa: create a 2nd (or 1st) RSA on an ad group live with fewer than
+  // RSAS_PER_AD_GROUP non-REMOVED RSAs. An ad group already at 2+ was filtered into
+  // addRsaSkips and never reaches here (FR-005) — idempotent, no 3rd RSA on a re-run.
+  // Each create reuses entry.rsa, the SAME already-parsed ResponsiveSearchAd
+  // addRsaErrors validated (via addRsaCreateEntries) — never re-parsed here. The new
+  // RSA is created PAUSED (FR-006), matching every other RSA this skill creates.
+  for (const entry of addRsaCreates) {
+    const agid = entry.adGroupId;
+    try {
+      const adGroupRn = `customers/${customer}/adGroups/${pyStr(agid)}`;
+      await createResponsiveSearchAd(client, customer, entry.rsa, adGroupRn);
+      console.log(`  + RSA -> ad group ${pyStr(agid)}`);
+    } catch (exc) {
+      recordFailure(`addRsa (ad group ${pyStr(agid)})`, exc, slugsForIds([agid], stateIndex.byAdGroupId));
+    }
+  }
+  for (const b of addRsaSkips) {
+    console.log(`  ad group ${pyStr(b.adGroupId)}: already ${RSAS_PER_AD_GROUP}/${RSAS_PER_AD_GROUP} RSAs, skipped`);
+  }
+
   // Persist each staged brief ONLY after the live mutation sequence above completed
   // (FR-005) — mutate-then-write. A slug touched by ANY step's failure (`failedSlugs`)
   // is left unwritten and reported unsynced (FR-006); a slug untouched by any failure
@@ -1538,7 +1638,7 @@ export function rsaUpdateOp(
 }
 
 // Re-export types used by tests asserting on the status/searchPartners/adGroup plan entries.
-export type { AdGroupCreatePlanEntry, SearchPartnersPlanEntry, StatusPlanEntry };
+export type { AddRsaCreatePlanEntry, AdGroupCreatePlanEntry, SearchPartnersPlanEntry, StatusPlanEntry };
 
 if (isMainModule(import.meta.url)) {
   main()

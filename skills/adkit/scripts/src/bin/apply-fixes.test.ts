@@ -601,6 +601,222 @@ describe("adGroups (add-ad-group) path", () => {
 });
 
 // ---------------------------------------------------------------------------
+// addRsa (add-2nd-RSA) — dry-run + apply + idempotent skip + validation safety
+// ---------------------------------------------------------------------------
+
+/**
+ * Fake client whose search returns one row per live (non-REMOVED) RSA final_url per
+ * ad group — `live` maps `adGroupId -> [finalUrl, ...]` (array length is the live RSA
+ * count `liveRsaState` derives). `mutations` records every mutate batch; a mutate
+ * targeting `opts.failAdGroupId`'s ad_group resource throws, simulating "adGroupId
+ * has no live ad group at all" (FR-008's per-block failure-isolation case).
+ */
+function rsaCountsClient(
+  live: Record<number, string[]>,
+  opts: { failAdGroupId?: number } = {},
+): {
+  client: AdsClient;
+  mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }>;
+} {
+  const rows = Object.entries(live).flatMap(([id, urls]) =>
+    urls.map((url) => ({
+      ad_group: { id: Number(id) },
+      ad_group_ad: { ad: { id: 1, final_urls: [url] } },
+    })),
+  );
+  const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    async search<Row = unknown>(): Promise<Row[]> {
+      return [] as Row[];
+    },
+    async searchStructured<Row = unknown>(_customerId: string, _args: SearchArgs): Promise<Row[]> {
+      return rows as Row[];
+    },
+    async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+      const resource = operations[0]!.resource as Record<string, unknown>;
+      if (
+        opts.failAdGroupId !== undefined &&
+        resource["ad_group"] === `customers/${customerId}/adGroups/${opts.failAdGroupId}`
+      ) {
+        throw new Error("NOT_FOUND: no ad group under this customer");
+      }
+      mutations.push({ customerId, operations });
+      return { results: operations.map((_, i) => ({ resource_name: `customers/1/x/${i}` })) };
+    },
+  };
+  return { client, mutations };
+}
+
+/** A valid addRsa block body, bare-string headlines/descriptions (normalized at the boundary). */
+function addRsaBody(adGroupId: string | number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    adGroupId,
+    headlines: Array.from({ length: 15 }, (_, i) => `headline ${i}`),
+    descriptions: Array.from({ length: 4 }, (_, i) => `description ${i}`),
+    finalUrl: "https://example.com/ideas/x",
+    ...overrides,
+  };
+}
+
+/** Write an addRsa-only plan and return its path. */
+function writeAddRsaPlan(blocks: Array<Record<string, unknown>>): string {
+  const p = join(dir, "plan.json");
+  writeFileSync(p, JSON.stringify({ customerId: "1111111111", addRsa: blocks }));
+  return p;
+}
+
+describe("addRsa (add-2nd-RSA) path", () => {
+  it("dry-run reports the would-be create and never mutates (FR-009)", async () => {
+    const { client, mutations } = rsaCountsClient({ 500: ["https://example.com/existing"] });
+    currentClient = client;
+    const plan = writeAddRsaPlan([addRsaBody(500)]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0); // dry-run (no --apply)
+    const out = cap.text();
+
+    expect(out).toContain("+ RSA -> ad group 500");
+    expect(mutations).toEqual([]);
+  });
+
+  it("apply creates exactly one new PAUSED RSA on a 1-live-RSA ad group, existing untouched (SC-001)", async () => {
+    const { client, mutations } = rsaCountsClient({ 500: ["https://example.com/existing"] });
+    currentClient = client;
+    const plan = writeAddRsaPlan([addRsaBody(500)]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(mutations).toHaveLength(1); // exactly one new RSA created — the existing one is never touched
+    const op = mutations[0]!.operations[0]!;
+    expect(op.entity).toBe("ad_group_ad");
+    const resource = op.resource as Record<string, unknown>;
+    expect(resource["ad_group"]).toBe("customers/1111111111/adGroups/500");
+    expect(resource["status"]).toBeDefined(); // PAUSED — see createResponsiveSearchAd
+    expect(out).toContain("+ RSA -> ad group 500");
+    expect(out).toContain('"addRsaChanges"');
+  });
+
+  it("apply creates a first RSA on an ad group with 0 live RSAs", async () => {
+    const { client, mutations } = rsaCountsClient({ 500: [] });
+    currentClient = client;
+    const plan = writeAddRsaPlan([addRsaBody(500)]);
+
+    expect(await main([plan, "--apply"])).toBe(0);
+    expect(mutations).toHaveLength(1);
+  });
+
+  it("idempotent skip: re-applying against an ad group already at 2 live RSAs issues zero mutate calls (SC-002)", async () => {
+    const { client, mutations } = rsaCountsClient({
+      500: ["https://example.com/a", "https://example.com/b"],
+    });
+    currentClient = client;
+    const plan = writeAddRsaPlan([addRsaBody(500)]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(mutations).toEqual([]);
+    expect(out).toContain("already 2/2 RSAs, skipped");
+    expect(out).toContain('"addRsaSkipped"');
+  });
+
+  it("an ad group with 3+ live RSAs (over-count) is also skipped, never mutated", async () => {
+    const { client, mutations } = rsaCountsClient({
+      500: ["https://example.com/a", "https://example.com/b", "https://example.com/c"],
+    });
+    currentClient = client;
+    const plan = writeAddRsaPlan([addRsaBody(500)]);
+
+    expect(await main([plan, "--apply"])).toBe(0);
+    expect(mutations).toEqual([]);
+  });
+
+  it("dry-run against an ad group already at 2 live RSAs shows the skip and performs no mutation", async () => {
+    const { client, mutations } = rsaCountsClient({
+      500: ["https://example.com/a", "https://example.com/b"],
+    });
+    currentClient = client;
+    const plan = writeAddRsaPlan([addRsaBody(500)]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0); // dry-run
+    const out = cap.text();
+
+    expect(out).toContain("already 2/2 RSAs, skipped");
+    expect(mutations).toEqual([]);
+  });
+
+  it("a plan with one valid and one invalid addRsa block (wrong headline count) fails validation before any mutate call (FR-004)", async () => {
+    const { client, mutations } = rsaCountsClient({
+      500: ["https://example.com/existing"],
+      600: ["https://example.com/existing2"],
+    });
+    currentClient = client;
+    const bad = addRsaBody(600, { headlines: Array.from({ length: 12 }, (_, i) => `headline ${i}`) });
+    const plan = writeAddRsaPlan([addRsaBody(500), bad]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(1); // validation failure
+    const out = cap.text();
+
+    expect(out).toContain("VALIDATION FAILED");
+    expect(out).toContain("adGroup 600");
+    expect(mutations).toEqual([]); // no block's createResponsiveSearchAd ever ran
+  });
+
+  it("an addRsa block whose adGroupId has no live ad group at all is caught per-block, without aborting the other block (FR-008)", async () => {
+    const { client, mutations } = rsaCountsClient(
+      { 500: ["https://example.com/existing"], 999: [] },
+      { failAdGroupId: 999 },
+    );
+    currentClient = client;
+    const plan = writeAddRsaPlan([addRsaBody(500), addRsaBody(999)]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(1); // one step failure -> non-zero exit
+    const out = cap.text();
+
+    expect(mutations).toHaveLength(1); // ad group 500's create still went through
+    expect(mutations[0]!.operations[0]!.resource).toMatchObject({ ad_group: "customers/1111111111/adGroups/500" });
+    expect(out).toContain("FAILED: addRsa (ad group 999)");
+  });
+
+  it("an addRsa block that omits finalUrl defaults it to the target ad group's sole live RSA's finalUrl end-to-end (FR-007, Acceptance Scenario 2)", async () => {
+    const { client, mutations } = rsaCountsClient({ 500: ["https://example.com/existing"] });
+    currentClient = client;
+    const { finalUrl: _drop, ...body } = addRsaBody(500);
+    const plan = writeAddRsaPlan([body]);
+
+    expect(await main([plan, "--apply"])).toBe(0);
+
+    expect(mutations).toHaveLength(1);
+    const resource = mutations[0]!.operations[0]!.resource as Record<string, unknown>;
+    const ad = resource["ad"] as Record<string, unknown>;
+    // Defaulted from the ad group's live RSA, never a silently-empty string.
+    expect(ad["final_urls"]).toEqual(["https://example.com/existing"]);
+  });
+
+  it("an addRsa block that omits finalUrl on an ad group with 0 live RSAs fails validation (no unambiguous default source) (FR-007)", async () => {
+    const { client, mutations } = rsaCountsClient({ 500: [] });
+    currentClient = client;
+    const { finalUrl: _drop, ...body } = addRsaBody(500);
+    const plan = writeAddRsaPlan([body]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(1); // validation failure
+    const out = cap.text();
+
+    expect(out).toContain("VALIDATION FAILED");
+    expect(out).toContain("adGroup 500");
+    expect(out).toContain("finalUrl");
+    expect(mutations).toEqual([]); // no mutate call before validation fails
+  });
+});
+
+// ---------------------------------------------------------------------------
 // languages (English-only) — dry-run + apply
 // ---------------------------------------------------------------------------
 

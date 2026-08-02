@@ -675,6 +675,26 @@ export function applyHeadlinesQuery(adIds: ReadonlyArray<string | number>): Sear
 }
 
 /**
+ * Live (non-removed) RSA count + final_urls per ad group, for an `addRsa` fixes
+ * block's create-vs-skip decision (FR-005/FR-006) and its `finalUrl` default
+ * (FR-007). Same "live RSA" definition `auditAdGroupAdQuery` already uses for the
+ * `rsa_count_mismatch` finding (status != 'REMOVED', ad.type = 'RESPONSIVE_SEARCH_AD')
+ * — ENABLED + PAUSED, excludes REMOVED — so addRsa's notion of "already has 2" can
+ * never disagree with the audit's. Scoped by `ad_group.id IN (...)` (unlike
+ * `auditAdGroupAdQuery`'s `campaign.id` scope) since an addRsa block only carries the
+ * target adGroupId. Ids guarded digits-only.
+ */
+export function applyRsaCountsQuery(adGroupIds: ReadonlyArray<string | number>): SearchArgs {
+  return inListQuery(
+    "ad_group_ad",
+    ["ad_group.id", "ad_group_ad.ad.id", "ad_group_ad.ad.final_urls"],
+    "ad_group.id",
+    adGroupIds,
+    ["ad_group_ad.status != 'REMOVED'", "ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD'"],
+  );
+}
+
+/**
  * Live POSITIVE (non-negative) keyword criteria for the ad groups a fixes-plan
  * `keywords` block touches → caller groups by
  * {adGroupId: {(text.lower, matchType): criterionResource}}. Used to dedup ADDs

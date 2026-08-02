@@ -1,7 +1,7 @@
 {
-  "branch_name": "047-auction-insights-competitors",
-  "feature_num": "047",
-  "worktree_path": "/Users/iam/Code/adkit.worktrees/047-auction-insights-competitors",
-  "source_issue": 56,
-  "feature_directory": "specs/047-auction-insights-competitors"
+  "branch_name": "050-add-rsa-plan-section",
+  "feature_num": "050",
+  "worktree_path": "/Users/iam/Code/adkit.worktrees/050-add-rsa-plan-section",
+  "source_issue": 63,
+  "feature_directory": "specs/050-add-rsa-plan-section"
 }

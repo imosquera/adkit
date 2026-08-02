@@ -16,10 +16,13 @@ import {
   AdStatusChangeSchema,
   CampaignStatusChangeSchema,
   KeywordSchema,
+  ResponsiveSearchAdSchema,
+  RSAS_PER_AD_GROUP,
   SearchPartnersChangeSchema,
   displayPathPairErrors,
   type AdGroup,
   type Keyword,
+  type ResponsiveSearchAd,
 } from "../lib/schema.js";
 import { pyRepr, pyStr } from "../cli/py-format.js";
 
@@ -965,12 +968,172 @@ export function addAdGroupsPlan(
   return [creates, skips];
 }
 
+/** Per-ad-group live RSA state: how many non-REMOVED RSAs exist now, and (only when
+ * exactly 1) that RSA's finalUrl — the sole value FR-007's default can unambiguously
+ * source from. */
+export interface RsaLiveState {
+  count: number;
+  soleFinalUrl?: string;
+}
+
+type LiveRsaStateMap = Map<unknown, RsaLiveState> | Record<string, RsaLiveState>;
+
+/** Read an addRsa live-state entry for an adGroupId from a Map/record of either shape. */
+function getRsaState(liveRsaState: LiveRsaStateMap, adGroupId: unknown): RsaLiveState | undefined {
+  const key = asInt(adGroupId);
+  if (liveRsaState instanceof Map) {
+    return (key !== null ? liveRsaState.get(key) : undefined) ?? liveRsaState.get(adGroupId);
+  }
+  const rec = liveRsaState as Record<string, RsaLiveState>;
+  return (key !== null ? rec[key] : undefined) ?? rec[adGroupId as string];
+}
+
+/**
+ * FR-007's finalUrl default: the block's own `finalUrl` when present, else the
+ * target ad group's sole existing live RSA's `finalUrl` (only unambiguous when the
+ * live count is exactly 1 — {@link getRsaState}/{@link liveRsaState} in
+ * bin/apply-fixes.ts never populates `soleFinalUrl` otherwise). `undefined` when
+ * neither source has one — a missing-finalUrl validation error (not a silent empty
+ * string), caught by {@link addRsaErrors}' schema parse below.
+ */
+export function resolveAddRsaFinalUrl(block: Record<string, unknown>, liveRsaState: LiveRsaStateMap): string | undefined {
+  if (typeof block.finalUrl === "string") {
+    return block.finalUrl;
+  }
+  return getRsaState(liveRsaState, block.adGroupId)?.soleFinalUrl;
+}
+
+/**
+ * The object {@link ResponsiveSearchAdSchema} parses for an addRsa block: bare-string
+ * headlines/descriptions normalized to `{text}` (via {@link normalizeRsa}, reused
+ * verbatim — no new rule), the resolved `finalUrl` (already defaulted by
+ * {@link resolveAddRsaFinalUrl}), and path1/path2 passed through unchanged. adGroupId
+ * (a sibling field on the raw block, not part of the RSA) is deliberately excluded —
+ * ResponsiveSearchAdSchema is `.strict()` and would reject it as an unknown key.
+ */
+function addRsaCandidate(block: Record<string, unknown>, finalUrl: string | undefined): unknown {
+  const normalized = normalizeRsa(block) as Record<string, unknown>;
+  return {
+    headlines: normalized.headlines,
+    descriptions: normalized.descriptions,
+    finalUrl,
+    ...(block.path1 !== undefined ? { path1: block.path1 } : {}),
+    ...(block.path2 !== undefined ? { path2: block.path2 } : {}),
+  };
+}
+
+/**
+ * Validate each `addRsa` block: a numeric `adGroupId`, plus the same RSA rules
+ * /adkit create and rewrites/adGroups already enforce (exactly 15/4, length caps, no
+ * duplicate text, display-path rules) via a single {@link ResponsiveSearchAdSchema}
+ * parse — no new rule invented (FR-002). A missing/non-numeric `adGroupId` short-
+ * circuits before the RSA parse (mirrors keywordsErrors/adGroupsErrors' id check);
+ * every zod issue on a well-identified block surfaces prefixed
+ * `addRsa adGroup <id>: <path>: <message>` (mirrors adGroupsErrors' issue-prefixing).
+ * Callers (bin/apply-fixes.ts) are expected to pass only `addRsaPlan`'s "changes"
+ * half — a block already resolved as an idempotent skip never reaches this function,
+ * exactly as biddingChanges (not the raw bidding section) is the only input
+ * biddingErrors ever sees.
+ */
+export function addRsaErrors(blocks: Array<Record<string, unknown>>, liveRsaState: LiveRsaStateMap): string[] {
+  const one = (b: Record<string, unknown>): string[] => {
+    const agid = b.adGroupId;
+    const idErrors = [
+      ...(agid === undefined || agid === null ? ["addRsa: entry missing adGroupId"] : []),
+      ...(agid !== undefined && agid !== null && !isDigitString(agid)
+        ? [`addRsa adGroup ${pyRepr(agid)}: adGroupId must be numeric`]
+        : []),
+    ];
+    if (idErrors.length > 0) {
+      return idErrors;
+    }
+    const finalUrl = resolveAddRsaFinalUrl(b, liveRsaState);
+    const parsed = ResponsiveSearchAdSchema.safeParse(addRsaCandidate(b, finalUrl));
+    if (parsed.success) {
+      return [];
+    }
+    return parsed.error.issues.map((issue: ZodIssue) => {
+      const loc = issue.path.map((p) => String(p)).join(".") || "?";
+      return `addRsa adGroup ${pyStr(agid)}: ${loc}: ${issue.message}`;
+    });
+  };
+  return blocks.flatMap(one);
+}
+
+/**
+ * Split `addRsa` blocks into [changes, skips] against live RSA counts (FR-005/FR-006).
+ * A block whose target ad group's RUNNING count — seeded from live state, then
+ * incremented once per PRIOR block in this same call that resolved to a create for
+ * the SAME adGroupId — is already >= RSAS_PER_AD_GROUP is a skip; everything else is
+ * a change, left for {@link addRsaErrors} to validate/reject as appropriate.
+ * Implemented as a single left-to-right `reduce` threading a `Map<adGroupId, count>`
+ * of running counts through each step — no shared mutable counter, no class — so the
+ * same-plan double-target edge case (two blocks targeting one adGroupId) evaluates
+ * the second against the POST-first-block count, not the live count both started
+ * from (spec.md Edge Cases, SC-002). A block with a missing/non-numeric adGroupId has
+ * no running count to seed or track, so it is always treated as a change — left for
+ * addRsaErrors (called on the "changes" half only) to name the bad id.
+ */
+export function addRsaPlan(
+  blocks: Array<Record<string, unknown>>,
+  liveRsaState: LiveRsaStateMap,
+): [Array<Record<string, unknown>>, Array<Record<string, unknown>>] {
+  interface Acc {
+    counts: Map<number, number>;
+    changes: Array<Record<string, unknown>>;
+    skips: Array<Record<string, unknown>>;
+  }
+  const initial: Acc = { counts: new Map<number, number>(), changes: [], skips: [] };
+  const result = blocks.reduce<Acc>((acc, b) => {
+    const agid = asInt(b.adGroupId);
+    if (agid === null) {
+      return { ...acc, changes: [...acc.changes, b] };
+    }
+    const current = acc.counts.has(agid) ? acc.counts.get(agid)! : (getRsaState(liveRsaState, agid)?.count ?? 0);
+    if (current >= RSAS_PER_AD_GROUP) {
+      return { ...acc, skips: [...acc.skips, b] };
+    }
+    return {
+      counts: new Map(acc.counts).set(agid, current + 1),
+      changes: [...acc.changes, b],
+      skips: acc.skips,
+    };
+  }, initial);
+  return [result.changes, result.skips];
+}
+
+/** An addRsa create: the target ad group plus the already-parsed, already-defaulted RSA. */
+export interface AddRsaCreatePlanEntry {
+  adGroupId: unknown;
+  rsa: ResponsiveSearchAd;
+}
+
+/**
+ * Build the already-parsed, already-defaulted {@link ResponsiveSearchAd} for every
+ * addRsa block in `changes` (`addRsaPlan`'s create half). Callers MUST only invoke
+ * this after `addRsaErrors(changes, liveRsaState)` has returned no errors — validate()
+ * in bin/apply-fixes.ts aborts before any mutation whenever that's not the case, so
+ * `.parse` (not `.safeParse`) is safe here. The single value this produces per block
+ * is what both the mutation loop AND brief staging (`ApplyPlanComputed.addRsaCreates`
+ * in adbriefs/apply-plan.ts) consume — it is never re-parsed downstream.
+ */
+export function addRsaCreateEntries(
+  changes: Array<Record<string, unknown>>,
+  liveRsaState: LiveRsaStateMap,
+): AddRsaCreatePlanEntry[] {
+  return changes.map((b) => ({
+    adGroupId: b.adGroupId,
+    rsa: ResponsiveSearchAdSchema.parse(addRsaCandidate(b, resolveAddRsaFinalUrl(b, liveRsaState))),
+  }));
+}
+
 /** Live-state input maps for validate (kept permissive to mirror the Python shell). */
 export interface ValidateLiveState {
   liveHeadlines: Map<unknown, string[]> | Record<string, string[]>;
   budgets: Map<unknown, { amountMicros?: number }> | Record<string, { amountMicros?: number }>;
   livePositive?: LiveKeywordMap | null;
   biddingState?: Map<unknown, BiddingLiveState> | Record<string, BiddingLiveState> | null;
+  liveRsaState?: LiveRsaStateMap | null;
 }
 
 /**
@@ -989,6 +1152,11 @@ export function validate(
   // FR-002) — defaults to the raw plan section so existing callers that don't compute
   // the skip partition (tests, other call sites) keep validating every bidding block.
   biddingBlocks: Array<Record<string, unknown>> | undefined = undefined,
+  liveRsaState: ValidateLiveState["liveRsaState"] = undefined,
+  // Idempotent-skip filtered addRsa blocks (addRsaPlan's "changes" half, spec.md 050
+  // FR-005) — defaults to the raw plan section so existing callers that don't compute
+  // the skip partition (tests, other call sites) keep validating every addRsa block.
+  addRsaBlocks: Array<Record<string, unknown>> | undefined = undefined,
 ): string[] {
   const arr = (key: string): Array<Record<string, unknown>> =>
     Array.isArray(plan[key]) ? (plan[key] as Array<Record<string, unknown>>) : [];
@@ -1009,5 +1177,6 @@ export function validate(
     ...searchPartnersPreconditionErrors(arr("searchPartners"), liveSearchPartnersGoogleSearch ?? new Map()),
     ...adGroupsErrors(arr("adGroups")),
     ...languagesErrors(arr("languages")),
+    ...addRsaErrors(addRsaBlocks ?? arr("addRsa"), liveRsaState ?? new Map()),
   ];
 }
