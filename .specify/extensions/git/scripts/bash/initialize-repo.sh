@@ -48,6 +48,16 @@ fi
 
 # Initialize
 _git_out=$(git init -q 2>&1) || { echo "[specify] Error: git init failed: $_git_out" >&2; exit 1; }
+
+# `.specify/feature.json` is per-worktree identity, not project config. Ignoring
+# it from the very first commit is what keeps a new worktree from inheriting the
+# previous feature's linked issue via the base branch (issue #33).
+if [ -f "$SCRIPT_DIR/git-common.sh" ]; then
+    # shellcheck source=./git-common.sh
+    source "$SCRIPT_DIR/git-common.sh"
+    spec_kit_ignore_feature_json "$REPO_ROOT"
+fi
+
 _git_out=$(git add . 2>&1) || { echo "[specify] Error: git add failed: $_git_out" >&2; exit 1; }
 _git_out=$(git commit --allow-empty -q -m "$COMMIT_MSG" 2>&1) || { echo "[specify] Error: git commit failed: $_git_out" >&2; exit 1; }
 

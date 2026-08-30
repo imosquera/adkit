@@ -17,10 +17,7 @@ Parse boundary design section in the generated `plan.md`.
 
 ### Core Flow
 
-Run the core plan flow first so that `plan.md` exists before the gate is
-applied. This `{CORE_TEMPLATE}` seam is also the chaining point that lets other
-presets wrap this command: when composed, the placeholder expands to the next
-inner wrapper and ultimately the stock flow.
+Run the core plan flow first so that `plan.md` exists before the gate is applied.
 
 {CORE_TEMPLATE}
 

@@ -1,16 +1,24 @@
 ---
 name: speckit-tasks
-description: Generate a dependency-ordered tasks.md from design artifacts
+description: Wraps /speckit-tasks to update the agent-os dashboard card
 argument-hint: "Optional task generation constraints"
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
   author: github-spec-kit
-  source: preset:explicit-task-dependencies
+  source: preset:progress-report
 user-invocable: true
 disable-model-invocation: false
 ---
 
 # Speckit Tasks Skill
+
+## Dashboard — enter `tasks`
+
+```bash
+REPORT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/.specify/presets/progress-report/scripts/python/progress_report.py"
+python3 "$REPORT" enter tasks
+```
+
 
 ## User Input
 
@@ -203,3 +211,24 @@ Every task MUST strictly follow this format:
   - Within each story: Tests (if requested) → Models → Services → Endpoints → Integration
   - Each phase should be a complete, independently testable increment
 - **Final Phase**: Polish & Cross-Cutting Concerns
+
+
+## Dashboard — `tasks` done
+
+Mark the phase done and attach the generated task list as items (id `T001`… + title;
+all `pending` since none have run yet). This same list is what `implement` will flip
+to `done` task-by-task, so it's the backbone of the card's detail view:
+
+```bash
+REPORT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/.specify/presets/progress-report/scripts/python/progress_report.py"
+python3 "$REPORT" done tasks \
+  --summary "<N tasks generated across M workstreams>" \
+  --items-json '[{"id":"T001","title":"<task text>","status":"pending"}]'
+```
+
+Build `--items-json` from the tasks you wrote to `tasks.md` (one object per task).
+During implementation, re-send the same list with statuses flipped to `done`/`active`
+via `python3 "$REPORT" set implement --items-json '[…]'` so the card tracks progress
+without changing phase statuses.
+
+If task generation is blocked: `python3 "$REPORT" block tasks --reason "<reason>"`.

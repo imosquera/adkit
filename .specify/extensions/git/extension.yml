@@ -3,7 +3,7 @@ schema_version: "1.0"
 extension:
   id: git
   name: "Git Branching Workflow"
-  version: "1.0.0"
+  version: "1.3.0"
   description: "Feature branch creation, worktree management, feature cleanup, auto-commit hooks, and PR creation"
   author: spec-kit-core
   repository: https://github.com/github/spec-kit
@@ -16,6 +16,49 @@ requires:
       required: false
 
 provides:
+  scripts:
+    - name: create-new-feature.sh
+      file: scripts/bash/create-new-feature.sh
+      executable: true
+      command: speckit.git.feature
+    - name: create-new-feature.ps1
+      file: scripts/powershell/create-new-feature.ps1
+      executable: true
+      command: speckit.git.feature
+    - name: worktree-add.sh
+      file: scripts/bash/worktree-add.sh
+      executable: true
+      command: speckit.git.worktree
+    - name: clean.sh
+      file: scripts/bash/clean.sh
+      executable: true
+      command: speckit.git.clean
+    - name: auto-commit.sh
+      file: scripts/bash/auto-commit.sh
+      executable: true
+      command: speckit.git.commit
+    - name: auto-commit.ps1
+      file: scripts/powershell/auto-commit.ps1
+      executable: true
+      command: speckit.git.commit
+    - name: create-pr.sh
+      file: scripts/bash/create-pr.sh
+      executable: true
+      command: speckit.git.pr
+    # Libraries sourced by the scripts above; no command invokes them directly.
+    - name: git-common.sh
+      file: scripts/bash/git-common.sh
+      executable: false
+    - name: git-common.ps1
+      file: scripts/powershell/git-common.ps1
+      executable: false
+    - name: initialize-repo.sh
+      file: scripts/bash/initialize-repo.sh
+      executable: true
+    - name: initialize-repo.ps1
+      file: scripts/powershell/initialize-repo.ps1
+      executable: true
+
   commands:
     - name: speckit.git.feature
       file: commands/speckit.git.feature.md
@@ -26,12 +69,15 @@ provides:
     - name: speckit.git.clean
       file: commands/speckit.git.clean.md
       description: "Clean up the current feature worktree, branch, issue, and uncommitted changes"
+    - name: speckit.git.issue
+      file: commands/speckit.git.issue.md
+      description: "Update the linked GitHub issue's body from spec.md (a manual run may also create one when none is linked)"
     - name: speckit.git.commit
       file: commands/speckit.git.commit.md
       description: "Auto-commit changes after a Spec Kit command completes"
     - name: speckit.git.pr
       file: commands/speckit.git.pr.md
-      description: "Open a GitHub PR for the current feature branch, auto-appending Closes #N from .specify/feature.json when source_issue is set"
+      description: "Open a GitHub PR for the current feature branch, auto-appending Closes #N from .specify/feature.json when source_issue is set; --draft opens it as a draft and leaves the issue open"
 
   config:
     - name: "git-config.yml"
@@ -85,10 +131,21 @@ hooks:
     prompt: "Commit constitution changes?"
     description: "Auto-commit after constitution update"
   after_specify:
-    command: speckit.git.commit
-    optional: true
-    prompt: "Commit specification changes?"
-    description: "Auto-commit after specification"
+    # DECLARATION ORDER IS LOAD-BEARING — do not reorder these two entries.
+    # The agent-driven hook runner iterates hooks.after_specify in the order
+    # they are registered, which is this manifest's order; it does not sort by
+    # `priority`. The priority values below only record the intended order.
+    # speckit.git.issue must come first because it can write `source_issue`
+    # into .specify/feature.json, which speckit.git.commit then picks up.
+    - command: speckit.git.issue
+      priority: 5
+      optional: false
+      description: "Update the feature's GitHub issue body from the rendered spec (clean no-op when no issue is linked)"
+    - command: speckit.git.commit
+      priority: 10
+      optional: true
+      prompt: "Commit specification changes?"
+      description: "Auto-commit after specification"
   after_clarify:
     command: speckit.git.commit
     optional: true

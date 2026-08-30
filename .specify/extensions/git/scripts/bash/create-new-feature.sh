@@ -12,6 +12,12 @@ ALLOW_EXISTING=false
 SHORT_NAME=""
 BRANCH_NUMBER=""
 USE_TIMESTAMP=false
+# Populated either by --source-issue (caller binds an already-existing issue)
+# or by this script's own `gh issue create` path further down. Declared here so
+# every code path below sees a defined value regardless of which branch ran.
+SOURCE_ISSUE=""
+ISSUE_URL=""
+ISSUE_CREATED_HERE=false
 ARGS=()
 i=1
 while [ $i -le $# ]; do
@@ -56,11 +62,29 @@ while [ $i -le $# ]; do
                 exit 1
             fi
             ;;
+        --source-issue)
+            if [ $((i + 1)) -gt $# ]; then
+                echo 'Error: --source-issue requires a value' >&2
+                exit 1
+            fi
+            i=$((i + 1))
+            next_arg="${!i}"
+            if [[ "$next_arg" == --* ]]; then
+                echo 'Error: --source-issue requires a value' >&2
+                exit 1
+            fi
+            SOURCE_ISSUE="$next_arg"
+            SOURCE_ISSUE="${SOURCE_ISSUE#\#}"
+            if [[ ! "$SOURCE_ISSUE" =~ ^[0-9]+$ ]]; then
+                echo 'Error: --source-issue must be a positive integer issue number' >&2
+                exit 1
+            fi
+            ;;
         --timestamp)
             USE_TIMESTAMP=true
             ;;
         --help|-h)
-            echo "Usage: $0 [--json] [--dry-run] [--allow-existing-branch] [--short-name <name>] [--number N] [--timestamp] <feature_description>"
+            echo "Usage: $0 [--json] [--dry-run] [--allow-existing-branch] [--short-name <name>] [--number N] [--source-issue N] [--timestamp] <feature_description>"
             echo ""
             echo "Options:"
             echo "  --json              Output in JSON format"
@@ -68,6 +92,9 @@ while [ $i -le $# ]; do
             echo "  --allow-existing-branch  Switch to branch if it already exists instead of failing"
             echo "  --short-name <name> Provide a custom short name (2-4 words) for the branch"
             echo "  --number N          Specify branch number manually (overrides auto-detection)"
+            echo "  --source-issue N    Bind to an EXISTING GitHub issue #N instead of creating a new"
+            echo "                      stub issue; N also drives numbering unless --number/--timestamp/"
+            echo "                      GIT_BRANCH_NAME already fix the branch name"
             echo "  --timestamp         Use timestamp prefix (YYYYMMDD-HHMMSS) instead of sequential numbering"
             echo "  --help, -h          Show this help message"
             echo ""
@@ -78,6 +105,7 @@ while [ $i -le $# ]; do
             echo "  $0 'Add user authentication system' --short-name 'user-auth'"
             echo "  $0 'Implement OAuth2 integration for API' --number 5"
             echo "  $0 --timestamp --short-name 'user-auth' 'Add user authentication'"
+            echo "  $0 --source-issue 90 --short-name 'automatic-arrival' 'Automatic arrival detection'"
             echo "  GIT_BRANCH_NAME=my-branch $0 'feature description'"
             exit 0
             ;;
@@ -90,7 +118,7 @@ done
 
 FEATURE_DESCRIPTION="${ARGS[*]}"
 if [ -z "$FEATURE_DESCRIPTION" ]; then
-    echo "Usage: $0 [--json] [--dry-run] [--allow-existing-branch] [--short-name <name>] [--number N] [--timestamp] <feature_description>" >&2
+    echo "Usage: $0 [--json] [--dry-run] [--allow-existing-branch] [--short-name <name>] [--number N] [--source-issue N] [--timestamp] <feature_description>" >&2
     exit 1
 fi
 
@@ -218,14 +246,19 @@ _find_project_root() {
 _common_loaded=false
 _PROJECT_ROOT=$(_find_project_root "$SCRIPT_DIR") || true
 
+# Always load git-common.sh first: it is the only source of the spec_kit_*
+# feature-identity helpers, and core common.sh (loaded after, when present)
+# takes precedence for the helpers they both define.
+if [ -f "$SCRIPT_DIR/git-common.sh" ]; then
+    source "$SCRIPT_DIR/git-common.sh"
+    _common_loaded=true
+fi
+
 if [ -n "$_PROJECT_ROOT" ] && [ -f "$_PROJECT_ROOT/.specify/scripts/bash/common.sh" ]; then
     source "$_PROJECT_ROOT/.specify/scripts/bash/common.sh"
     _common_loaded=true
 elif [ -n "$_PROJECT_ROOT" ] && [ -f "$_PROJECT_ROOT/scripts/bash/common.sh" ]; then
     source "$_PROJECT_ROOT/scripts/bash/common.sh"
-    _common_loaded=true
-elif [ -f "$SCRIPT_DIR/git-common.sh" ]; then
-    source "$SCRIPT_DIR/git-common.sh"
     _common_loaded=true
 fi
 
@@ -380,15 +413,16 @@ else
     #   - GIT_BRANCH_NAME is set (caller controls the branch name explicitly)
     #   - --timestamp is used (different naming scheme)
     #   - --number is passed (caller controls numbering explicitly)
+    #   - --source-issue is passed (the issue already exists; the caller is
+    #     binding to it, so creating another one would duplicate it)
     #   - --dry-run is set
     #
     # Outside those cases, a missing `gh`, an unauthenticated session, or a
     # failing `gh issue create` is a hard error.
     # ---------------------------------------------------------------------
-    SOURCE_ISSUE=""
-    ISSUE_URL=""
     if [ "$USE_TIMESTAMP" != true ] \
        && [ -z "$BRANCH_NUMBER" ] \
+       && [ -z "$SOURCE_ISSUE" ] \
        && [ "$DRY_RUN" != true ] \
        && [ "$HAS_GIT" = true ]; then
 
@@ -428,6 +462,7 @@ Stub created by \`/speckit-git-feature\`. The full spec body will be filled in b
             exit 1
         fi
 
+        ISSUE_CREATED_HERE=true
         >&2 echo "[specify] Created GitHub issue #${SOURCE_ISSUE}: ${ISSUE_URL}"
 
         # Compare the newly-created issue number with the next-free spec/branch
@@ -445,6 +480,26 @@ Stub created by \`/speckit-git-feature\`. The full spec body will be filled in b
 
         if [ "$((10#$SOURCE_ISSUE))" -lt "$((10#$_next_free))" ]; then
             >&2 echo "[specify] Issue #${SOURCE_ISSUE} is behind next free spec number ${_next_free}; using ${_next_free} for FEATURE_NUM (issue title will be updated to match)."
+            BRANCH_NUMBER="$_next_free"
+        else
+            BRANCH_NUMBER="$SOURCE_ISSUE"
+        fi
+    elif [ -n "$SOURCE_ISSUE" ] \
+         && [ "$USE_TIMESTAMP" != true ] \
+         && [ -z "$BRANCH_NUMBER" ]; then
+        # --source-issue with no explicit number: the existing issue drives
+        # numbering exactly as a freshly created one would, so the spec dir,
+        # branch, and issue keep sharing one identifier. Same next-free guard —
+        # an old issue number can easily be behind existing specs/NNN-* dirs.
+        if [ "$HAS_GIT" = true ]; then
+            _next_free=$(check_existing_branches "$SPECS_DIR" "$DRY_RUN")
+        else
+            _highest=$(get_highest_from_specs "$SPECS_DIR")
+            _next_free=$((_highest + 1))
+        fi
+
+        if [ "$((10#$SOURCE_ISSUE))" -lt "$((10#$_next_free))" ]; then
+            >&2 echo "[specify] Issue #${SOURCE_ISSUE} is behind next free spec number ${_next_free}; using ${_next_free} for FEATURE_NUM."
             BRANCH_NUMBER="$_next_free"
         else
             BRANCH_NUMBER="$SOURCE_ISSUE"
@@ -597,83 +652,45 @@ if [ "$DRY_RUN" != true ]; then
     fi
 
     # ---------------------------------------------------------------------
-    # Persist source_issue into the worktree's .specify/feature.json and
-    # prefix the issue title with the actual FEATURE_NUM.
+    # Write the worktree's per-worktree feature state, and prefix the issue
+    # title with the actual FEATURE_NUM.
+    #
+    # `.specify/feature.json` carries `source_issue` and nothing else — every
+    # other field (branch, number, worktree path, spec directory) is derived
+    # from git at read time by spec_kit_resolve_feature(), so it cannot go
+    # stale. The helper also gitignores the file and untracks it if an older
+    # layout committed it; see git-common.sh and issue #33.
+    #
+    # When this run has no issue at all (the GIT_BRANCH_NAME / --timestamp /
+    # --number paths without --source-issue) the file is removed rather than
+    # left inherited, so /speckit-git-pr cannot close the previous feature's
+    # issue.
+    #
+    # `--source-issue N` binds an already-existing issue here, in this one
+    # script, so a caller that opted out of issue creation (autopilot always
+    # does — it works an issue that already exists, so it must set
+    # GIT_BRANCH_NAME) no longer has to post-patch the file in a second step
+    # (issue #44).
     #
     # In the common case FEATURE_NUM == SOURCE_ISSUE because issue creation
     # drives numbering. They can diverge if the next free spec number was
     # already higher than the issue number (e.g. issue #5 created while
     # specs/008-* already exists), in which case we still write the issue
-    # title with FEATURE_NUM so the issue ↔ spec alignment is visible.
+    # title with FEATURE_NUM so the issue <-> spec alignment is visible.
     # ---------------------------------------------------------------------
-    if [ -n "$SOURCE_ISSUE" ] && [ "$HAS_GIT" = true ] && [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ]; then
-        _wt_specify_dir="$WORKTREE_PATH/.specify"
-        _wt_feature_json="$_wt_specify_dir/feature.json"
-        mkdir -p "$_wt_specify_dir"
-
-        # Write or merge feature.json. When the file already exists (e.g. the
-        # previous feature committed it and it was carried into the new worktree
-        # via the base branch), we OVERWRITE the four feature-identity fields
-        # rather than skipping — otherwise the worktree keeps the stale
-        # source_issue/feature_directory and downstream commands (PR, archive,
-        # clean, auto-commit) would close or operate on the previous feature's
-        # tracking artefacts.
-        if command -v jq >/dev/null 2>&1; then
-            if [ -f "$_wt_feature_json" ]; then
-                _tmp_json="${_wt_feature_json}.tmp.$$"
-                if jq \
-                    --arg branch_name "$BRANCH_NAME" \
-                    --arg feature_num "$FEATURE_NUM" \
-                    --arg worktree_path "$WORKTREE_PATH" \
-                    --argjson source_issue "$SOURCE_ISSUE" \
-                    '. + {branch_name:$branch_name,feature_num:$feature_num,worktree_path:$worktree_path,source_issue:$source_issue} | del(.feature_directory)' \
-                    "$_wt_feature_json" > "$_tmp_json"; then
-                    mv "$_tmp_json" "$_wt_feature_json"
-                    >&2 echo "[specify] Updated stale .specify/feature.json in worktree with new feature identity (source_issue=${SOURCE_ISSUE})."
-                else
-                    rm -f "$_tmp_json"
-                    >&2 echo "[specify] Warning: failed to merge .specify/feature.json; overwriting with new feature identity."
-                    jq -n \
-                        --arg branch_name "$BRANCH_NAME" \
-                        --arg feature_num "$FEATURE_NUM" \
-                        --arg worktree_path "$WORKTREE_PATH" \
-                        --argjson source_issue "$SOURCE_ISSUE" \
-                        '{branch_name:$branch_name,feature_num:$feature_num,worktree_path:$worktree_path,source_issue:$source_issue}' \
-                        > "$_wt_feature_json"
-                fi
-            else
-                jq -n \
-                    --arg branch_name "$BRANCH_NAME" \
-                    --arg feature_num "$FEATURE_NUM" \
-                    --arg worktree_path "$WORKTREE_PATH" \
-                    --argjson source_issue "$SOURCE_ISSUE" \
-                    '{branch_name:$branch_name,feature_num:$feature_num,worktree_path:$worktree_path,source_issue:$source_issue}' \
-                    > "$_wt_feature_json"
-            fi
-        else
-            # No jq → write minimal JSON, overwriting any prior content. This
-            # loses non-identity fields the previous owner may have stashed,
-            # but keeping stale identity fields is the worse failure mode.
-            if type json_escape >/dev/null 2>&1; then
-                _je_branch=$(json_escape "$BRANCH_NAME")
-                _je_num=$(json_escape "$FEATURE_NUM")
-                _je_wt=$(json_escape "$WORKTREE_PATH")
-            else
-                _je_branch="$BRANCH_NAME"
-                _je_num="$FEATURE_NUM"
-                _je_wt="$WORKTREE_PATH"
-            fi
-            if [ -f "$_wt_feature_json" ]; then
-                >&2 echo "[specify] Warning: jq not installed; overwriting stale .specify/feature.json (non-identity fields will be lost)."
-            fi
-            printf '{"branch_name":"%s","feature_num":"%s","worktree_path":"%s","source_issue":%s}\n' \
-                "$_je_branch" "$_je_num" "$_je_wt" "$SOURCE_ISSUE" \
-                > "$_wt_feature_json"
+    if [ "$HAS_GIT" = true ] && [ -n "$WORKTREE_PATH" ] && [ -d "$WORKTREE_PATH" ]; then
+        spec_kit_write_feature_json "$WORKTREE_PATH" "$SOURCE_ISSUE"
+        if [ -n "$SOURCE_ISSUE" ]; then
+            >&2 echo "[specify] Linked worktree to issue #${SOURCE_ISSUE} via .specify/feature.json."
         fi
 
         # Prefix the issue title with the spec number so the issue list
         # mirrors the specs/ layout. Best-effort; failures are non-fatal.
-        if command -v gh >/dev/null 2>&1; then
+        #
+        # Only for an issue this run created: the stub title is ours to rewrite.
+        # An issue passed via --source-issue is pre-existing and human-written,
+        # and renaming someone else's issue is not this script's business.
+        if [ "$ISSUE_CREATED_HERE" = true ] && [ -n "$SOURCE_ISSUE" ] && command -v gh >/dev/null 2>&1; then
             _new_title="${FEATURE_NUM}: ${FEATURE_DESCRIPTION}"
             if ! gh issue edit "$SOURCE_ISSUE" --title "$_new_title" >/dev/null 2>&1; then
                 >&2 echo "[specify] Warning: failed to prefix issue #${SOURCE_ISSUE} title with '${FEATURE_NUM}:'"
@@ -744,6 +761,8 @@ else
     fi
     if [ -n "$SOURCE_ISSUE" ]; then
         echo "SOURCE_ISSUE: $SOURCE_ISSUE"
+    fi
+    if [ -n "$ISSUE_URL" ]; then
         echo "ISSUE_URL: $ISSUE_URL"
     fi
     if [ "$DRY_RUN" != true ]; then

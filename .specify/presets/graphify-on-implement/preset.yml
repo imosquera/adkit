@@ -16,9 +16,9 @@ provides:
   templates:
     - type: "command"
       name: "speckit.implement"
+      strategy: "wrap"
       file: "commands/speckit.implement.md"
       description: "Implement command with mandatory final graphify update"
-      replaces: "speckit.implement"
 
 tags:
   - "implement"

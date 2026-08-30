@@ -12,7 +12,7 @@
 #
 # Title precedence:
 #   1. `.specify/feature.json` source_issue  -> "#N: <issue title>" (via gh)
-#   2. `.specify/feature.json` branch_name    -> "<branch>"
+#   2. the live git branch                    -> "<branch>"
 #   3. current git branch                     -> "<branch>"
 # Anything that fails degrades to the next source; the hook never errors out
 # (a broken hook must not block a session from starting).
@@ -39,9 +39,14 @@ feature_json="$root/.specify/feature.json"
 
 title=""
 
-if [ -f "$feature_json" ]; then
+# The live git branch is authoritative; feature.json contributes only the
+# linked issue number (its old branch_name field named the previous feature in
+# a fresh worktree — issue #33).
+branch="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+[ "$branch" = "HEAD" ] && branch=""
+
+if [ -f "$feature_json" ] || [ -n "$branch" ]; then
   issue="$(jq -r '.source_issue // empty' "$feature_json" 2>/dev/null)"
-  branch="$(jq -r '.branch_name // empty' "$feature_json" 2>/dev/null)"
 
   if [ -n "$issue" ] && command -v gh >/dev/null 2>&1; then
     # Best-effort, time-boxed so a slow/unauthed gh never stalls session start.
@@ -56,7 +61,7 @@ if [ -f "$feature_json" ]; then
   fi
 fi
 
-# Fall back to the live git branch when feature.json told us nothing.
+# Fall back to the live git branch when neither issue nor branch produced one.
 if [ -z "$title" ]; then
   gb="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   [ -n "$gb" ] && [ "$gb" != "HEAD" ] && title="$gb"

@@ -42,6 +42,17 @@ independently.
   for with a legible record.
 - **Stop only on a hard blocker** (see [Stop conditions](#stop-conditions)). A
   wrong-but-recoverable guess is acceptable; a wrong *irreversible* action is not.
+- **Optional lifecycle hooks run by default — `optional` is not `skip`.** Every
+  registered `before_*` / `after_*` hook is part of the pipeline a human-driven run
+  would get; `optional: true` in a manifest means "may be declined", not "skip when
+  unattended". After each phase's mandatory work, **run the enabled hooks for that
+  phase's slot** (auto-commit, issue sync, knowledge-graph and agent-context
+  refreshes). Answer any confirmation `prompt:` with **yes**. Skip only when the
+  hook's tool is genuinely missing/unauthed or it plainly doesn't apply to this
+  project — and when you skip, **say which hook and why**, in the phase's issue
+  comment, the same audit-trail discipline as an auto-answered clarify. Invoke a
+  hook the way an interactive run would (its registered command / skill); never
+  reimplement its work by hand.
 - **Tracking pipeline stages with the harness task tools?** `TaskCreate` /
   `TaskUpdate` / `TaskList` are **deferred** — their schemas aren't loaded, so
   calling one cold fails with `InputValidationError` (typed params get sent as
@@ -121,21 +132,58 @@ which is exactly how two runs collided on the same issue — see issue #19). Alw
 PREFLIGHT_SCRIPT="$CLAUDE_PROJECT_DIR/.specify/extensions/autopilot/scripts/bash/preflight-issues.py"
 
 # With an explicit issue number in $ARGUMENTS, validate THAT issue only:
-python3 "$PREFLIGHT_SCRIPT" /tmp/autopilot_issues.json "$N"
+python3 "$PREFLIGHT_SCRIPT" /tmp/autopilot_issues.json "$N" --cross-repo
 # => "PICK: #42 \"Fix the thing\" (explicit)"  or  "SKIP: #42 <reason>"
 
 # With no input, auto-pick the oldest eligible issue:
-python3 "$PREFLIGHT_SCRIPT" /tmp/autopilot_issues.json
+python3 "$PREFLIGHT_SCRIPT" /tmp/autopilot_issues.json --cross-repo
 # => "PICK: #42 \"Fix the thing\" (7 open, 2 parked, 1 in-progress)"  or  "SKIP: ..."
 ```
+
+**Always pass `--cross-repo`.** The rest of the eligibility check only sees *this*
+repo, so an issue whose fix already shipped as a PR **somewhere else** looks
+perfectly fresh. That is not hypothetical: on 2026-08-20 one issue was picked and
+claimed by three separate runs after the first had already delivered it in another
+repo — one of them starting 35 seconds after the delivering run finished (issue
+#34). `--cross-repo` scans the issue's own thread for PR links, resolves them with
+`gh pr view --repo`, and turns that into `SKIP: #N delivered — <url> (<state>)`.
 
 A `SKIP:` result on the explicit-issue path means **stop immediately** — do not
 create a spec, branch, worktree, or commit. Report the exact SKIP reason to the
 user (e.g. "already claimed by another autopilot run" or "already in progress on
-branch 082-…") before ending the session. A `SKIP:` result on the auto-pick path
+branch 082-…") before ending the session. `SKIP: #N blocked — <reason>` is the
+durable case: a previous run hit a hard blocker and parked the issue (see
+[Stop conditions](#stop-conditions)). The script reads that reason back out of the
+issue thread, so **relay it verbatim** — a human who deliberately typed
+`/speckit-autopilot-run N` is asking "why not?", and the answer is right there.
+Do not clear `autopilot:blocked` to force a retry; clearing it is a human's call
+once the underlying blocker is actually fixed. A `SKIP:` result on the auto-pick path
 means the whole backlog is unworkable right now — say so and stop; that's success,
 not failure, unless the script reported a hard failure (couldn't parse issues),
 which is a Stop condition.
+
+`SKIP: #N delivered — <url> (<state>)` needs one extra write before you stop.
+Preflight only *reads*; without a durable mark the next tick re-derives the same
+answer and the issue keeps cycling — the exact re-pick loop `autopilot:blocked`
+was introduced to end (issue #32). Park it with the delivering PR as the reason,
+then stop:
+
+```bash
+PARK_SCRIPT="$CLAUDE_PROJECT_DIR/.specify/extensions/autopilot/scripts/bash/park-issue.sh"
+bash "$PARK_SCRIPT" "$N" \
+  "delivered by <PR-URL> (<state>) — close this issue, or clear the autopilot:blocked label if that PR does not resolve it" \
+  --title "✅ **Already delivered**"
+```
+
+Do **not** close the issue yourself: a linked PR is strong evidence, not proof, and
+whether it truly resolves the issue is a human's call. Parking stops the waste;
+closing is theirs.
+
+`autopilot-run.sh` parks deliveries it finds in its own launch preflight, using the
+same script — it exits before this skill ever starts, so it cannot delegate the
+write here (and a delivered issue does not stop preflight's scan, so it can also
+surface one while still picking a different issue). Parking is idempotent: an issue
+that already carries `autopilot:blocked` is left alone rather than re-commented.
 
 `gh issue list` already excludes PRs, so you won't accidentally grab one.
 
@@ -172,6 +220,55 @@ condition (see [Stop conditions](#stop-conditions)):
 gh issue edit "$N" --remove-label "autopilot:claimed" 2>/dev/null || true
 ```
 
+## Step 1.5 — Confirm the fix belongs in THIS repo
+
+**An autopilot run is bound to exactly one repository and one checkout.**
+`autopilot-schedule.sh` writes the repo root into the launchd plist (one plist per
+checkout, labelled `com.speckit.autopilot.<repo-slug>`), and `fetch-open-issues.sh`
+reads issues only from that repo's own `gh issue list`. The work must land there
+too — this run may not open a PR against a different repository.
+
+Nothing used to check that. lead-drop#182 asked for a change to a file that resolved
+into a *different* repo; autopilot did the work and opened the PR over there, while
+the issue it "finished" stayed open. That is what then let three later runs pick the
+same issue up again (issue #34). The pre-existing "fix target outside any git repo"
+stop condition did not catch it, because that target was inside a perfectly good
+repo — just not ours.
+
+So, before any spec, branch, or worktree: read the issue and list every file path it
+asks you to change or create, then hand them all to the guard in one call:
+
+```bash
+GUARD="$CLAUDE_PROJECT_DIR/.specify/extensions/autopilot/scripts/bash/check-target-repo.sh"
+bash "$GUARD" path/to/one.py ~/some/other/file.ts
+# => "INSIDE: … → <repo>"   per target, then
+#    "OK: 2 target(s) inside <repo>"          (exit 0 — proceed)
+#    "BLOCKED: 1 of 2 target(s) not in <repo>" (exit 1 — stop, see below)
+```
+
+It resolves `~` and symlinks, and for a file that does not exist yet it uses the
+deepest existing ancestor — the directory the file would be created in. Repo
+identity is the git **common dir**, not the worktree toplevel, so a path inside this
+feature's worktree correctly reads as INSIDE rather than foreign.
+
+Pass paths you are reasonably confident about. If the issue names no file at all,
+skip the guard rather than inventing targets — the check is a scope guard, not a
+substitute for reading the issue.
+
+**On a non-zero exit, stop.** This is a *Durable* stop: park the issue and release
+the claim, exactly as [Stop conditions](#stop-conditions) prescribes.
+
+```bash
+PARK_SCRIPT="$CLAUDE_PROJECT_DIR/.specify/extensions/autopilot/scripts/bash/park-issue.sh"
+bash "$PARK_SCRIPT" "$N" \
+  "fix target <path> lives in <other-repo>; this autopilot run is bound to <this-repo> — move the issue to that repo, or clear autopilot:blocked if it can be fixed here" \
+  --title "📍 **Wrong repository**"
+gh issue edit "$N" --remove-label "autopilot:claimed" 2>/dev/null || true
+```
+
+Say plainly in the final report which repo the fix belongs in, so a human can move
+the issue rather than guess why it was parked.
+
 ## Step 2 — Bind a worktree to the EXISTING issue (avoid the duplicate-issue trap)
 
 This is the sharpest edge. `/speckit-git-feature` is built to **create a new** stub
@@ -203,25 +300,40 @@ mismatched numbering.
    something to infer here. Only `CLEAR` means proceed.
 1. Derive a slug from the issue title (kebab-case, trimmed) and the branch name
    `NNN-slug`, zero-padded to the repo's convention (e.g. `082-signup-thankyou`).
-2. Create the branch + worktree **without** creating an issue by forcing the branch
-   name — the `GIT_BRANCH_NAME` override makes `/speckit-git-feature` skip issue
-   creation entirely (per its own contract):
+2. Create the branch + worktree **without** creating an issue, and bind it to `#N`
+   in the same call. `GIT_BRANCH_NAME` makes `/speckit-git-feature` skip issue
+   creation (per its own contract); `--source-issue` tells it which existing issue
+   to link, so it writes `.specify/feature.json` itself:
    ```bash
-   GIT_BRANCH_NAME="NNN-slug" <run /speckit-git-feature>
+   GIT_BRANCH_NAME="NNN-slug" <run /speckit-git-feature --source-issue "$N">
    ```
    (Or use `/speckit-git-worktree` if a suitable branch already exists.)
-3. **Link the existing issue** by writing `source_issue` into the new worktree's
-   `.specify/feature.json` (so `/speckit-git-pr`, `/speckit-git-commit`, and
-   `/speckit-git-clean` all pick up issue `#N` automatically):
+
+   Confirm the linkage landed before moving on — one read, no repair:
    ```bash
-   # in the new worktree
-   python3 - "$N" <<'PY'
-   import json, sys, pathlib
-   p = pathlib.Path(".specify/feature.json"); d = json.loads(p.read_text())
-   d["source_issue"] = int(sys.argv[1]); p.write_text(json.dumps(d, indent=2))
-   print("linked source_issue", sys.argv[1])
-   PY
+   cat "<absolute path to the new worktree>/.specify/feature.json"   # {"source_issue": N}
    ```
+3. **If that file is missing or names a different issue** — the installed `git`
+   extension predates `--source-issue` (issue #44), or the worktree came from
+   `/speckit-git-worktree` — bind it explicitly:
+   ```bash
+   BIND_SCRIPT="$CLAUDE_PROJECT_DIR/.specify/extensions/autopilot/scripts/bash/bind-feature-issue.sh"
+   bash "$BIND_SCRIPT" "$N" "<absolute path to the new worktree>"
+   ```
+   Do **not** write the file by hand. Both that script and `--source-issue` go
+   through the git extension's shared writer, `spec_kit_write_feature_json()`,
+   which does two things a raw `printf > .specify/feature.json` does not: it
+   gitignores the file, and it `git rm --cached`s it in a project whose older
+   layout still tracks it. Writing it raw leaves a *tracked* `feature.json`, which
+   the next worktree cut from this branch then inherits — reviving the
+   stale-inheritance bug of issue #33 on the one path that runs unattended
+   (issue #21).
+
+   `source_issue` is the file's entire contents. Never add `branch_name`,
+   `feature_num`, `worktree_path`, or `feature_directory` — every one of those is
+   derived from git at read time precisely so it cannot go stale, and writing them
+   is what used to point `/speckit-git-clean` and `/speckit-git-pr` at the previous
+   feature (issue #33).
 4. **`cd` into the worktree** and run everything below from there. Speckit resolves
    paths from the worktree root; running from the main checkout drifts the cwd and
    breaks the `.specify/` scripts.
@@ -244,20 +356,27 @@ what was actually asked. Let it write `spec.md` and sync the issue. If the body 
 thin, enrich the spec from the title + any linked context, but don't invent scope the
 issue didn't imply.
 
-**After `/speckit-specify` completes, always run these `after_specify` hooks — treat
-them as mandatory, never skip them regardless of how they are flagged in the
-project's `extensions.yml`:**
+Then run the `after_specify` hooks — all of them, per the Operating contract's
+lifecycle-hook policy, not just the non-optional ones:
 
-```bash
-specify hook run speckit.agent-context.update  2>/dev/null || true
-specify hook run speckit.graphify.update       2>/dev/null || true
-```
+- **`speckit.git.issue`** (non-optional) — syncs the rendered spec back into the
+  linked GitHub issue.
+- **`speckit.git.commit`** (optional, prompts) — answer **yes**; the spec belongs on
+  the branch before clarify starts editing it.
+- **Knowledge-graph refresh** — if this project keeps a graph (a `graphify-out/`
+  directory, or `graphify` is on `PATH`), refresh it with the Claude `/graphify`
+  skill. It is not a `specify` subcommand.
+- **Agent-context refresh** — if the project ships one (e.g. an
+  `update-agent-context` script under `.specify/scripts/bash/`, or a preset/extension
+  command that rewrites `CLAUDE.md`-style agent context), run it so Steps 5–8 plan
+  against the new spec instead of stale context.
 
-These keep the agent-context and knowledge graph current after every spec write.
-They are required for the progress-report dashboard to reflect accurate state. The
-`|| true` prevents a missing hook from blocking the pipeline, but if `specify hook run`
-is unavailable entirely, warn and continue rather than stopping.
-
+When `settings.auto_execute_hooks` is true the registered hooks fire on their own and
+there is nothing to invoke by hand — the `specify` CLI has no `hook` subcommand, so
+when it is false, invoke each hook's registered command directly (`ls
+.specify/extensions/*/commands/` to find them). Either way, **verify** they ran:
+`git log -1` for the commit, the issue body for the sync. If one is missing, run it;
+if it can't run, note which and why in the Step 3 progress comment.
 
 ## Step 4 — Clarify (you answer the questions)
 
@@ -298,10 +417,14 @@ Also honor whatever presets are enabled: check `.specify/presets/.registry`; if
 `parse-dont-validate` is enabled, add the `## Parse Boundaries` section and run its
 scanner rather than skipping it.
 
+Run the `after_plan` hooks (the optional auto-commit — answer **yes**) per the
+lifecycle-hook policy.
+
 ## Step 6 — Tasks
 
 Run `/speckit-tasks` to generate the dependency-ordered `tasks.md`. No special
-handling — just confirm it produced tasks covering the plan's MVP.
+handling — just confirm it produced tasks covering the plan's MVP. Then run the
+`after_tasks` hooks (auto-commit — answer **yes**).
 
 ## Step 7 — Implement
 
@@ -314,6 +437,10 @@ Run `/speckit-implement`. Then, because you're unattended:
   resolve.
 - **Post a progress comment** summarizing what shipped: files added/changed, test
   counts, and any task deliberately deferred (with why).
+- **Run the `after_implement` hooks** — the auto-commit (answer **yes**), plus any
+  preset-supplied refresh (e.g. `graphify-on-implement` runs `graphify update`).
+  `speckit.review.run` is also registered here; Step 8 is that hook, so running it
+  there satisfies the slot — don't run the reviewers twice.
 
 ## Step 8 — Review
 
@@ -325,10 +452,17 @@ human reviewer would. Re-run the gates after applying fixes.
 
 ## Step 9 — Open the draft PR
 
-Run `/speckit-git-pr` to push the branch and open the PR. Open it **as a draft** — a
-human explicitly wants a not-yet-mergeable PR to review, not an auto-merge. Because
-`source_issue` is set, the body includes `Closes #N`, so merging later auto-closes the
-issue.
+Run `/speckit-git-pr --draft` to push the branch and open the PR. `--draft` is the
+whole handoff contract in one flag, so do **not** hand-roll it (issue #28):
+
+- it passes `--draft` to `gh pr create` directly, so the PR is never briefly
+  mergeable and never needs a post-hoc `gh pr ready <url> --undo`;
+- it skips the `/speckit-archive-feature` pre-step, so the tracking issue stays
+  **open** and the spec stays in the active tree until a human merges. Archiving
+  there would close the issue and file the spec away before anyone reviewed the work.
+
+Because `source_issue` is set, the body includes `Closes #N`, so merging later
+auto-closes the issue.
 
 **Final issue comment**: link the draft PR and give a 3–5 line summary — what was
 built, the assumptions you made (link the earlier clarify comment), gate status
@@ -349,21 +483,74 @@ Stop, leave the worktree intact, post what you found to the issue, and hand back
 the user only when continuing would be reckless or is impossible:
 
 - **Missing capability** — `gh` / `gcloud` / build creds absent or unauthenticated and
-  the step needs them (login is interactive; you can't do it).
-- **Not a speckit repo** — no `.specify/`.
+  the step needs them (login is interactive; you can't do it). *Durable.*
+- **Fix target outside any git repo** — the file the issue asks you to change
+  resolves (often through a symlink) somewhere `git rev-parse` fails, so no PR
+  against any repo could contain the fix. Resolve the real path with
+  `readlink -f` / `realpath` before concluding this. *Durable.*
+- **Fix target in a DIFFERENT git repo** — the target resolves inside a real
+  repository that is not the one this run is bound to. Opening a PR there would put
+  the work outside the repo whose backlog, schedule, and checkout this run owns, and
+  would leave the issue open behind it (issue #34). `check-target-repo.sh` decides
+  this; see [Step 1.5](#step-15--confirm-the-fix-belongs-in-this-repo). Park it and
+  name the correct repo so a human can move the issue. *Durable.*
+- **Not a speckit repo** — no `.specify/`. (Happens before any claim; nothing to
+  clean up.)
 - **Irreversible ambiguity** — a clarify or design decision that is both genuinely
   undetermined and destructive if guessed wrong (data deletion, spend, sending real
-  messages, production migration). Ask; don't guess.
+  messages, production migration). Ask; don't guess. *Durable.*
 - **Repeated gate failure with no progress** — you've tried a fix two or three times
   and the same gate still fails for a reason you don't understand. Surface the exact
-  error rather than thrash or paper over it.
+  error rather than thrash or paper over it. *Transient* — a flaky or environmental
+  gate can pass on the next tick. But if the issue thread already carries a comment
+  from an **earlier run** reporting the *same* gate failing the same way, that's not
+  flakiness, it's a standing blocker: treat it as durable.
 
-**Whenever you stop after having claimed an issue** (i.e. any stop from Step 1's
-claim onward), remove the claim before ending the session — a stuck claim on a
-dead run would block the issue forever:
+### Clean up on every stop — transient claim off, durable block on
+
+Two distinct pieces of state, and getting only the first one right is what made
+issue #32 re-pick a single issue in **10 consecutive sessions**.
+
+**Always** remove the claim — a stuck claim on a dead run would block the issue
+forever:
 ```bash
 gh issue edit "$N" --remove-label "autopilot:claimed" 2>/dev/null || true
 ```
+
+**Additionally, for a stop marked *Durable* above**, record the blocker where the
+next run's preflight will actually see it. Removing the claim alone writes *no*
+durable state, so `preflight-issues.py` sees a clean, oldest, unlabeled issue on
+the very next tick and picks it again — forever. `autopilot:blocked` is in that
+script's `BLOCK` set, so this is the one write that ends the loop:
+
+```bash
+PARK_SCRIPT="$CLAUDE_PROJECT_DIR/.specify/extensions/autopilot/scripts/bash/park-issue.sh"
+bash "$PARK_SCRIPT" "$N" "<ONE-LINE reason, self-contained, no leading formatting>"
+```
+
+`park-issue.sh` is the single writer of the label and the `AUTOPILOT-BLOCKED:`
+sentinel — the unattended wrapper writes the same park through it — so the strings
+the reader (`preflight-issues.py`) greps for can never drift between two
+hand-rolled copies. It creates the label if missing, posts the comment, applies the
+label, and no-ops when the issue is already parked.
+
+The `AUTOPILOT-BLOCKED:` marker is not decoration — `preflight-issues.py`'s
+`blocked_reason()` greps the issue's comments for that exact string (newest
+match wins) and replays the text after it when a human explicitly re-runs
+`/speckit-autopilot-run N`. So write **one** line there that stands alone out of
+context ("fix target `~/.claude/skills/hindsight/hindsight.py` resolves outside
+any git repo"), and put the narrative in the paragraph below it, not on the
+marker line. Comment first, then label: if the label write lands and the comment
+doesn't, the next run reports a blocker with no recorded reason.
+
+Order matters on the way out too — add `autopilot:blocked` and remove
+`autopilot:claimed`. Leaving the claim on would also block the issue, but it
+would block it as a *stale lock* that a human is supposed to clear, which is the
+opposite of the deliberate, documented park you just wrote.
+
+**Never** apply `autopilot:blocked` for a transient stop — a collision with a
+sibling run (Step 2's `LIVE:`), a flaky gate, a network blip. Those resolve on
+their own; parking them permanently is worse than re-picking them.
 
 A skipped or deferred *task* is not a blocker — note it and keep going. The bar for
 stopping is "a human would be angry I proceeded," not "this got hard."
@@ -390,6 +577,16 @@ stopping is "a human would be angry I proceeded," not "this got hard."
   restate the block-label list inline and had already drifted from
   `preflight-issues.py` (missing `autopilot:claimed`) by the time #150 collided.
   Both paths now `exec` the same script so they can't drift again.
+- **A hard stop writes durable state, not just an unlock** — the cleanup path used
+  to remove `autopilot:claimed` and nothing else. `autopilot:claimed` is a
+  *transient* lock, so removing it restores the issue to the eligible pool in full;
+  the next scheduled tick then re-picks the same issue, rediscovers the identical
+  blocker, posts a near-duplicate comment, and unclaims — 10 times over two days on
+  issue #181 before anyone noticed (issue #32). The audit-trail comments were the
+  only record and nothing read them. `autopilot:blocked` is the counterpart write:
+  durable, in the preflight script's own `BLOCK` set, and carrying its reason in a
+  machine-readable comment marker so a deliberate re-run gets *told why* instead of
+  silently repeating the cycle.
 - **Never auto-resume a branch/worktree** — an empty, seconds-old worktree from a
   sibling run and a crashed leftover from days ago look identical at first glance.
   Proving "dead" (no open PR, no fresh pickup comment, no recent activity, no live

@@ -1,5 +1,6 @@
 ---
 description: "Run /speckit-implement under Parse, Don't Validate discipline"
+strategy: "wrap"
 ---
 
 ## User Input
@@ -10,10 +11,12 @@ $ARGUMENTS
 
 You **MUST** consider the user input before proceeding (if not empty).
 
-## Behavior
+## Wrapper Layer
 
-Execute the canonical stock `/speckit-implement` flow while honoring one design
-discipline, then run **one mandatory scan gate** before reporting completion.
+This preset wraps `/speckit-implement` (and any inner wrapper the core-flow seam
+expands to). It honors one design discipline while code is written, then runs
+**one mandatory scan gate** after the core flow, before reporting completion. It
+does not change how tasks are executed.
 
 ### Design discipline (applies while code is written)
 
@@ -53,14 +56,15 @@ Respect any project constitution and existing conventions. If the feature has no
 TypeScript or Python surface, this discipline is a no-op and you proceed with the
 stock flow.
 
-### Stock flow
+### Core Flow
 
-Execute the canonical stock `/speckit-implement` flow unchanged, applying the
-discipline above to any TypeScript or Python you write.
+Apply the discipline above to any TypeScript or Python written by the flow below.
+
+{CORE_TEMPLATE}
 
 ### Mandatory anti-pattern scan (runs AFTER all task execution)
 
-After the stock flow finishes, gate completion on a deterministic scan of the
+After the entire core flow above finishes, gate completion on a deterministic scan of the
 TypeScript/Python changed during this run:
 
 1. **Review the discipline items** the scan enforces:
@@ -114,7 +118,7 @@ exits zero — proceed normally.
 ## Completion Report
 
 On success, include:
-- The normal stock `/speckit-implement` completion summary.
+- The normal `/speckit-implement` completion summary from the core flow.
 - Whether the parse-don't-validate scan ran and that it exited zero.
 - Any findings that were fixed (what became a parser) and any that were waived
   at a parser boundary (with the reason).

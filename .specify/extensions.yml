@@ -137,6 +137,15 @@ hooks:
     condition: null
   after_specify:
   - extension: git
+    command: speckit.git.issue
+    enabled: true
+    optional: false
+    priority: 5
+    prompt: Execute speckit.git.issue?
+    description: Update the feature's GitHub issue body from the rendered spec (clean
+      no-op when no issue is linked)
+    condition: null
+  - extension: git
     command: speckit.git.commit
     enabled: true
     optional: true

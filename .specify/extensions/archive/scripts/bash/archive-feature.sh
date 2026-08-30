@@ -4,7 +4,7 @@
 # and close the source GitHub issue (if recorded).
 #
 # Usage: archive-feature.sh [--force] [feature_slug]
-#   When the slug is omitted, it is read from .specify/feature.json (feature_directory).
+#   When the slug is omitted, it is derived from the current branch name.
 #   --force skips the "tasks.md must have no unchecked items" gate (use for superseded/stale specs).
 
 set -e
@@ -44,22 +44,27 @@ FEATURE_SLUG="${1:-}"
 FEATURE_JSON="$REPO_ROOT/.specify/feature.json"
 SOURCE_ISSUE=""
 
-if [ -z "$FEATURE_SLUG" ] && [ -f "$FEATURE_JSON" ]; then
-    _feature_dir=$(grep -E '"feature_directory"[[:space:]]*:' "$FEATURE_JSON" \
-        | head -1 \
-        | sed -E 's/.*"feature_directory"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-    FEATURE_SLUG="${_feature_dir#specs/}"
-    FEATURE_SLUG="${FEATURE_SLUG%/}"
+# Derive the slug from the branch, not from a file. `.specify/feature.json` is
+# per-worktree state carrying only `source_issue`; its old `feature_directory`
+# field named the *previous* feature in any fresh worktree (issue #33).
+# This mirrors spec_kit_resolve_feature in the git extension's git-common.sh,
+# inlined so the archive extension does not depend on the git extension.
+if [ -z "$FEATURE_SLUG" ]; then
+    if [ -n "${SPECIFY_FEATURE:-}" ]; then
+        FEATURE_SLUG="$SPECIFY_FEATURE"
+    else
+        _branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        FEATURE_SLUG="${_branch##*/}"
+    fi
 fi
 
 if [ -f "$FEATURE_JSON" ]; then
-    SOURCE_ISSUE=$(grep -E '"source_issue"[[:space:]]*:' "$FEATURE_JSON" 2>/dev/null \
-        | head -1 \
-        | sed -E 's/.*"source_issue"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/')
+    SOURCE_ISSUE=$(sed -nE 's/.*"source_issue"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' \
+        "$FEATURE_JSON" 2>/dev/null | head -1)
 fi
 
-if [ -z "$FEATURE_SLUG" ]; then
-    echo "[archive] feature slug not provided and .specify/feature.json missing feature_directory" >&2
+if [ -z "$FEATURE_SLUG" ] || [ "$FEATURE_SLUG" = "HEAD" ]; then
+    echo "[archive] feature slug not provided and could not be derived from the current branch" >&2
     exit 1
 fi
 

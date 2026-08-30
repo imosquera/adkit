@@ -37,7 +37,7 @@ of this section.
 
 The script resolves the feature directory the same way core Spec Kit does (`common.sh`'s
 `get_feature_paths()`): the `SPECIFY_FEATURE_DIRECTORY` env var first (an explicit
-override, e.g. a temporarily pinned feature), falling back to `.specify/feature.json`.
+override, e.g. a temporarily pinned feature), falling back to `SPECIFY_FEATURE` and then the current git branch (`specs/<branch>`).
 It then compares each file's last-commit time (falling back to its filesystem mtime only
 when the file has uncommitted local changes), not raw mtime — a plain mtime comparison
 would be defeated by `git checkout`/clone resetting both files' mtimes to checkout time

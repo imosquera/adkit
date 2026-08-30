@@ -4,7 +4,7 @@ extension:
   id: "progress"
   name: "Progress Hooks"
   version: "1.0.0"
-  description: "Companion to the progress-report preset. The preset wraps the SpecKit cycle commands to keep a per-branch status card current, but the `wrap` strategy is clobbered when another preset REPLACES the tasks or implement command body (e.g. explicit-task-dependencies, constitution-audit). Presets can't declare lifecycle hooks — only extensions can — so this extension supplies before_tasks / before_implement hooks that mark those two phases active on the card regardless of who owns the command body. It owns no writer of its own: its commands resolve the preset's progress_report.py and no-op gracefully if the preset (or the dashboard repo) isn't present. Install alongside the progress-report preset."
+  description: "Companion to the progress-report preset, covering the tasks/implement phases when a replace-strategy preset (e.g. explicit-task-dependencies, parse-dont-validate) clobbers the preset's wrap on those commands — only extensions can declare lifecycle hooks, so this extension supplies before_tasks / before_implement hooks that mark those two phases active regardless of who owns the command body. It owns no writer of its own: its commands resolve the preset's progress_report.py and no-op gracefully if the preset (or the dashboard repo) isn't present. Install alongside the progress-report preset."
   author: "imosquera"
   repository: "https://github.com/imosquera/speckit-squads"
   license: "MIT"

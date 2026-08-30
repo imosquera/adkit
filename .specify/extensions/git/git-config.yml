@@ -11,7 +11,25 @@ init_commit_message: "[Spec Kit] Initial commit"
 # commit (against the merge-base with the PR base) before pushing. Useful for
 # keeping `main`'s history flat. If the branch was already pushed, the squashed
 # branch is force-pushed with --force-with-lease.
-squash_before_pr: false
+squash_before_pr: true
+
+# Paths the auto-commit hook must never stage, and that /speckit-git-pr resets
+# to HEAD before opening a PR.
+#
+# For repo-tracked generated artifacts whose canonical copy is rebuilt on the
+# default branch by CI. lead-drop's `graphify-out/` is the motivating case: a
+# 440k-line dated snapshot that the graphify lifecycle hook regenerates every
+# phase. Letting `git add .` sweep it onto a feature branch made the PR diff
+# unreviewable and every later rebase conflict on it — one branch showed
+# "440920 insertions(+), 88677 deletions(-)" (issue #22).
+#
+# Listing a path here keeps the hook running (the artifact stays accurate for the
+# rest of the session) while its output stays out of the branch entirely.
+#
+# Empty by default — nothing is excluded unless you say so.
+commit_exclude: []
+# commit_exclude:
+#   - graphify-out
 
 # Auto-commit before/after core commands.
 # Set "default" to enable for all commands, then override per-command.

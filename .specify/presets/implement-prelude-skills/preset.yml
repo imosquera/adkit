@@ -16,9 +16,9 @@ provides:
   templates:
     - type: "command"
       name: "speckit.implement"
+      strategy: "wrap"
       file: "commands/speckit.implement.md"
       description: "Implement command with mandatory ponytail + caveman skill prelude"
-      replaces: "speckit.implement"
 
 tags:
   - "implement"

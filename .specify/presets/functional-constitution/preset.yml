@@ -16,9 +16,9 @@ provides:
   templates:
     - type: "command"
       name: "speckit.constitution"
+      strategy: "wrap"
       file: "commands/speckit.constitution.md"
       description: "Constitution command that always injects and normalizes the Functional Programming Paradigms section"
-      replaces: "speckit.constitution"
 
 tags:
   - "constitution"

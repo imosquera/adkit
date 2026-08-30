@@ -31,6 +31,12 @@ _find_project_root() {
 REPO_ROOT=$(_find_project_root "$SCRIPT_DIR") || REPO_ROOT="$(pwd)"
 cd "$REPO_ROOT"
 
+# spec_kit_commit_excludes() lives here — the shared reader for `commit_exclude`,
+# so this hook and create-pr.sh can never disagree about which generated paths
+# stay out of a feature branch.
+# shellcheck source=./git-common.sh
+[ -f "$SCRIPT_DIR/git-common.sh" ] && source "$SCRIPT_DIR/git-common.sh"
+
 # Check if git is available
 if ! command -v git >/dev/null 2>&1; then
     echo "[specify] Warning: Git not found; skipped auto-commit" >&2
@@ -136,11 +142,14 @@ fi
 # Append `Closes #N` if .specify/feature.json carries a source_issue.
 # Only do this when the message doesn't already reference the issue, and
 # only on `after_*` events (a `before_*` commit is a checkpoint, not a fix).
+#
+# source_issue is the file's only field — everything else about the feature is
+# derived from git by spec_kit_resolve_feature (git-common.sh), so there is no
+# stale identity to inherit here (issue #33).
 _feature_json="$REPO_ROOT/.specify/feature.json"
 if [ "$_phase" = "after" ] && [ -f "$_feature_json" ]; then
-    _source_issue=$(grep -E '"source_issue"[[:space:]]*:' "$_feature_json" 2>/dev/null \
-        | head -1 \
-        | sed -E 's/.*"source_issue"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/')
+    _source_issue=$(sed -nE 's/.*"source_issue"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' \
+        "$_feature_json" 2>/dev/null | head -1)
     if echo "$_source_issue" | grep -Eq '^[0-9]+$'; then
         if ! echo "$_commit_msg" | grep -Eqi "(closes|fixes|resolves)[[:space:]]+#${_source_issue}\b"; then
             _commit_msg="${_commit_msg}
@@ -150,8 +159,37 @@ Closes #${_source_issue}"
     fi
 fi
 
-# Stage and commit
-_git_out=$(git add . 2>&1) || { echo "[specify] Error: git add failed: $_git_out" >&2; exit 1; }
+# Stage and commit.
+#
+# `commit_exclude` paths are held out of the staging pathspec entirely. They are
+# repo-tracked artifacts whose canonical copy is rebuilt on the default branch by
+# CI (see spec_kit_commit_excludes in git-common.sh); a lifecycle hook that
+# regenerates one mid-run must not have `git add .` sweep the result onto the
+# feature branch, or the PR diff becomes unreviewable and every later rebase
+# conflicts on it (issue #22).
+_add_args=(.)
+_excluded=""
+if type spec_kit_commit_excludes >/dev/null 2>&1; then
+    while IFS= read -r _ex; do
+        [ -n "$_ex" ] || continue
+        _add_args+=(":(exclude)$_ex")
+        _excluded="${_excluded:+$_excluded, }$_ex"
+    done < <(spec_kit_commit_excludes "$REPO_ROOT")
+fi
+
+_git_out=$(git add -- "${_add_args[@]}" 2>&1) || { echo "[specify] Error: git add failed: $_git_out" >&2; exit 1; }
+
+# The pre-stage check above sees the whole tree, so a run whose ONLY changes are
+# excluded paths reaches here with an empty index. That is a success, not the
+# "nothing to commit" error `git commit` would raise.
+if git diff --cached --quiet 2>/dev/null; then
+    echo "[specify] Nothing to commit after $EVENT_NAME — all changes are in excluded paths (${_excluded:-none})" >&2
+    exit 0
+fi
+
 _git_out=$(git commit -q -m "$_commit_msg" 2>&1) || { echo "[specify] Error: git commit failed: $_git_out" >&2; exit 1; }
 
+if [ -n "$_excluded" ]; then
+    echo "[specify] Held out of the commit: $_excluded" >&2
+fi
 echo "[OK] Changes committed ${_phase} ${_command_name}" >&2

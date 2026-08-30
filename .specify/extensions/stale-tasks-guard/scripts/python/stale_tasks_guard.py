@@ -4,8 +4,10 @@
 Compares spec.md/tasks.md staleness for the active feature directory, resolved
 with the same priority core Spec Kit uses (.specify/scripts/bash/common.sh
 get_feature_paths()): the SPECIFY_FEATURE_DIRECTORY env var first (an explicit
-override for the run), falling back to .specify/feature.json's
-"feature_directory" key. A clean (committed, non-dirty) file's git commit time
+override for the run), then SPECIFY_FEATURE, then the current git branch name.
+`.specify/feature.json` is not consulted: it holds only `source_issue`, and its
+old "feature_directory" key named the previous feature in a fresh worktree
+(issue #33). A clean (committed, non-dirty) file's git commit time
 is used instead of its filesystem mtime, since `git checkout`/clone resets
 mtimes for every file to checkout time regardless of true edit history —
 which would otherwise silently defeat the comparison in a fresh worktree.
@@ -23,7 +25,6 @@ feature directory unresolvable") and must not be read as staleness.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -57,20 +58,33 @@ def effective_mtime(path: str) -> float:
 
 
 def resolve_feature_dir() -> str | None:
+    """Resolve the feature directory from the environment, then from git.
+
+    `.specify/feature.json` is deliberately NOT consulted: it is per-worktree
+    state carrying only `source_issue`, and its old `feature_directory` field
+    named the *previous* feature in any fresh worktree (issue #33). The branch
+    is the authoritative source, matching spec_kit_resolve_feature in the git
+    extension's git-common.sh.
+    """
     env_dir = os.environ.get("SPECIFY_FEATURE_DIRECTORY")
     if env_dir:
         return env_dir if os.path.isabs(env_dir) else os.path.join(os.getcwd(), env_dir)
 
-    try:
-        with open(".specify/feature.json", encoding="utf-8") as f:
-            return json.load(f)["feature_directory"]
-    except (OSError, json.JSONDecodeError, KeyError) as exc:
-        print(
-            f"stale-tasks-guard: could not resolve feature_directory ({exc}); "
-            "skipping guard",
-            file=sys.stderr,
-        )
-        return None
+    slug = os.environ.get("SPECIFY_FEATURE") or (
+        _git(["rev-parse", "--abbrev-ref", "HEAD"], ".") or ""
+    ).rpartition("/")[2]
+
+    if slug and slug != "HEAD":
+        candidate = os.path.join("specs", slug)
+        if os.path.isdir(candidate):
+            return candidate
+
+    print(
+        f"stale-tasks-guard: could not resolve a feature directory for "
+        f"{slug or '<unknown branch>'}; skipping guard",
+        file=sys.stderr,
+    )
+    return None
 
 
 def main() -> int:

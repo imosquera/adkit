@@ -9,7 +9,7 @@ Move the completed feature planning folder from `specs/{slug}/` to `specs/archiv
 ## Behavior
 
 1. Parse arguments. Detect a leading `--force` / `-f` flag. Treat the next positional as the feature slug.
-2. Resolve the feature directory from `.specify/feature.json` (`feature_directory`), or from the argument if provided. Refuse if the path is already under `specs/archive/`.
+2. Resolve the feature directory from the current git branch (`specs/<branch>`), or from the argument if provided. Refuse if the path is already under `specs/archive/`.
 3. Verify the feature is ready to archive (tasks.md exists and contains no unchecked `[ ]` items). If unchecked tasks remain, the script exits with status `2` and the list on stderr — see **Interactive confirmation** below. When `--force` was passed up front, log the count and proceed without prompting.
 4. Derive archive date `YYYY-MM-DD` from today.
 5. Append a `CHANGES.md` entry with the feature title (from `spec.md` H1) and a short summary. Create `CHANGES.md` in Keep-a-Changelog style if absent.
@@ -22,7 +22,7 @@ The archive **can run as part of the feature's PR** — the PR does not have to 
 
 - **Bash**: `.specify/extensions/archive/scripts/bash/archive-feature.sh [--force] [feature_slug]`
 
-When `feature_slug` is omitted, the script reads `.specify/feature.json`. `--force` skips the unchecked-tasks gate; it does not bypass the "destination exists" or "already-archived" guards.
+When `feature_slug` is omitted, the script derives it from the current git branch. `--force` skips the unchecked-tasks gate; it does not bypass the "destination exists" or "already-archived" guards.
 
 ## Interactive confirmation
 

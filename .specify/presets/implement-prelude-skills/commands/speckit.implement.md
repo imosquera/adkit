@@ -1,6 +1,13 @@
 ---
 description: "Run ponytail and caveman skills before /speckit-implement"
+strategy: "wrap"
 ---
+
+## Wrapper Layer
+
+This preset wraps `/speckit-implement` (and any inner wrapper the core-flow seam
+expands to). It adds exactly one thing: a skill prelude that runs before any
+implementation work starts. It does not change how tasks are executed.
 
 ## User Input
 
@@ -10,20 +17,27 @@ $ARGUMENTS
 
 You **MUST** consider the user input before proceeding (if not empty).
 
-## Behavior
+### Prelude — activate review/lens skills (MANDATORY — FIRST STEP)
 
-1. **Prelude — activate review/lens skills.** Before any implementation work starts, check the host's available-skills list and invoke each of the following via the Skill tool if listed:
-   - `ponytail:ponytail`
-   - `caveman`
+Before the core flow below begins, check the host's available-skills list and
+invoke each of the following via the Skill tool if listed:
 
-   Invoke them sequentially (ponytail first, then caveman). Treat any guidance, constraints, or context produced by these skills as additional input that the implementation must respect.
+- `ponytail:ponytail`
+- `caveman`
 
-2. **Detection rules.**
-   - Only invoke a skill if it is explicitly listed as an available/user-invocable skill in this session. Do **not** guess names or attempt to install skills.
-   - If a skill is not available, skip it silently and continue. Missing skills are a no-op, not an error.
-   - If neither skill is available, proceed directly to step 3 without comment.
+Invoke them sequentially (ponytail first, then caveman). Treat any guidance,
+constraints, or context produced by these skills as additional input that the
+implementation must respect.
 
-3. **Run the canonical `/speckit-implement` flow unchanged**, honoring any prelude output from step 1 (prerequisite checks, task execution, normal hook handling, etc.).
+**Detection rules.**
+
+- Only invoke a skill if it is explicitly listed as an available/user-invocable skill in this session. Do **not** guess names or attempt to install skills.
+- If a skill is not available, skip it silently and continue. Missing skills are a no-op, not an error.
+- If neither skill is available, proceed directly to the core flow without comment.
+
+### Core Flow
+
+{CORE_TEMPLATE}
 
 ## Failure Policy
 

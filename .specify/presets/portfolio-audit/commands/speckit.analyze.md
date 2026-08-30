@@ -29,7 +29,7 @@ When portfolio mode is active, **skip the entire stock command body** (Steps 1�
    - Run `gh issue list --state all --limit 300 --json number,title,labels,state`.
    - Closed issues are intentionally included so cleanup gaps are visible.
 5. **Match issues → specs**, in priority order:
-   1. `source_issue` field in `specs/<slug>/.specify/feature.json` (most authoritative).
+   1. `source_issue` field in the worktree's `.specify/feature.json` (most authoritative). The file is gitignored per-worktree state, so it is present only in a live worktree for that slug — never under `specs/<slug>/`.
    2. `Closes #N`, `Fixes #N`, or bare `#N` references inside `spec.md` or `plan.md`.
    3. Fuzzy title match as a last resort — flag as **loose** in the report so the user can backfill metadata.
 6. **Detect orphans and dead artifacts.**
@@ -69,7 +69,7 @@ Kinds include: `tasks-only-scaffold`, `dead-worktree-branch`, `duplicate-worktre
 
 | Issue | Matched spec | Match reason |
 
-(Matches found only by fuzzy title — backfill `source_issue` in `feature.json` or add `Closes #N` to `spec.md` to firm these up.)
+(Matches found only by fuzzy title — add `Closes #N` to `spec.md` to firm these up; `feature.json` is gitignored and cannot be backfilled durably.)
 
 **Metrics**
 
@@ -89,7 +89,7 @@ Suggest concrete follow-ups per table:
 - Table B → reopen the issue or create the missing spec if the closure was premature.
 - Table C → `/speckit-plan` or `/speckit-tasks` inside the worktree that contains the most complete copy.
 - Table D → investigate dead worktree branches manually (`git worktree remove`) or clean up duplicate/stale worktree copies.
-- Table E → backfill `source_issue` in `.specify/feature.json`, or add `Closes #N` to `spec.md`/`plan.md`.
+- Table E → add `Closes #N` to `spec.md`/`plan.md` (the durable home; `feature.json` is gitignored per-worktree state).
 
 After emitting the report, ask the user: **"Want me to drill into any of these (e.g. start a `/speckit-specify` for an unspec'd issue)?"** Do not apply any changes automatically.
 

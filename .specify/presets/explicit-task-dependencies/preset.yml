@@ -18,19 +18,19 @@ provides:
       name: "tasks-template"
       file: "templates/tasks-template.md"
       description: "Tasks template with explicit dependency declarations and Execution Wave DAG"
-      replaces: "tasks-template"
+      strategy: "replace"
 
     - type: "command"
       name: "speckit.tasks"
       file: "commands/speckit.tasks.md"
       description: "Tasks command with dependency suffix and Wave DAG generation instructions"
-      replaces: "speckit.tasks"
+      strategy: "replace"
 
     - type: "command"
       name: "speckit.implement"
+      strategy: "replace"
       file: "commands/speckit.implement.md"
       description: "Implement command that walks the Execution Wave DAG and dispatches each wave's [P] tasks to subagents in parallel"
-      replaces: "speckit.implement"
 
 tags:
   - "dependencies"

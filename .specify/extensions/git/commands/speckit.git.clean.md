@@ -4,7 +4,7 @@ description: "Clean up the current feature worktree, branch, issue, and any unco
 
 # Clean Current Feature
 
-Remove a feature worktree that is no longer needed. By default, the command resolves the feature from `.specify/feature.json` in the current worktree, then discards uncommitted changes, removes the feature worktree, deletes the feature branch, and closes any linked GitHub issue.
+Remove a feature worktree that is no longer needed. By default, the command resolves the feature from the current worktree's git branch, then discards uncommitted changes, removes the feature worktree, deletes the feature branch, and closes any linked GitHub issue.
 
 ## User Input
 
@@ -21,8 +21,8 @@ You **MUST** consider the user input before proceeding (if not empty).
    - an explicit `--worktree` path or worktree-like positional path
    - an explicit `--spec` path or `specs/<slug>` positional path
    - an explicit `--issue` number or `#<issue>` positional value
-   - the current worktree recorded in `.specify/feature.json`
-3. Read `.specify/feature.json` from the target worktree when present and extract `feature_directory`, `worktree_path`, `source_issue`, and the current feature branch.
+   - the current worktree (`git rev-parse --show-toplevel`)
+3. Derive `feature_directory` and the feature branch from git in the target worktree, and read `source_issue` from its `.specify/feature.json` when present. The worktree path is never read from a file — doing so is how this command used to be pointed at the *previous* feature's worktree (issue #33).
 4. If the target worktree has uncommitted changes:
    - abort with a file list unless `--force` was passed
    - when `--force` is passed, discard tracked and untracked changes before removal
@@ -38,6 +38,6 @@ You **MUST** consider the user input before proceeding (if not empty).
 ## Graceful Degradation
 
 - If Git is not available or the current directory is not a repository: warn and exit.
-- If `.specify/feature.json` is missing and no explicit target is provided: refuse and explain how to point the command at a worktree, spec, or issue.
+- If no `specs/<branch>` directory exists for the current branch and no explicit target is provided: refuse and explain how to point the command at a worktree, spec, or issue.
 - If `gh` is missing or the issue cannot be resolved: the cleanup still proceeds and prints a notice.
 - If the target is the primary checkout, the script will not remove that checkout in place; it will only clean the working tree and report the branch/worktree details so the user can rerun from a different checkout if needed.

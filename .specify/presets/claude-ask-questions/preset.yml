@@ -18,13 +18,13 @@ provides:
       name: "speckit.clarify"
       file: "commands/speckit.clarify.md"
       description: "Clarify command using AskUserQuestion for multiple-choice options"
-      replaces: "speckit.clarify"
+      strategy: "replace"
 
     - type: "command"
       name: "speckit.checklist"
       file: "commands/speckit.checklist.md"
       description: "Checklist command using AskUserQuestion for multiple-choice options"
-      replaces: "speckit.checklist"
+      strategy: "replace"
 
 tags:
   - "claude"

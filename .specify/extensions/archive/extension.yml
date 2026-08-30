@@ -17,6 +17,12 @@ requires:
       required: false
 
 provides:
+  scripts:
+    - name: archive-feature.sh
+      file: scripts/bash/archive-feature.sh
+      executable: true
+      command: speckit.archive.feature
+
   commands:
     - name: speckit.archive.feature
       file: commands/speckit.archive.feature.md

@@ -26,9 +26,10 @@ provides:
   templates:
     - type: "command"
       name: "speckit.constitution"
+      strategy: "wrap"
       file: "commands/speckit.constitution.md"
       description: "Constitution command that always injects a canonical 'Parse, Don't Validate' governance section"
-      replaces: "speckit.constitution"
+
     - type: "command"
       name: "speckit.plan"
       file: "commands/speckit.plan.md"
@@ -36,9 +37,9 @@ provides:
       strategy: "wrap"
     - type: "command"
       name: "speckit.implement"
+      strategy: "wrap"
       file: "commands/speckit.implement.md"
       description: "Implement command that applies the parse-don't-validate discipline while writing TypeScript and gates completion on a deterministic anti-pattern scan"
-      replaces: "speckit.implement"
 
 tags:
   - "implement"

@@ -18,7 +18,10 @@ Run the standard `before_implement` hook chain exactly as the canonical `/specki
 
 ### 1. Load the feature
 
-1. Read `.specify/feature.json` to resolve the feature directory.
+1. Resolve the feature directory as `specs/<branch>`, where `<branch>` is the current
+   git branch with any leading path segment stripped (`feat/014-x` → `014-x`), unless
+   `SPECIFY_FEATURE_DIRECTORY` or `SPECIFY_FEATURE` overrides it. Do not read the
+   directory from `.specify/feature.json` — it holds only `source_issue` (issue #33).
 2. Read `<feature_dir>/tasks.md`. If the file is missing or has no `## Execution Wave DAG` section, ERROR with:
 
    ```

@@ -78,17 +78,27 @@ find_project_root() {
   return 1
 }
 
-read_feature_json() {
-  local json_file="$1"
+# Resolve the feature owning $1. The worktree path and spec directory come from
+# git — never from a file, which is how /speckit-git-clean used to be pointed at
+# the *previous* feature's worktree (issue #33). Only source_issue is read from
+# .specify/feature.json.
+resolve_feature_for_worktree() {
+  local worktree_root="$1"
   FEATURE_DIRECTORY=""
-  WORKTREE_PATH=""
   SOURCE_ISSUE=""
 
-  [[ -f "$json_file" ]] || return 1
+  # spec_kit_resolve_feature sets FEATURE_DIRECTORY directly; copy the issue over.
+  if type spec_kit_resolve_feature >/dev/null 2>&1 && spec_kit_resolve_feature "$worktree_root"; then
+    SOURCE_ISSUE="$FEATURE_SOURCE_ISSUE"
+    return 0
+  fi
 
-  FEATURE_DIRECTORY="$(sed -nE 's/.*"feature_directory"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$json_file" | head -1 || true)"
-  WORKTREE_PATH="$(sed -nE 's/.*"worktree_path"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$json_file" | head -1 || true)"
-  SOURCE_ISSUE="$(sed -nE 's/.*"source_issue"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$json_file" | head -1 || true)"
+  local branch slug
+  branch="$(git -C "$worktree_root" branch --show-current 2>/dev/null || true)"
+  slug="${branch##*/}"
+  [[ -n "$slug" && -d "$worktree_root/specs/$slug" ]] && FEATURE_DIRECTORY="specs/$slug"
+  SOURCE_ISSUE="$(sed -nE 's/.*"source_issue"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' \
+    "$worktree_root/.specify/feature.json" 2>/dev/null | head -1 || true)"
 }
 
 get_primary_worktree() {
@@ -108,6 +118,9 @@ get_status_files() {
 REPO_ROOT="$(find_project_root "$SCRIPT_DIR")" || REPO_ROOT="$(pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=./git-common.sh
+[[ -f "$SCRIPT_DIR/git-common.sh" ]] && source "$SCRIPT_DIR/git-common.sh"
+
 if ! command -v git >/dev/null 2>&1; then
   echo "[clean] git not found" >&2
   exit 1
@@ -122,7 +135,6 @@ WORKTREE_ROOT=""
 SPEC_PATH=""
 FEATURE_JSON=""
 FEATURE_DIRECTORY=""
-WORKTREE_PATH=""
 SOURCE_ISSUE=""
 BRANCH_NAME=""
 
@@ -146,12 +158,8 @@ if [[ -n "$WORKTREE_ROOT" ]]; then
 fi
 
 FEATURE_JSON="$WORKTREE_ROOT/.specify/feature.json"
-if [[ -f "$FEATURE_JSON" ]]; then
-  read_feature_json "$FEATURE_JSON"
-  [[ -n "$WORKTREE_PATH" ]] && WORKTREE_ROOT="$WORKTREE_PATH"
-  [[ -z "$WORKTREE_ROOT" ]] && WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
-  BRANCH_NAME="$(get_branch_for_worktree "$WORKTREE_ROOT")"
-fi
+resolve_feature_for_worktree "$WORKTREE_ROOT"
+BRANCH_NAME="$(get_branch_for_worktree "$WORKTREE_ROOT")"
 
 if [[ -z "$BRANCH_NAME" ]]; then
   BRANCH_NAME="$(git -C "$WORKTREE_ROOT" branch --show-current 2>/dev/null || true)"
@@ -169,7 +177,7 @@ if [[ -n "$TARGET_ISSUE" ]]; then
 fi
 
 if [[ -z "$FEATURE_DIRECTORY" && -z "$TARGET_SPEC" && -z "$TARGET_WORKTREE" && -z "$TARGET_ISSUE" ]]; then
-  echo "[clean] .specify/feature.json is missing; pass --worktree, --spec, or --issue to identify the feature" >&2
+  echo "[clean] cannot derive a feature from branch '${BRANCH_NAME:-?}' in $WORKTREE_ROOT (no matching specs/ directory); pass --worktree, --spec, or --issue to identify the feature" >&2
   exit 1
 fi
 

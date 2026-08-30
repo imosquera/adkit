@@ -3,7 +3,7 @@ schema_version: "1.0"
 extension:
   id: autopilot
   name: "Issue Backlog Autopilot"
-  version: "0.1.0"
+  version: "0.2.0"
   description: "Take the oldest eligible open GitHub issue from backlog to a reviewed draft PR by driving the full speckit pipeline unattended (specify → clarify → plan → tasks → implement → review), auto-answering clarify questions and posting progress to the issue at every stage."
   author: imosquera
   license: MIT
@@ -27,6 +27,26 @@ provides:
     - name: stream-decode.py
       file: scripts/bash/stream-decode.py
       executable: true
+    - name: bind-feature-issue.sh
+      file: scripts/bash/bind-feature-issue.sh
+      executable: true
+      command: speckit.autopilot.run
+    - name: fetch-open-issues.sh
+      file: scripts/bash/fetch-open-issues.sh
+      executable: true
+      command: speckit.autopilot.run
+    - name: preflight-issues.py
+      file: scripts/bash/preflight-issues.py
+      executable: true
+      command: speckit.autopilot.run
+    - name: park-issue.sh
+      file: scripts/bash/park-issue.sh
+      executable: true
+      command: speckit.autopilot.run
+    - name: check-target-repo.sh
+      file: scripts/bash/check-target-repo.sh
+      executable: true
+      command: speckit.autopilot.run
 
   commands:
     - name: speckit.autopilot.run
