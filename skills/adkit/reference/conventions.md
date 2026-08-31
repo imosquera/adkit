@@ -80,6 +80,7 @@ Machine-readable subcommands return a single JSON object on **stdout**:
   `.adkit.yaml`, then a hardcoded default — the same flag→env→yaml tiering as
   customer-id resolution above. See `lib/config.ts`'s `resolveTier`.
 - Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
+- Preflight resolves its customer id through the same `--customer` → `GOOGLE_ADS_CUSTOMER_ID` → `.adkit.yaml` tiering as everything else, and builds its client the **same way** the commands it gates do — honouring `mcc_customer_id` when set, sending no login header when blank. That is the point of a precondition check: a client built differently is not checking what preflight claims to check. (It previously cleared the header unconditionally, so no MCC-managed account could pass.)
 
 ## Read backend (SDK vs google-ads-mcp)
 

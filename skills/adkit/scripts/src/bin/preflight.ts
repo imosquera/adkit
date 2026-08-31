@@ -1,22 +1,29 @@
 /**
- * Verify env + credentials + customer access before any mutation.
+ * Verify credentials + customer access before any mutation.
  *
  * Faithful port of `ads_skill/bin/preflight.py`. Runs the cheap, offline checks
- * first (the `GOOGLE_ADS_CUSTOMER_ID` env var is a 10-digit id; the
- * .adkit.yaml credentials file exists) WITHOUT touching the SDK, then does a
- * single live API check confirming the OAuth identity can see the target
- * customer. Every failure is emitted as the shared `{ ok: false, message, step }`
- * envelope; success as `{ ok: true, ... }`.
+ * first (the customer id resolves; the `.adkit.yaml` config file exists) WITHOUT
+ * touching the SDK, then does a single live API check confirming the OAuth
+ * identity can see the target customer. Every failure is emitted as the shared
+ * `{ ok: false, message, step }` envelope; success as `{ ok: true, ... }`.
  *
- * Step names mirror the Python original: `"env"`, `"credentials"`, and — for the
- * live check — `"deps"` / `"auth"` / `"access"`.
+ * Step names mirror the Python original: `"credentials"` and — for the live check
+ * — `"deps"` / `"auth"` / `"access"`; a customer id that cannot be resolved reports
+ * the shared `"customer-id"` step every other entrypoint uses.
+ *
+ * **Preflight must construct its client exactly the way the commands it gates do.**
+ * It is a precondition check: a client built differently from `create`/`audit`/
+ * `report`'s is not checking what preflight claims to check, and can pass or fail
+ * where they would do the opposite.
  */
 
 import { existsSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { isMainModule } from "../cli/entry.js";
-import { credentialsPath, loadClient } from "../lib/auth.js";
+import { credentialsPath, loadClient, mccCustomerIdFromYaml } from "../lib/auth.js";
+import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
+import { managerRequiredHint } from "../lib/customer-id.js";
 import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
-import { CUSTOMER_ID_PATTERN } from "../lib/schema.js";
 
 /**
  * A resolved failure from one of the offline checks: the envelope `step` plus the
@@ -25,24 +32,6 @@ import { CUSTOMER_ID_PATTERN } from "../lib/schema.js";
 export interface CheckFailure {
   step: string;
   message: string;
-}
-
-/**
- * Validate the `GOOGLE_ADS_CUSTOMER_ID` env value. Returns a {@link CheckFailure}
- * (step `"env"`) when it is missing or not a bare 10-digit id, else `null`.
- *
- * Pure: takes the raw env value (possibly `undefined`) rather than reading
- * `process.env`, so it is trivially unit-testable.
- */
-export function checkCustomerIdEnv(rawCustomerId: string | undefined): CheckFailure | null {
-  const customerId = (rawCustomerId ?? "").trim();
-  if (!customerId || !CUSTOMER_ID_PATTERN.test(customerId)) {
-    return {
-      step: "env",
-      message: "GOOGLE_ADS_CUSTOMER_ID must be set to a 10-digit Google Ads customer id (no dashes).",
-    };
-  }
-  return null;
 }
 
 /**
@@ -65,6 +54,17 @@ export function checkCredentialsExist(
   return null;
 }
 
+/** Parse preflight's one flag. Pure over its input array. */
+export function parsePreflightArgs(argv: readonly string[]): { customer: string | null } {
+  const { values } = parseArgs({
+    args: [...argv],
+    options: { customer: { type: "string" } },
+    allowPositionals: true,
+    strict: false,
+  });
+  return { customer: (values["customer"] as string | undefined) ?? null };
+}
+
 /** Strip a leading `customers/` resource-name prefix, yielding the bare id. */
 function bareCustomerId(resourceName: string): string {
   return resourceName.replace(/^customers\//, "");
@@ -73,13 +73,22 @@ function bareCustomerId(resourceName: string): string {
 /**
  * Run the preflight checks and emit the JSON envelope on stdout. Returns the
  * process exit code (0 on success, 1 on any failed check).
+ *
+ * `clientFactory` is injectable so tests can assert on HOW the client is built
+ * (which login-customer-id argument it receives) without a live account.
  */
-export async function main(): Promise<number> {
+export async function main(
+  argv: readonly string[] = process.argv.slice(2),
+  clientFactory: typeof loadClient = loadClient,
+): Promise<number> {
   // --- simple checks (no SDK import required) ---
-  const customerId = (process.env["GOOGLE_ADS_CUSTOMER_ID"] ?? "").trim();
-  const envFailure = checkCustomerIdEnv(process.env["GOOGLE_ADS_CUSTOMER_ID"]);
-  if (envFailure) {
-    emitJson(errorEnvelope(envFailure.message, { step: envFailure.step }));
+  // Same flag -> env -> yaml tiering as every other command (conventions.md): an
+  // operator who answered `init`'s prompts must not also have to export anything.
+  let customerId: string;
+  try {
+    customerId = await resolveTargetCustomerId(parsePreflightArgs(argv).customer);
+  } catch (exc) {
+    emitJson(customerIdErrorEnvelope(exc));
     return 1;
   }
 
@@ -93,8 +102,16 @@ export async function main(): Promise<number> {
   // --- live API check (requires the SDK) ---
   let client: ReturnType<typeof loadClient>;
   try {
-    // mcc_customer_id = null: most preflight targets are directly-accessible.
-    client = loadClient(null);
+    // The DEFAULT (KEEP_YAML_MCC), deliberately — the same construction `create`,
+    // `audit`, and `apply-fixes` use, because preflight is their precondition.
+    //
+    // It must not be `loadClient(null)`: null CLEARS the login-customer-id header,
+    // so preflight would send no manager id no matter what `.adkit.yaml` carries,
+    // and every MCC-managed account would fail USER_PERMISSION_DENIED while the
+    // very commands preflight gates succeeded. The default already covers both
+    // shapes — it sends the yaml's mcc_customer_id when set, and no header at all
+    // when the field is blank, which is the directly-accessible case.
+    client = clientFactory();
   } catch (exc) {
     // A module-not-found here means the SDK / deps aren't installed.
     const message = sdkErrorMessage(exc);
@@ -129,10 +146,27 @@ export async function main(): Promise<number> {
       );
       return 1;
     }
+    // Advice that is actually followable, which requires knowing which of the two
+    // shapes we just tried: with a manager id set the id itself is the suspect;
+    // with none set, the account may simply need one. The old message named
+    // mcc_customer_id unconditionally — unfollowable when preflight was the thing
+    // discarding it, and wrong when the field was legitimately blank.
+    // Tolerate an unreadable config here: we are already reporting a failure, and
+    // "could not tell" must degrade to the generic hint, not throw over the top of it.
+    const configuredMcc = ((): string | undefined => {
+      try {
+        return mccCustomerIdFromYaml();
+      } catch {
+        return undefined;
+      }
+    })();
     emitJson(
       errorEnvelope(
         `customer ${customerId} is not accessible with these credentials: ${sdkErrorMessage(exc)}. ` +
-          "Confirm the mcc_customer_id in .adkit.yaml is the MCC that manages this customer.",
+          (configuredMcc
+            ? `The run sent mcc_customer_id ${configuredMcc} as the login header — confirm that manager ` +
+              `account manages customer ${customerId}.`
+            : managerRequiredHint(credPath)),
         { step: "access" },
       ),
     );
@@ -141,7 +175,7 @@ export async function main(): Promise<number> {
 
   emitJson(
     ok({
-      customerIdEnv: customerId,
+      customerId,
       credentialsYaml: credPath,
       accessibleCustomerCount: accessibleIds.length,
     }),
