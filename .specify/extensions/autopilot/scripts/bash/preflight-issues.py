@@ -2,7 +2,7 @@
 """Evaluate the open-issue backlog and emit a single descriptive log line.
 
 Three modes, selected by argv:
-  preflight-issues.py <issues.json>              — auto-pick the oldest eligible issue
+  preflight-issues.py <issues.json>              — auto-pick the highest-ranked eligible issue
   preflight-issues.py <issues.json> <N>          — validate ONE specific issue number
   preflight-issues.py --worktree-check <N>       — branch/worktree/PR existence only
 
@@ -79,8 +79,12 @@ crashed run look identical at this level, and this project's autopilot never
 auto-resumes existing work either way (issue #19 fix #3): a human can always
 inspect and clean up a stale branch/worktree by hand.
 
+Auto-pick orders the eligible pool by (priority, bug-before-feature, age) — see
+the "ordering" block below — instead of taking the oldest. The chosen issue's
+rank is echoed in the PICK line so a scheduled log says *why* it won.
+
 Output format (callers read the first word to decide):
-  PICK: #42 "Fix the thing" — 7 open (2 parked, 1 in-progress)
+  PICK: #42 "Fix the thing" [p0, bug] — 7 open (2 parked, 1 in-progress)
   SKIP: backlog clear — 3 open, all parked/in-progress
   SKIP: no open issues
   SKIP: 5 open but all in-progress (branches: 003-foo, 005-bar)
@@ -130,6 +134,93 @@ DELIVERED_STATES = ("MERGED", "OPEN")
 # thread can accumulate many links; the delivering PR is effectively never the
 # 11th one mentioned.
 MAX_PR_LOOKUPS = 10
+
+# ---------------------------------------------------------------- ordering ---
+# The backlog arrives oldest-first (`fetch-open-issues.sh` sorts by createdAt),
+# but "oldest" is not the same as "most important": a P0 outage filed this
+# morning sat behind a year-old chore, every tick, until a human intervened.
+# Eligible candidates are therefore ordered by (priority, kind, age) instead of
+# age alone. Age remains the final tiebreak, so the previous behaviour is what
+# you get on a backlog with no priority or type labels at all.
+#
+# Priority is read from labels in any of the common spellings — `p0`, `P1`,
+# `priority: p2`, `priority/p3`, `priority-p1` — plus the severity words teams
+# use instead (`critical` → p0, `high` → p1, `medium` → p2, `low` → p3). The
+# LOWEST rank found on an issue wins, so a mislabelled `p2, critical` pair is
+# treated as p0 rather than silently averaged.
+PRIORITY_WORDS = {"critical": 0, "urgent": 0, "high": 1, "medium": 2, "normal": 2, "low": 3}
+PRIORITY_RE = re.compile(r"^(?:priority[:/ -]*)?p(\d)$")
+
+# An issue with NO priority label sorts in the middle, level with p2 — not last.
+# Ranking it last would let an explicitly deprioritized `p3` chore outrank every
+# untriaged bug in the backlog, which inverts the point of the label.
+DEFAULT_PRIORITY = 2
+
+# Within one priority tier, defects come before new work: a broken system is
+# worth more than an addition to it. Across tiers priority still wins, so an
+# explicit p0 feature outranks a p2 bug — the labels a human set are the
+# strongest signal available.
+BUG_LABELS = {"bug", "defect", "regression", "fix", "broken", "incident", "outage"}
+BUG_TITLE_RE = re.compile(r"^\s*(?:\[[^\]]*\]\s*)?(?:bug|fix|hotfix)\b[:( ]", re.I)
+
+
+def priority_ranks(labels):
+    """Every priority rank an issue's labels spell out, in no order."""
+    ranks = []
+    for name in labels:
+        m = PRIORITY_RE.match(name.strip())
+        if m:
+            ranks.append(int(m.group(1)))
+        elif name in PRIORITY_WORDS:
+            ranks.append(PRIORITY_WORDS[name])
+    return ranks
+
+
+def priority_rank(labels):
+    """Lowest priority rank among an issue's labels; DEFAULT_PRIORITY if none."""
+    ranks = priority_ranks(labels)
+    return min(ranks) if ranks else DEFAULT_PRIORITY
+
+
+def labelled_priority(labels):
+    """True when a human actually set a priority, vs DEFAULT_PRIORITY standing in."""
+    return bool(priority_ranks(labels))
+
+
+def is_bug(issue, labels):
+    """True when the issue is a defect rather than new work.
+
+    Labels are authoritative; the title prefix (`fix: …`, `bug(x): …`) is a
+    fallback for repos that file bugs without ever applying a label — this one
+    included, where conventional-commit-style titles carry the type.
+    """
+    if labels & BUG_LABELS or any("bug" in l for l in labels):
+        return True
+    return bool(BUG_TITLE_RE.match(issue.get("title") or ""))
+
+
+def rank_key(issue, seq):
+    """Sort key for eligible candidates: priority, then bugs, then oldest.
+
+    `seq` is the issue's index in the (oldest-first) fetch, which keeps the
+    sort stable and makes age the final tiebreak without re-parsing dates.
+    """
+    labels = {l["name"].lower() for l in issue.get("labels", [])}
+    return (priority_rank(labels), 0 if is_bug(issue, labels) else 1, seq)
+
+
+def rank_reason(issue):
+    """Short why-this-one tag for the PICK line, e.g. `p0, bug` or `p2 default`.
+
+    Says explicitly when the priority was assumed rather than labelled, so a log
+    line never implies a triage decision nobody made.
+    """
+    labels = {l["name"].lower() for l in issue.get("labels", [])}
+    p = priority_rank(labels)
+    bits = [f"p{p}" if labelled_priority(labels) else f"p{p} default"]
+    if is_bug(issue, labels):
+        bits.append("bug")
+    return ", ".join(bits)
 
 
 def sh(*args):
@@ -305,6 +396,8 @@ def validate_one(issues, target, cross_repo=False):
             print(f"DELIVERED: {target} {reason[len('delivered — '):]}")
         return
     title = match.get("title", "").strip()[:70]
+    # No rank tag here: an explicitly requested issue is worked regardless of
+    # where it would have sorted, and printing a rank would suggest otherwise.
     print(f'PICK: #{target} "{title}" (explicit)')
 
 
@@ -318,11 +411,10 @@ def auto_pick(issues, cross_repo=False):
     in_prog = []
     empty_body = []
     delivered = []
-    pick = None
+    candidates = []
 
-    for i in issues:
+    for seq, i in enumerate(issues):
         n = i["number"]
-        title = i.get("title", "").strip()[:70]
         labels = {l["name"].lower() for l in i.get("labels", [])}
 
         blocking = labels & BLOCK
@@ -339,19 +431,28 @@ def auto_pick(issues, cross_repo=False):
             in_prog.append(f"#{n}({wip})")
             continue
 
-        if pick is None:
-            # Cross-repo delivery is only tested on the issue that would
-            # actually be picked: it is the sole position where the answer
-            # changes what this run does, and testing every candidate would
-            # spend `gh` calls on issues we are not going to touch anyway.
-            if cross_repo:
-                pr = delivered_by(n)
-                if pr:
-                    delivered.append((n, pr))
-                    continue
-            pick = (n, title)
-            # keep scanning to count the rest accurately
-            continue
+        candidates.append((rank_key(i, seq), i))
+
+    # Order the whole eligible pool before choosing, rather than taking the
+    # first one the (oldest-first) scan happens to reach. This is the only
+    # place the ordering policy is applied — the explicit-issue path never
+    # ranks, because a human who typed a number has already chosen.
+    candidates.sort(key=lambda c: c[0])
+
+    pick = None
+    for _, i in candidates:
+        # Cross-repo delivery is tested only on the candidate about to be
+        # picked, in rank order: it is the sole position where the answer
+        # changes what this run does, and testing every candidate would spend
+        # `gh` calls on issues we are not going to touch anyway. A delivered
+        # one is recorded for parking and the next-ranked candidate is tried.
+        if cross_repo:
+            pr = delivered_by(i["number"])
+            if pr:
+                delivered.append((i["number"], pr))
+                continue
+        pick = i
+        break
 
     parts = []
     if parked:
@@ -366,8 +467,8 @@ def auto_pick(issues, cross_repo=False):
     ctx = f"{total} open" + (f" — {', '.join(parts)}" if parts else "")
 
     if pick:
-        n, title = pick
-        print(f'PICK: #{n} "{title}" ({ctx})')
+        title = pick.get("title", "").strip()[:70]
+        print(f'PICK: #{pick["number"]} "{title}" [{rank_reason(pick)}] ({ctx})')
     else:
         print(f"SKIP: nothing eligible — {ctx}")
 

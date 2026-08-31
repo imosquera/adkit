@@ -34,6 +34,7 @@ trees as two different files.
 | `/speckit-git-commit` | `.specify/extensions/git/scripts/powershell/auto-commit.ps1` |
 | `/speckit-git-feature` | `.specify/extensions/git/scripts/bash/create-new-feature.sh` |
 | `/speckit-git-feature` | `.specify/extensions/git/scripts/powershell/create-new-feature.ps1` |
+| `/speckit-git-issue` | `.specify/extensions/git/scripts/bash/label-issue.sh` |
 | `/speckit-git-pr` | `.specify/extensions/git/scripts/bash/create-pr.sh` |
 | `/speckit-git-worktree` | `.specify/extensions/git/scripts/bash/worktree-add.sh` |
 | `/speckit-plan` | `.specify/presets/spec-minimal/scripts/bash/enforce-minimal-tree.sh` |

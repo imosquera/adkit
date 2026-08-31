@@ -1,5 +1,5 @@
 ---
-description: "Sync the linked GitHub issue's body from the current feature's spec (manual runs may also create the issue)"
+description: "Sync the linked GitHub issue's body from the current feature's spec and set its priority (p0..p3) and kind (bug/feature) labels (manual runs may also create the issue)"
 ---
 
 # Sync Feature Issue
@@ -48,12 +48,47 @@ The hook stays registered with `optional: false` in `extension.yml`: it is manda
 2. **If it has a numeric `source_issue` — update that issue's body only:**
    `gh issue edit <source_issue> --body "<body>"`
    **Do NOT pass `--title`.** `/speckit-git-feature` already set the title to `NNN: <feature description>` and owns it. The spec's H1 is the template heading (`Feature Specification: …`), not that title — writing it back would rewrite issue #N's title to something like `23: Feature Specification: …` on every re-spec.
+   Then apply the triage labels (see **Priority & Kind Labels** below) — on this path only for axes the issue does not already carry.
    Here `gh` **MUST** be installed and authenticated: a linked issue that cannot be updated is a genuinely broken state. If `gh` is missing, `gh auth status` fails, or `gh issue edit` exits non-zero, stop with a clear error — never silently skip the sync.
 3. **If there is no `source_issue`:**
    - On the **hook** path: print the skip notice above and exit successfully.
    - On a **manual** invocation: create one with
      `gh issue create --title "<title>" --body "<body>"`
-     then parse the issue number out of the returned URL and persist it back into `.specify/feature.json` as a numeric `source_issue`, preserving every other key in the file. Subsequent runs then take the update path. Use the spec's H1 as the title, prefixed with the feature number when the branch/spec is numbered (e.g. `008: User Auth`). This is the only path that may set a title.
+     then parse the issue number out of the returned URL and persist it back into `.specify/feature.json` as a numeric `source_issue`, preserving every other key in the file. Subsequent runs then take the update path. Then apply the triage labels (see **Priority & Kind Labels** below). Use the spec's H1 as the title, prefixed with the feature number when the branch/spec is numbered (e.g. `008: User Auth`). This is the only path that may set a title.
+
+## Priority & Kind Labels
+
+Every tracking issue carries two triage labels: a priority (`p0`, `p1`, `p2`, `p3`) and a kind (`bug` or `feature`). They are not cosmetic — `/speckit-autopilot-run` orders its backlog by (priority, bug-before-feature, age), so an unlabelled issue is worked in plain filing order and a real P0 waits behind an older chore.
+
+Apply them with the shared script — never with a hand-rolled `gh issue edit --add-label`, which would drift from the vocabulary the picker matches on and can leave an issue carrying two priorities at once:
+
+```bash
+LABEL_SCRIPT="$CLAUDE_PROJECT_DIR/.specify/extensions/git/scripts/bash/label-issue.sh"
+bash "$LABEL_SCRIPT" <issue-number> --show                          # read current triage labels
+bash "$LABEL_SCRIPT" <issue-number> --priority p1 --kind bug        # set them (each is exclusive)
+```
+
+Run this on **both** paths — after creating an issue, and after updating an existing one — using this policy:
+
+1. **Read what is already there** (`--show`). A priority the human already set is authoritative: leave it alone and do not ask again. Set only the axis that is missing.
+2. **The user supplied a priority or kind in their invocation** (e.g. `/speckit-git-issue p0 bug`, or said so in the turn) → use it verbatim, no question.
+3. **Otherwise, when a human is in the loop, ask.** Use `AskUserQuestion` with the priority options `P0 — critical`, `P1 — high`, `P2 — normal`, `P3 — low`, and lead with the one you would have inferred, marked `(Recommended)`, so accepting the default is one keystroke. Ask for the kind in the same call **only when the spec is genuinely ambiguous** — a spec describing broken behaviour is a `bug` and one describing new capability is a `feature`, and asking about the obvious wastes the user's turn.
+4. **When no human is in the loop** — the `after_specify` hook during an unattended run, or any non-interactive session — do **not** block. Infer both from the spec and apply them, then say in your output which values were inferred rather than chosen, so a human skimming the issue can correct a bad guess.
+
+Inference heuristic, used for the recommendation in (3) and the unattended path in (4):
+
+| Signal in the spec / issue | Label |
+|---|---|
+| Data loss, security hole, broken build, outage, everything blocked | `p0` |
+| A user-facing feature is broken or unusable, no workaround | `p1` |
+| Ordinary defect with a workaround, or ordinary new capability | `p2` |
+| Polish, cleanup, nice-to-have, speculative | `p3` |
+| Restores intended behaviour that is currently broken | `bug` |
+| Adds or extends behaviour | `feature` |
+
+`p2` is the deliberate default: it is also the rank the picker assumes for an unlabelled issue, so guessing it changes nothing about ordering and never fakes an urgency nobody asserted.
+
+Label failures are **soft**: if `gh` cannot apply a label (missing repo permission, unusual label protection), print the warning the script emits and carry on — the issue body sync is the job, and an unlabelled issue is still a working issue.
 
 ## Issue Body
 
@@ -88,5 +123,6 @@ Generated/updated by /speckit-git-issue
 | `source_issue` present, `gh` missing or unauthenticated | **Hard error** with an install / `gh auth login` hint. |
 | `source_issue` present, `gh issue edit` non-zero exit | **Hard error**, surfacing `gh`'s own message. |
 | No feature directory or no `spec.md` | **Hard error** — the command was invoked with nothing to sync. |
+| `label-issue.sh` fails or is missing | **Warn and continue.** Labels improve autopilot's ordering; they are not the sync. |
 
 The rule: once an issue *is* linked, a failed sync is a real broken state worth stopping for. An absent link is not a failure — it is a supported configuration.

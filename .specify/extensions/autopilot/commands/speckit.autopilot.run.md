@@ -1,5 +1,5 @@
 ---
-description: "Take the oldest eligible open GitHub issue (or a given issue number) from backlog to a reviewed draft PR by driving the full speckit pipeline unattended: pick → worktree → specify → clarify (auto-answered) → plan → tasks → implement → review → draft PR, posting progress to the issue at every stage."
+description: "Take the highest-priority eligible open GitHub issue (or a given issue number) from backlog to a reviewed draft PR by driving the full speckit pipeline unattended: pick → worktree → specify → clarify (auto-answered) → plan → tasks → implement → review → draft PR, posting progress to the issue at every stage."
 ---
 
 # Issue Backlog Autopilot
@@ -22,7 +22,7 @@ $ARGUMENTS
 ```
 
 Optional. If the input contains an issue number (e.g. `#42` or `42`), extract it as
-`N` and work **that** issue instead of auto-picking the oldest — but still apply the
+`N` and work **that** issue instead of auto-picking by rank — but still apply the
 eligibility checks in Step 1 (via `preflight-issues.py`) and refuse (explaining why)
 if it's already in progress, parked, or already claimed by another autopilot run.
 With no input, auto-pick per Step 1 and set `N` to whichever issue the script picks.
@@ -97,11 +97,20 @@ step after writing code is worse than one that never starts.
    skip silently.) The suggestion is a one-time nudge at the start; don't repeat it
    later in the run.
 
-## Step 1 — Pick the oldest eligible issue (or validate the given one)
+## Step 1 — Pick the highest-ranked eligible issue (or validate the given one)
 
-"Oldest" = earliest `createdAt`. "Eligible" = open, not already in progress, not
-parked, not already claimed by another autopilot run. Compute it deterministically,
-then show your pick before proceeding.
+"Eligible" = open, not already in progress, not parked, not already claimed by
+another autopilot run. Among the eligible, the pick is the **highest-ranked**, not
+the oldest: `preflight-issues.py` orders candidates by **priority label** (`p0` <
+`p1` < `p2` < `p3`, with an unlabelled issue treated as `p2`), then **bugs before
+features** within a tier, then oldest `createdAt` as the final tiebreak. A backlog
+with no triage labels therefore behaves exactly as it used to — oldest-first —
+while a labelled one drains in the order a human actually asked for. `/speckit-git-issue`
+is what applies those labels; the picker only reads them.
+
+Compute it deterministically via the script, then show your pick before proceeding.
+The `PICK:` line carries the winning rank in brackets (e.g. `[p0, bug]`) — quote it
+when you report the pick, so the log says why this issue beat the others.
 
 **Fetch to a file, via the shared script — never pipe `gh` into a stdin-heredoc
 script.** The tempting one-liner
@@ -111,8 +120,9 @@ fails** with `JSONDecodeError: Expecting value: line 1 column 1 (char 0)`.
 the heredoc text — that redirect wins over the pipe, so `gh`'s JSON never reaches
 Python and `json.load(sys.stdin)` reads an empty stream. You cannot route both the
 script *and* the data through one stdin. `fetch-open-issues.sh` sidesteps this by
-landing the data in a file first (sorted oldest-first, `body` included for the
-empty-body check below), so every reader — this skill or `preflight-issues.py`
+landing the data in a file first (sorted oldest-first — the ranking above reorders
+it, and this sort is what makes age the stable final tiebreak — with `labels` and
+`body` included for the ranking and the empty-body check), so every reader — this skill or `preflight-issues.py`
 directly — takes a **file path**, never stdin:
 
 ```bash
@@ -135,9 +145,9 @@ PREFLIGHT_SCRIPT="$CLAUDE_PROJECT_DIR/.specify/extensions/autopilot/scripts/bash
 python3 "$PREFLIGHT_SCRIPT" /tmp/autopilot_issues.json "$N" --cross-repo
 # => "PICK: #42 \"Fix the thing\" (explicit)"  or  "SKIP: #42 <reason>"
 
-# With no input, auto-pick the oldest eligible issue:
+# With no input, auto-pick the highest-ranked eligible issue:
 python3 "$PREFLIGHT_SCRIPT" /tmp/autopilot_issues.json --cross-repo
-# => "PICK: #42 \"Fix the thing\" (7 open, 2 parked, 1 in-progress)"  or  "SKIP: ..."
+# => "PICK: #42 \"Fix the thing\" [p0, bug] (7 open — 2 parked, 1 in-progress)"  or  "SKIP: ..."
 ```
 
 **Always pass `--cross-repo`.** The rest of the eligibility check only sees *this*
@@ -519,7 +529,7 @@ gh issue edit "$N" --remove-label "autopilot:claimed" 2>/dev/null || true
 
 **Additionally, for a stop marked *Durable* above**, record the blocker where the
 next run's preflight will actually see it. Removing the claim alone writes *no*
-durable state, so `preflight-issues.py` sees a clean, oldest, unlabeled issue on
+durable state, so `preflight-issues.py` sees a clean, unlabeled, eligible issue on
 the very next tick and picks it again — forever. `autopilot:blocked` is in that
 script's `BLOCK` set, so this is the one write that ends the loop:
 

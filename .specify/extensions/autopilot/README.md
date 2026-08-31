@@ -2,8 +2,8 @@
 
 Registers two commands:
 
-- **`/speckit-autopilot-run`** — take the oldest eligible open GitHub issue (or a
-  given issue number) from backlog to a reviewed **draft PR**, driving the whole
+- **`/speckit-autopilot-run`** — take the highest-ranked eligible open GitHub issue
+  (or a given issue number) from backlog to a reviewed **draft PR**, driving the whole
   speckit pipeline unattended — pick → worktree → specify → clarify (auto-answered)
   → plan → tasks → implement → review → draft PR — and posting progress to the issue
   at every stage.
@@ -12,6 +12,35 @@ Registers two commands:
   via `--interval-hours N`). Opt-in and macOS-only; also `uninstall`, `status`, and
   `run-now`. `.run` detects whether a schedule exists and *suggests* setting one up
   when it doesn't — it never schedules itself.
+
+## Which issue gets picked
+
+Every scheduled pass re-runs the pick, so the ordering policy is what decides where
+the next two hours of unattended work go. Eligible candidates (open, unparked,
+unclaimed, no branch/worktree/PR, non-empty body) are sorted by:
+
+1. **Priority label** — `p0` < `p1` < `p2` < `p3`. Spellings `p1`, `P1`,
+   `priority: p1`, `priority/p1` all read the same, as do the severity words
+   `critical`/`urgent` (p0), `high` (p1), `medium`/`normal` (p2), `low` (p3). The
+   lowest rank on an issue wins, so a contradictory `p2, critical` pair is treated
+   as p0 rather than averaged.
+2. **Bugs before features**, within one priority tier — a `bug`/`defect`/
+   `regression`/`incident` label, or a `fix:`/`bug:` title prefix. Across tiers
+   priority still wins: an explicit `p0` feature outranks a `p2` bug, because that
+   is what the human said.
+3. **Age** — oldest `createdAt` last, so an unlabelled backlog drains in exactly the
+   filing order it used to.
+
+An issue with **no** priority label ranks as `p2`, deliberately mid-pack rather than
+last: ranking it last would let an explicitly deprioritized `p3` chore outrank every
+untriaged bug in the backlog, inverting the point of the label.
+
+The vocabulary lives in `preflight-issues.py` (`PRIORITY_RE`, `PRIORITY_WORDS`,
+`BUG_LABELS`) and is written by the git extension's `label-issue.sh`, which
+`/speckit-git-issue` calls after every spec sync — that command is what asks the
+human for a priority, or infers one when nobody is there to ask. An explicit
+`/speckit-autopilot-run <N>` skips ranking entirely: a typed issue number is
+already a choice.
 
 ## The two labels: `autopilot:claimed` and `autopilot:blocked`
 

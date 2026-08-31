@@ -3,7 +3,7 @@ schema_version: "1.0"
 extension:
   id: git
   name: "Git Branching Workflow"
-  version: "1.3.0"
+  version: "1.4.0"
   description: "Feature branch creation, worktree management, feature cleanup, auto-commit hooks, and PR creation"
   author: spec-kit-core
   repository: https://github.com/github/spec-kit
@@ -45,6 +45,10 @@ provides:
       file: scripts/bash/create-pr.sh
       executable: true
       command: speckit.git.pr
+    - name: label-issue.sh
+      file: scripts/bash/label-issue.sh
+      executable: true
+      command: speckit.git.issue
     # Libraries sourced by the scripts above; no command invokes them directly.
     - name: git-common.sh
       file: scripts/bash/git-common.sh
@@ -71,7 +75,7 @@ provides:
       description: "Clean up the current feature worktree, branch, issue, and uncommitted changes"
     - name: speckit.git.issue
       file: commands/speckit.git.issue.md
-      description: "Update the linked GitHub issue's body from spec.md (a manual run may also create one when none is linked)"
+      description: "Update the linked GitHub issue's body from spec.md and keep its p0..p3 / bug|feature triage labels current (a manual run may also create the issue when none is linked)"
     - name: speckit.git.commit
       file: commands/speckit.git.commit.md
       description: "Auto-commit changes after a Spec Kit command completes"

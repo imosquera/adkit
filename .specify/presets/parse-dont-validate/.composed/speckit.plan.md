@@ -63,15 +63,13 @@ Run the core plan flow first so that `plan.md` exists before research begins.
 
 ## Wrapper Layer
 
-This preset wraps the stock `/speckit-plan` command (and any inner wrapper, such
-as the constitution-audit Constitution Check gate, that the core flow expands
-to). It enforces a strictly minimal artifact tree.
+This preset wraps the stock `/speckit-plan` command (and any inner wrapper that
+the core flow expands to, e.g. from another chained `speckit.plan` preset). It
+enforces a strictly minimal artifact tree.
 
-Enforcement has exactly two parts: a mandatory prompt rule that forbids the agent
-from ever creating the forbidden paths, and a read-only post-flight verifier that
-fails the run if any forbidden artifact is found on disk. **Nothing is
-pre-created** — the feature directory must never contain the forbidden paths at
-any point, not even as empty sentinel files or read-only directories.
+Enforcement has two halves — the prompt rule below prevents, and the post-flight
+enforcer guarantees. `presets/spec-minimal/README.md` is the canonical
+description of the mechanism; do not restate it elsewhere.
 
 ### Documentation Rule (MANDATORY — NO EXCEPTIONS)
 
@@ -80,17 +78,18 @@ The feature directory MUST contain ONLY these files at the top level:
 - `spec.md`
 - `plan.md`
 - `tasks.md`
-- `requirements.md`
 - `quickstart.md` (optional but allowed)
+- `research.md` (optional but allowed — e.g. written by the `library-research`
+  preset; nothing pre-creates it)
 
-`research.md`, `data-model.md`, and `contracts/` **MUST NOT be created** — not as
-files, not as directories, not in any form. There is no escape hatch. Any content
-that the stock flow would have written into one of those paths MUST instead be
-inlined as a section of `plan.md` or `requirements.md`.
+`data-model.md` and `contracts/` **MUST NOT be created** — not as files, not as
+directories, not in any form. There is no escape hatch. Any content that the
+stock flow would have written into one of those paths MUST instead be inlined
+as a section of `plan.md`.
 
-When you reach any step of the core flow that would create `research.md`,
-`data-model.md`, or `contracts/`, do not create the path. Fold its content into
-`plan.md` or `requirements.md` and continue.
+When you reach any step of the core flow that would create `data-model.md` or
+`contracts/`, do not create the path. Fold its content into `plan.md` and
+continue.
 
 In the **Project Structure → Documentation (this feature)** subsection of
 `plan.md`, list exactly the allowed files and nothing else.
@@ -254,20 +253,40 @@ Command ends after Phase 1 design. Report branch, IMPL_PLAN path, and generated 
 - [ ] Completion reported to user with branch, plan path, and generated artifacts
 
 
-### Post-Flight Verification (MANDATORY — LAST STEP)
+### Post-Flight Enforcement (MANDATORY — LAST STEP)
 
 After the entire core flow above has completed, and before reporting success, run
-the read-only verifier as the final step:
+the enforcer as the final step:
 
 ```bash
-.specify/presets/spec-minimal/scripts/bash/verify-minimal-tree.sh "$SPECIFY_FEATURE_DIRECTORY"
+.specify/presets/spec-minimal/scripts/bash/enforce-minimal-tree.sh "$SPECIFY_FEATURE_DIRECTORY"
 ```
 
-This script creates nothing and deletes nothing. It exits non-zero if any
-forbidden artifact (`research.md`, `data-model.md`, `contracts/`) or any other
-unexpected entry ended up on disk. If it exits non-zero, surface the error
-verbatim to the user and stop — do not retry, do not silently delete, do not
-report success. Only report success once this verifier exits zero.
+The enforcer is self-healing: if a forbidden artifact is on disk it folds the
+content into `plan.md` under an `## Inlined from <name>` heading (inside an
+idempotent sentinel block) and then deletes the artifact. It always writes
+`plan.md` before removing anything, so content cannot be lost. If `plan.md` is
+missing it creates it. Unknown top-level entries only produce a `warning:` on
+stderr — they never fail the run, so stacking with other presets is safe.
+
+Handle the exit code as follows:
+
+- **`0`** — the tree is clean. If the enforcer reported that it folded and
+  removed any artifacts (or created `plan.md`), tell the user exactly what was
+  inlined, created, and removed, then report success.
+- **`1`** — read the stderr, which always says which of two cases it is:
+  - `HEALING IMPOSSIBLE` — nothing was written to `plan.md` and nothing was
+    removed. Surface the error verbatim, fix the underlying problem (an
+    unbalanced sentinel in `plan.md`, an unreadable path, an unwritable
+    directory), and re-run the enforcer.
+  - `PARTIALLY HEALED` — the content IS already safely inlined in `plan.md`,
+    but a forbidden artifact could not be removed. Surface the error verbatim,
+    remove the named artifact (nothing is lost by doing so), and re-run.
+
+  In both cases, do not report success.
+- **`2`** — bad usage: the invocation above is wrong. Fix the call and re-run.
+
+Only report success once the enforcer exits `0`.
 
 
 ### Research Pass (MANDATORY — runs after the core flow)
@@ -363,15 +382,13 @@ Run the core plan flow first so that `plan.md` exists before research begins.
 
 ## Wrapper Layer
 
-This preset wraps the stock `/speckit-plan` command (and any inner wrapper, such
-as the constitution-audit Constitution Check gate, that the core flow expands
-to). It enforces a strictly minimal artifact tree.
+This preset wraps the stock `/speckit-plan` command (and any inner wrapper that
+the core flow expands to, e.g. from another chained `speckit.plan` preset). It
+enforces a strictly minimal artifact tree.
 
-Enforcement has exactly two parts: a mandatory prompt rule that forbids the agent
-from ever creating the forbidden paths, and a read-only post-flight verifier that
-fails the run if any forbidden artifact is found on disk. **Nothing is
-pre-created** — the feature directory must never contain the forbidden paths at
-any point, not even as empty sentinel files or read-only directories.
+Enforcement has two halves — the prompt rule below prevents, and the post-flight
+enforcer guarantees. `presets/spec-minimal/README.md` is the canonical
+description of the mechanism; do not restate it elsewhere.
 
 ### Documentation Rule (MANDATORY — NO EXCEPTIONS)
 
@@ -380,17 +397,18 @@ The feature directory MUST contain ONLY these files at the top level:
 - `spec.md`
 - `plan.md`
 - `tasks.md`
-- `requirements.md`
 - `quickstart.md` (optional but allowed)
+- `research.md` (optional but allowed — e.g. written by the `library-research`
+  preset; nothing pre-creates it)
 
-`research.md`, `data-model.md`, and `contracts/` **MUST NOT be created** — not as
-files, not as directories, not in any form. There is no escape hatch. Any content
-that the stock flow would have written into one of those paths MUST instead be
-inlined as a section of `plan.md` or `requirements.md`.
+`data-model.md` and `contracts/` **MUST NOT be created** — not as files, not as
+directories, not in any form. There is no escape hatch. Any content that the
+stock flow would have written into one of those paths MUST instead be inlined
+as a section of `plan.md`.
 
-When you reach any step of the core flow that would create `research.md`,
-`data-model.md`, or `contracts/`, do not create the path. Fold its content into
-`plan.md` or `requirements.md` and continue.
+When you reach any step of the core flow that would create `data-model.md` or
+`contracts/`, do not create the path. Fold its content into `plan.md` and
+continue.
 
 In the **Project Structure → Documentation (this feature)** subsection of
 `plan.md`, list exactly the allowed files and nothing else.
@@ -554,20 +572,40 @@ Command ends after Phase 1 design. Report branch, IMPL_PLAN path, and generated 
 - [ ] Completion reported to user with branch, plan path, and generated artifacts
 
 
-### Post-Flight Verification (MANDATORY — LAST STEP)
+### Post-Flight Enforcement (MANDATORY — LAST STEP)
 
 After the entire core flow above has completed, and before reporting success, run
-the read-only verifier as the final step:
+the enforcer as the final step:
 
 ```bash
-.specify/presets/spec-minimal/scripts/bash/verify-minimal-tree.sh "$SPECIFY_FEATURE_DIRECTORY"
+.specify/presets/spec-minimal/scripts/bash/enforce-minimal-tree.sh "$SPECIFY_FEATURE_DIRECTORY"
 ```
 
-This script creates nothing and deletes nothing. It exits non-zero if any
-forbidden artifact (`research.md`, `data-model.md`, `contracts/`) or any other
-unexpected entry ended up on disk. If it exits non-zero, surface the error
-verbatim to the user and stop — do not retry, do not silently delete, do not
-report success. Only report success once this verifier exits zero.
+The enforcer is self-healing: if a forbidden artifact is on disk it folds the
+content into `plan.md` under an `## Inlined from <name>` heading (inside an
+idempotent sentinel block) and then deletes the artifact. It always writes
+`plan.md` before removing anything, so content cannot be lost. If `plan.md` is
+missing it creates it. Unknown top-level entries only produce a `warning:` on
+stderr — they never fail the run, so stacking with other presets is safe.
+
+Handle the exit code as follows:
+
+- **`0`** — the tree is clean. If the enforcer reported that it folded and
+  removed any artifacts (or created `plan.md`), tell the user exactly what was
+  inlined, created, and removed, then report success.
+- **`1`** — read the stderr, which always says which of two cases it is:
+  - `HEALING IMPOSSIBLE` — nothing was written to `plan.md` and nothing was
+    removed. Surface the error verbatim, fix the underlying problem (an
+    unbalanced sentinel in `plan.md`, an unreadable path, an unwritable
+    directory), and re-run the enforcer.
+  - `PARTIALLY HEALED` — the content IS already safely inlined in `plan.md`,
+    but a forbidden artifact could not be removed. Surface the error verbatim,
+    remove the named artifact (nothing is lost by doing so), and re-run.
+
+  In both cases, do not report success.
+- **`2`** — bad usage: the invocation above is wrong. Fix the call and re-run.
+
+Only report success once the enforcer exits `0`.
 
 
 ### Research Pass (MANDATORY — runs after the core flow)

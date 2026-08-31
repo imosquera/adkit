@@ -13,7 +13,7 @@ This extension provides Git operations as an optional, self-contained module. It
 - **`commit_exclude`** — repo-tracked generated artifacts that CI rebuilds on the
   default branch are kept out of every auto-commit, and reset to the base branch
   before a PR opens
-- **GitHub issue sync** — when a tracking issue is linked, its body is re-rendered from `spec.md` after every `/speckit-specify` (title untouched); skipped cleanly when there is no linked issue
+- **GitHub issue sync** — when a tracking issue is linked, its body is re-rendered from `spec.md` after every `/speckit-specify` (title untouched) and its `p0`..`p3` / `bug`|`feature` triage labels are kept current; skipped cleanly when there is no linked issue
 - **Auto-commit** after core commands (configurable per-command with custom messages)
 
 ## Commands
@@ -58,6 +58,19 @@ Issue sync is non-optional in the sense that the agent always runs it, but it is
 - **No tracking issue is linked** → the hook prints a one-line notice and exits successfully without creating anything. This is the normal state when `speckit.git.feature` bypassed issue creation (`--timestamp`, `--number`, `GIT_BRANCH_NAME`, `--dry-run`) or ran in a repo without `gh`, so `/speckit-specify` keeps working for non-GitHub users.
 
 Creating an issue is the job of `speckit.git.feature`, which owns the numbering contract. Running `/speckit-git-issue` manually *may* create one when none is linked; the automatic hook path never does.
+
+### Triage labels: priority and kind
+
+On both paths, `/speckit-git-issue` also keeps two triage labels current on the tracking issue: a priority (`p0`, `p1`, `p2`, `p3`) and a kind (`bug` or `feature`). They are applied by `scripts/bash/label-issue.sh`, which creates any label the repo is missing and keeps each axis exclusive (setting `p1` removes `p0`/`p2`/`p3`).
+
+This is the input side of autopilot's picker: `/speckit-autopilot-run` orders its eligible backlog by priority, then bugs before features, then age. Without labels every backlog drains oldest-first, which is why a P0 filed today can otherwise sit behind a year-old chore.
+
+The command **asks** the human for a priority when there is one in the loop, leading with the value it would have inferred so accepting takes one keystroke; when nobody is there — the `after_specify` hook during an unattended autopilot run — it infers and says so instead of blocking. An existing priority set by a human is never overwritten or re-asked. Label failures are warnings, never errors: an unlabelled issue is still a working issue.
+
+```bash
+.specify/extensions/git/scripts/bash/label-issue.sh 42 --show
+.specify/extensions/git/scripts/bash/label-issue.sh 42 --priority p1 --kind bug
+```
 
 ## Configuration
 
