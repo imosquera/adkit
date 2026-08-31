@@ -17,16 +17,16 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
-import { loginCustomerIdFromYaml, type AdsClient, type GaqlRow } from "../lib/auth.js";
+import { mccCustomerIdFromYaml, type AdsClient, type GaqlRow } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
 import type { SearchArgs } from "../gaql/search-args.js";
 import { adStrengthName, matchTypeName } from "../ads/enums.js";
 import {
-  type LoginCustomerId,
-  loginHeaderValue,
+  type MccCustomerId,
+  mccHeaderValue,
   normalizeId,
-  resolveLoginCustomerId,
-  type ResolvedLogin,
+  resolveMccCustomerId,
+  type ResolvedMcc,
 } from "../cli/args.js";
 import { sdkErrorMessage } from "../cli/output.js";
 import { isManagerMetricsError, managerMetricsHint } from "./audit.js";
@@ -61,8 +61,8 @@ import {
 
 /**
  * The account we report on by default (overridable via args). There is no default
- * manager: the login-customer-id is RESOLVED (flag → env → credentials) rather than
- * defaulted to a literal, see {@link resolveLoginCustomerId}.
+ * manager: the mcc-customer-id is RESOLVED (flag → env → credentials) rather than
+ * defaulted to a literal, see {@link resolveMccCustomerId}.
  */
 export const DEFAULT_CUSTOMER = "1111111111"; // 111-111-1111
 export const DEFAULT_DAYS = 14;
@@ -199,7 +199,7 @@ export interface Recommendation {
 /** The full raw report written to disk (and its shape). */
 export interface Report extends ReportData {
   customer_id: string;
-  /** The login-customer-id actually used, or `null` when the run used none. Key always present. */
+  /** The mcc-customer-id actually used, or `null` when the run used none. Key always present. */
   manager_id: string | null;
   window: { start: string; end: string; days: number; partial_day: string };
   generated_at: string;
@@ -526,12 +526,12 @@ export function reportPath(cwd: string, generatedAt: string, customer: string): 
  * unknown"), which is distinct from `none` ("no header was sent") — the run's real
  * failures still surface on their own paths.
  */
-function effectiveManager(login: ResolvedLogin): EffectiveManager {
+function effectiveManager(login: ResolvedMcc): EffectiveManager {
   if (login.source !== "yaml") {
     return { kind: "id", id: login.value };
   }
   try {
-    const fromYaml = normalizeId(loginCustomerIdFromYaml());
+    const fromYaml = normalizeId(mccCustomerIdFromYaml());
     return fromYaml ? { kind: "id", id: fromYaml } : { kind: "none" };
   } catch {
     return { kind: "yaml" };
@@ -544,25 +544,25 @@ function effectiveManager(login: ResolvedLogin): EffectiveManager {
  *
  * `clientFactory` is injectable so tests can supply a fake AdsClient; production
  * calls default to {@link loadReadClient} (SDK by default; MCP when ADKIT_READ_BACKEND=mcp).
- * `env` is injectable so the login-customer-id precedence is testable without
+ * `env` is injectable so the mcc-customer-id precedence is testable without
  * mutating `process.env`.
  *
- * The login-customer-id is parsed exactly once here, by
- * {@link resolveLoginCustomerId} (tier + digit-check), into the value the client
+ * The mcc-customer-id is parsed exactly once here, by
+ * {@link resolveMccCustomerId} (tier + digit-check), into the value the client
  * seam accepts; nothing downstream re-checks or re-normalizes it.
  */
 export async function main(
   argv: string[],
-  clientFactory: (login: LoginCustomerId) => AdsClient = loadReadClient,
+  clientFactory: (login: MccCustomerId) => AdsClient = loadReadClient,
   env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
   const args = parseArgs(argv);
   const customer = normalizeId(args.customer);
-  const login = resolveLoginCustomerId(args.manager, env);
+  const login = resolveMccCustomerId(args.manager, env);
 
   let client: AdsClient;
   try {
-    client = clientFactory(loginHeaderValue(login));
+    client = clientFactory(mccHeaderValue(login));
   } catch (exc) {
     process.stderr.write(
       `error: could not load Google Ads credentials (${String(exc)}). ` +
@@ -594,7 +594,7 @@ export async function main(
     const hint = isManagerMetrics ? "" : remediationHint(msgs, customer, manager);
     // Name the manager ACTUALLY used so the operator can see which tier supplied it
     // (flag/env/credentials), rather than a fabricated id — and say the login came
-    // from google-ads.yaml when it did, instead of claiming none was used.
+    // from .adkit.yaml when it did, instead of claiming none was used.
     const via = managerPhrase(manager);
     process.stderr.write(
       `error: Google Ads query failed for customer ${customer}${via}: ` +

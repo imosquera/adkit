@@ -9,12 +9,12 @@
  */
 
 /**
- * Which manager (login-customer-id) a run ACTUALLY went through, as far as the
+ * Which manager (mcc-customer-id) a run ACTUALLY went through, as far as the
  * command can tell. Three cases, not two:
  *  - `id` — that MCC id was sent as the login header (from `--manager`, from
- *    `GOOGLE_ADS_LOGIN_CUSTOMER_ID`, or read back out of google-ads.yaml),
+ *    `GOOGLE_ADS_LOGIN_CUSTOMER_ID`, or read back out of .adkit.yaml),
  *  - `none` — no login header was sent at all (direct access),
- *  - `yaml` — the login was inherited from google-ads.yaml, whose value could not be
+ *  - `yaml` — the login was inherited from .adkit.yaml, whose value could not be
  *    read back (e.g. no credentials file under `ADKIT_READ_BACKEND=mcp`). A header
  *    may well have been sent, so claiming "no manager" here would be a lie.
  */
@@ -34,7 +34,7 @@ export function managerPhrase(manager: EffectiveManager): string {
     case "id":
       return ` via manager ${manager.id}`;
     case "yaml":
-      return " via the login_customer_id in google-ads.yaml";
+      return " via the mcc_customer_id in .adkit.yaml";
     case "none":
       return " with no manager";
   }
@@ -64,8 +64,8 @@ export function remediationHint(
         return `Verify customer ${customer} is accessible under manager ${manager.id}.`;
       case "yaml":
         return (
-          `Verify customer ${customer} is accessible under the login_customer_id in ` +
-          `google-ads.yaml, or pass --manager <mcc-id> to override it.`
+          `Verify customer ${customer} is accessible under the mcc_customer_id in ` +
+          `.adkit.yaml, or pass --manager <mcc-id> to override it.`
         );
       case "none":
         return (

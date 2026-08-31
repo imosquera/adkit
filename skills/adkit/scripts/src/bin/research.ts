@@ -25,7 +25,7 @@ import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { type services } from "google-ads-api";
 import { isMainModule } from "../cli/entry.js";
-import { resolveCustomer } from "../cli/args.js";
+import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
 import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
 import { formatBulletText } from "../lib/markdown.js";
 import { competitionLabel, formatCpcRange } from "../lib/metrics.js";
@@ -581,11 +581,12 @@ export async function main(
   generate: (req: services.IGenerateKeywordIdeasRequest) => Promise<IdeaRow[]> = generateIdeaRows,
 ): Promise<number> {
   const args = parseArgs(argv);
-  const customerId = resolveCustomer([args.customerId]);
-  if (!customerId) {
-    process.stderr.write(
-      "error: --customer-id, GOOGLE_ADS_CUSTOMER_ID, or login_customer_id in google-ads.yaml required\n",
-    );
+  // Required to operate: resolves, or asks once on a TTY, or fails loudly. Never guesses.
+  let customerId: string;
+  try {
+    customerId = await resolveTargetCustomerId(args.customerId);
+  } catch (exc) {
+    emitJson(customerIdErrorEnvelope(exc));
     return 2;
   }
 

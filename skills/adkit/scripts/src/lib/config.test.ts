@@ -24,9 +24,9 @@ describe("CONFIG_FIELDS", () => {
       ["client_id", "", false],
       ["client_secret", "", true],
       ["refresh_token", "", true],
-      ["login_customer_id", "", false],
-      ["target_customer_id", "", false],
       ["psi_api_key", "", true],
+      ["mcc_customer_id", "", false],
+      ["target_customer_id", "", false],
       ["secrets_project", "your-project-prod", false],
       ["read_backend", "sdk", false],
       ["reports_dir", "ads/output/reports", false],
@@ -38,19 +38,29 @@ describe("CONFIG_FIELDS", () => {
   it("is exactly CREDENTIAL_FIELDS followed by PREFERENCE_FIELDS", () => {
     expect(CONFIG_FIELDS).toEqual([...CREDENTIAL_FIELDS, ...PREFERENCE_FIELDS]);
   });
+
+  // The two customer ids are account numbers, not credentials: they belong to the
+  // locally-authored preferences, never to the set render-yaml pulls from Secret Manager.
+  it("classifies both customer ids as preferences, not credentials", () => {
+    const keys = (fields: readonly { key: string }[]) => fields.map((f) => f.key);
+    expect(keys(PREFERENCE_FIELDS)).toContain("mcc_customer_id");
+    expect(keys(PREFERENCE_FIELDS)).toContain("target_customer_id");
+    expect(keys(CREDENTIAL_FIELDS)).not.toContain("mcc_customer_id");
+    expect(keys(CREDENTIAL_FIELDS)).not.toContain("target_customer_id");
+  });
 });
 
 describe("buildConfigYamlBody", () => {
   it("emits the header comments, only the present fields quoted in order, then use_proto_plus", () => {
     const values = new Map([
-      ["login_customer_id", "1234567890"],
+      ["mcc_customer_id", "1234567890"],
       ["secrets_project", "proj-x"],
     ]);
     expect(buildConfigYamlBody(values)).toBe(
       [
         "# Written by adkit init/render-yaml. Contains secrets — do not commit.",
         "# Explicit flags and env vars still override these values at run time.",
-        'login_customer_id: "1234567890"',
+        'mcc_customer_id: "1234567890"',
         'secrets_project: "proj-x"',
         "use_proto_plus: true",
       ].join("\n") + "\n",
@@ -63,15 +73,15 @@ describe("buildConfigYamlBody", () => {
   });
 
   it("skips blank values", () => {
-    const values = new Map([["login_customer_id", ""]]);
-    expect(buildConfigYamlBody(values)).not.toContain("login_customer_id");
+    const values = new Map([["mcc_customer_id", ""]]);
+    expect(buildConfigYamlBody(values)).not.toContain("mcc_customer_id");
   });
 });
 
 describe("parseConfig", () => {
   it("parses a yaml body into the config shape", () => {
-    expect(parseConfig('login_customer_id: "123"\nsecrets_project: "proj-x"\n')).toEqual({
-      login_customer_id: "123",
+    expect(parseConfig('mcc_customer_id: "123"\nsecrets_project: "proj-x"\n')).toEqual({
+      mcc_customer_id: "123",
       secrets_project: "proj-x",
     });
   });
@@ -84,10 +94,10 @@ describe("parseConfig", () => {
 describe("configToValueMap", () => {
   it("keeps only non-blank fields, in CONFIG_FIELDS order", () => {
     expect(
-      configToValueMap({ secrets_project: "proj-x", login_customer_id: "123", target_customer_id: "" }),
+      configToValueMap({ secrets_project: "proj-x", mcc_customer_id: "123", target_customer_id: "" }),
     ).toEqual(
       new Map([
-        ["login_customer_id", "123"],
+        ["mcc_customer_id", "123"],
         ["secrets_project", "proj-x"],
       ]),
     );

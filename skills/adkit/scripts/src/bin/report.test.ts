@@ -13,8 +13,8 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { KEEP_YAML_LOGIN, type AdsClient } from "../lib/auth.js";
-import type { LoginCustomerId } from "../cli/args.js";
+import { KEEP_YAML_MCC, type AdsClient } from "../lib/auth.js";
+import type { MccCustomerId } from "../cli/args.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import {
   DEFAULT_CUSTOMER,
@@ -484,7 +484,7 @@ describe("main (fake client, temp cwd)", () => {
   /**
    * `main` reads the credentials back to name the manager a yaml-tier run went
    * through, so the tests own that file too: by default it carries NO
-   * `login_customer_id` (the directly-reachable leaf case, US1). Tests that need the
+   * `mcc_customer_id` (the directly-reachable leaf case, US1). Tests that need the
    * MCC-nested case rewrite it via {@link writeCredentials}.
    */
   function writeCredentials(yaml: string): void {
@@ -495,7 +495,7 @@ describe("main (fake client, temp cwd)", () => {
     dir = mkdtempSync(join(tmpdir(), "report-"));
     cwd = process.cwd();
     process.chdir(dir);
-    credsPath = join(dir, "google-ads.yaml");
+    credsPath = join(dir, ".adkit.yaml");
     origCreds = process.env.GOOGLE_ADS_CREDENTIALS;
     process.env.GOOGLE_ADS_CREDENTIALS = credsPath;
     writeCredentials("developer_token: t\nclient_id: c\nclient_secret: s\nrefresh_token: r\n");
@@ -580,7 +580,7 @@ describe("main (fake client, temp cwd)", () => {
     }) as typeof process.stdout.write;
     // The explicit --manager override, in dashed human form: it must reach the
     // client seam (and the report) normalised to 10 digits.
-    const seen: LoginCustomerId[] = [];
+    const seen: MccCustomerId[] = [];
     let code: number;
     try {
       code = await main(
@@ -714,7 +714,7 @@ describe("main (fake client, temp cwd)", () => {
     let code: number;
     try {
       code = await main([], () => {
-        throw new Error("missing google-ads.yaml");
+        throw new Error("missing .adkit.yaml");
       }, {});
     } finally {
       process.stderr.write = origErr;
@@ -741,7 +741,7 @@ describe("main (fake client, temp cwd)", () => {
   /** Run `main` capturing stdout, returning the exit code, printed path, and factory args. */
   async function runMain(argv: string[], env: Record<string, string | undefined>) {
     const client = fakeClient(oneCampaign);
-    const seen: LoginCustomerId[] = [];
+    const seen: MccCustomerId[] = [];
     const out: string[] = [];
     const orig = process.stdout.write.bind(process.stdout);
     process.stdout.write = ((s: string) => {
@@ -767,9 +767,9 @@ describe("main (fake client, temp cwd)", () => {
     const { code, seen, printed } = await runMain(["1111111111"], {});
     expect(code).toBe(0);
     // Identity check against the sentinel, not a string comparison: the "inherit
-    // the credentials' login_customer_id" decision reaches loadReadClient intact.
+    // the credentials' mcc_customer_id" decision reaches loadReadClient intact.
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toBe(KEEP_YAML_LOGIN);
+    expect(seen[0]).toBe(KEEP_YAML_MCC);
 
     const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
     expect("manager_id" in parsed).toBe(true);
@@ -796,11 +796,11 @@ describe("main (fake client, temp cwd)", () => {
 
   it("treats a blank env value as absent rather than as 'no manager'", async () => {
     const { seen } = await runMain(["1111111111"], { GOOGLE_ADS_LOGIN_CUSTOMER_ID: "   " });
-    expect(seen[0]).toBe(KEEP_YAML_LOGIN);
+    expect(seen[0]).toBe(KEEP_YAML_MCC);
   });
 
   it("rejects a non-digits manager before it ever reaches the client", async () => {
-    const seen: LoginCustomerId[] = [];
+    const seen: MccCustomerId[] = [];
     await expect(
       main(["1111111111", "--manager", "not-an-id"], (login) => {
         seen.push(login);
@@ -812,7 +812,7 @@ describe("main (fake client, temp cwd)", () => {
 
   it("blames GOOGLE_ADS_LOGIN_CUSTOMER_ID, not --manager, for a malformed env value", async () => {
     // The operator passed no flag here; naming one would send them to fix the wrong tier.
-    const seen: LoginCustomerId[] = [];
+    const seen: MccCustomerId[] = [];
     const run = () =>
       main(["1111111111"], (login) => {
         seen.push(login);
@@ -836,7 +836,7 @@ describe("main (fake client, temp cwd)", () => {
     // environment tier would silently stop working in production.
     const orig = process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID;
     process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID = "999-999-9999";
-    const seen: LoginCustomerId[] = [];
+    const seen: MccCustomerId[] = [];
     try {
       const code = await main(["1111111111"], (login) => {
         seen.push(login);
@@ -879,7 +879,7 @@ describe("main (fake client, temp cwd)", () => {
   async function runMainErr(
     argv: string[],
     env: Record<string, string | undefined>,
-    clientFactory: (login: LoginCustomerId) => AdsClient,
+    clientFactory: (login: MccCustomerId) => AdsClient,
   ) {
     const err: string[] = [];
     const origErr = process.stderr.write.bind(process.stderr);
@@ -895,19 +895,19 @@ describe("main (fake client, temp cwd)", () => {
     }
   }
 
-  it("records the yaml's login_customer_id as manager_id when it supplied the header (US2 AC2)", async () => {
+  it("records the yaml's mcc_customer_id as manager_id when it supplied the header (US2 AC2)", async () => {
     // The run goes through an MCC; reporting `manager_id: null` here would tell the
     // operator no manager was used when one demonstrably was.
-    writeCredentials("developer_token: t\nlogin_customer_id: 444-444-4444\n");
+    writeCredentials("developer_token: t\nmcc_customer_id: 444-444-4444\n");
     const { code, seen, printed } = await runMain(["1111111111"], {});
     expect(code).toBe(0);
-    expect(seen).toEqual([KEEP_YAML_LOGIN]); // the decision still reaches the seam intact
+    expect(seen).toEqual([KEEP_YAML_MCC]); // the decision still reaches the seam intact
     const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
     expect(parsed.manager_id).toBe("4444444444");
   });
 
   it("names the inherited yaml MCC in the failure text (FR-008)", async () => {
-    writeCredentials("developer_token: t\nlogin_customer_id: 4444444444\n");
+    writeCredentials("developer_token: t\nmcc_customer_id: 4444444444\n");
     const { code, text } = await runMainErr(["1111111111"], {}, () =>
       failingClient("User doesn't have permission"),
     );
@@ -926,7 +926,7 @@ describe("main (fake client, temp cwd)", () => {
     expect(text).not.toContain("with no manager");
   });
 
-  it("credits google-ads.yaml when the inherited login cannot be read back", async () => {
+  it("credits .adkit.yaml when the inherited login cannot be read back", async () => {
     // Unreadable credentials mean "a login may have been inherited, value unknown" —
     // distinct from "no header was sent", so the message must not claim the latter.
     rmSync(credsPath, { force: true });
@@ -934,7 +934,7 @@ describe("main (fake client, temp cwd)", () => {
       failingClient("User doesn't have permission"),
     );
     expect(code).toBe(1);
-    expect(text).toContain("google-ads.yaml");
+    expect(text).toContain(".adkit.yaml");
     expect(text).not.toContain("with no manager");
   });
 

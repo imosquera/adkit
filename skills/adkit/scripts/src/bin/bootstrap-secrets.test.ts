@@ -17,18 +17,21 @@ describe("SECRETS", () => {
       "google-ads-client-id",
       "google-ads-client-secret",
       "google-ads-refresh-token",
-      "google-ads-login-customer-id",
-      "google-ads-target-customer-id",
       "google-pagespeed-api-key",
     ]);
+  });
+
+  // Account numbers, not credentials: they live in `.adkit.yaml` via `ads.sh init`.
+  it("does not seed either customer id", () => {
+    // The historical secret names, pinned so a revert would fail loudly.
+    expect(SECRETS).not.toContain("google-ads-login-customer-id");
+    expect(SECRETS).not.toContain("google-ads-target-customer-id");
   });
 });
 
 describe("isSensitive", () => {
-  it("treats ids (client_id, login/target customer id) as non-sensitive", () => {
+  it("treats the OAuth client id (a public identifier) as non-sensitive", () => {
     expect(isSensitive("google-ads-client-id")).toBe(false);
-    expect(isSensitive("google-ads-login-customer-id")).toBe(false);
-    expect(isSensitive("google-ads-target-customer-id")).toBe(false);
   });
 
   it("treats tokens/secrets as sensitive", () => {

@@ -53,9 +53,9 @@ export type {
 export {
   credentialsPath,
   customerIdFromYaml,
-  KEEP_YAML_LOGIN,
+  KEEP_YAML_MCC,
   loadClient,
-  loginCustomerIdFromYaml,
+  mccCustomerIdFromYaml,
   parseReadBackend,
   READ_BACKEND_ENV,
   readBackend,
@@ -138,10 +138,10 @@ export { validate as validateFixesPlan } from "./fixes/plan.js";
 // --- CLI helpers ---
 export { emitJson, errorEnvelope, ok, sdkErrorMessage } from "./cli/output.js";
 export {
-  type LoginCustomerId,
-  loginHeaderValue,
+  type MccCustomerId,
+  mccHeaderValue,
   normalizeId,
   resolveCustomer,
-  resolveLoginCustomerId,
-  type ResolvedLogin,
+  resolveMccCustomerId,
+  type ResolvedMcc,
 } from "./cli/args.js";

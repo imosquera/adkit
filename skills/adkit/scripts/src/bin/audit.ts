@@ -17,7 +17,7 @@
  *
  * Usage:
  *   ads.sh audit --customer 1111111111 [--campaign ID] [--all]
- *                 [--login-customer-id MCC] [--banned "VAT,USD,EUR,Portugal"]
+ *                 [--mcc-customer-id MCC] [--banned "VAT,USD,EUR,Portugal"]
  *                 [--differentiation-profile profile.json]
  */
 
@@ -49,6 +49,7 @@ import {
 } from "../audit/scoring.js";
 import { resolveCustomer, type ResolveCustomerOptions } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
+import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
 import {
   applyAdGroupNamesQuery,
   auctionInsightDomainPriorWindowQuery,
@@ -1070,7 +1071,7 @@ function mergeLists<V>(
 
 interface ParsedArgs {
   customer: string | null;
-  loginCustomerId: string | null;
+  mccCustomerId: string | null;
   campaign: string | null;
   all: boolean;
   banned: string[];
@@ -1108,7 +1109,7 @@ function parseAudarArgs(argv: string[]): ParsedArgs {
     args: argv,
     options: {
       customer: { type: "string" },
-      "login-customer-id": { type: "string" },
+      "mcc-customer-id": { type: "string" },
       campaign: { type: "string" },
       all: { type: "boolean", default: false },
       banned: { type: "string", default: "" },
@@ -1132,7 +1133,7 @@ function parseAudarArgs(argv: string[]): ParsedArgs {
 
   return {
     customer: values.customer ?? null,
-    loginCustomerId: values["login-customer-id"] ?? null,
+    mccCustomerId: values["mcc-customer-id"] ?? null,
     campaign: values.campaign ?? null,
     all: values.all ?? false,
     banned: (values.banned ?? "").split(",").map((b) => b.trim()).filter((b) => b),
@@ -1150,8 +1151,8 @@ function parseAudarArgs(argv: string[]): ParsedArgs {
 /**
  * Resolve the customer to QUERY: `--customer` flag → `GOOGLE_ADS_CUSTOMER_ID` env
  * → yaml (target, then login). Mirrors create.ts precedence. Including the env leaf
- * is the fix for the MCC trap: without it, an operator with only `login_customer_id`
- * (an MCC) in google-ads.yaml would query metrics against the manager and hit
+ * is the fix for the MCC trap: without it, an operator with only `mcc_customer_id`
+ * (an MCC) in .adkit.yaml would query metrics against the manager and hit
  * "Metrics cannot be requested for a manager account" even with a leaf exported.
  */
 export function resolveAuditCustomer(
@@ -1173,7 +1174,7 @@ export function managerMetricsHint(): string {
   return (
     "metrics were requested against a manager (MCC) account, which Google Ads rejects. " +
     "Pass --customer <leaf-account-id> (or export GOOGLE_ADS_CUSTOMER_ID=<leaf>). " +
-    "google-ads.yaml's login_customer_id is the MCC login header, not a query target."
+    ".adkit.yaml's mcc_customer_id is the MCC login header, not a query target."
   );
 }
 
@@ -1200,14 +1201,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
 export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<number> {
   const args = parseAudarArgs(argv);
-  const customer = resolveAuditCustomer(args);
-  if (!customer) {
-    emitJson(errorEnvelope("Provide --customer or export GOOGLE_ADS_CUSTOMER_ID (or set a target/login id in yaml)"));
+  // Required to operate: resolves, or asks once on a TTY, or fails loudly. Never guesses.
+  let customer: string;
+  try {
+    customer = await resolveTargetCustomerId(args.customer);
+  } catch (exc) {
+    emitJson(customerIdErrorEnvelope(exc));
     return 2;
   }
-  requireDigits("--customer", customer);
-  requireDigits("--login-customer-id", args.loginCustomerId);
-  const client = loadReadClient(args.loginCustomerId);
+  requireDigits("--mcc-customer-id", args.mccCustomerId);
+  const client = loadReadClient(args.mccCustomerId);
 
   // --campaign accepts an id (digits) or a name substring; resolve the name to an id once.
   let campaignId = args.campaign;

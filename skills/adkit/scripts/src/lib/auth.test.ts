@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   customerIdFromYaml,
-  KEEP_YAML_LOGIN,
-  loginCustomerIdFromYaml,
+  KEEP_YAML_MCC,
+  mccCustomerIdFromYaml,
   parseReadBackend,
-  resolveLoginHeader,
+  resolveMccHeader,
   toSdkMutateOperations,
 } from "./auth.js";
 
@@ -55,22 +55,22 @@ describe("parseReadBackend", () => {
 // The login-header mapping loadClient applies. Pinned here so the two zero-flag
 // report paths cannot regress into each other: an MCC-nested account (yaml carries a
 // login) and a directly-accessible one (yaml carries none) must BOTH work from the
-// same KEEP_YAML_LOGIN decision.
-describe("resolveLoginHeader", () => {
-  it("maps KEEP_YAML_LOGIN to the yaml's login_customer_id (MCC-nested leaf)", () => {
-    expect(resolveLoginHeader(KEEP_YAML_LOGIN, "9999999999")).toBe("9999999999");
+// same KEEP_YAML_MCC decision.
+describe("resolveMccHeader", () => {
+  it("maps KEEP_YAML_MCC to the yaml's mcc_customer_id (MCC-nested leaf)", () => {
+    expect(resolveMccHeader(KEEP_YAML_MCC, "9999999999")).toBe("9999999999");
   });
 
-  it("omits the header when KEEP_YAML_LOGIN meets a yaml with no login (direct leaf)", () => {
-    expect(resolveLoginHeader(KEEP_YAML_LOGIN, undefined)).toBeUndefined();
+  it("omits the header when KEEP_YAML_MCC meets a yaml with no login (direct leaf)", () => {
+    expect(resolveMccHeader(KEEP_YAML_MCC, undefined)).toBeUndefined();
   });
 
   it("omits the header for an explicit null even when the yaml carries a login", () => {
-    expect(resolveLoginHeader(null, "9999999999")).toBeUndefined();
+    expect(resolveMccHeader(null, "9999999999")).toBeUndefined();
   });
 
   it("sends an explicit string override in place of the yaml value", () => {
-    expect(resolveLoginHeader("1234567890", "9999999999")).toBe("1234567890");
+    expect(resolveMccHeader("1234567890", "9999999999")).toBe("1234567890");
   });
 });
 
@@ -83,14 +83,14 @@ describe("resolveLoginHeader", () => {
 // lib/mcp-client.test.ts. A hand-rolled stub mirroring loadClient would only assert
 // toGaql === toGaql, so it is intentionally omitted.
 
-describe("loginCustomerIdFromYaml", () => {
+describe("mccCustomerIdFromYaml", () => {
   let dir: string;
   let credsPath: string;
   let orig: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "auth-"));
-    credsPath = join(dir, "google-ads.yaml");
+    credsPath = join(dir, ".adkit.yaml");
     orig = process.env.GOOGLE_ADS_CREDENTIALS;
     process.env.GOOGLE_ADS_CREDENTIALS = credsPath;
   });
@@ -104,25 +104,25 @@ describe("loginCustomerIdFromYaml", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("returns the yaml's login_customer_id as a string", () => {
-    writeFileSync(credsPath, "developer_token: t\nlogin_customer_id: 4444444444\n");
-    expect(loginCustomerIdFromYaml()).toBe("4444444444");
+  it("returns the yaml's mcc_customer_id as a string", () => {
+    writeFileSync(credsPath, "developer_token: t\nmcc_customer_id: 4444444444\n");
+    expect(mccCustomerIdFromYaml()).toBe("4444444444");
   });
 
-  it("returns undefined when the yaml carries no login_customer_id", () => {
+  it("returns undefined when the yaml carries no mcc_customer_id", () => {
     writeFileSync(credsPath, "developer_token: t\n");
-    expect(loginCustomerIdFromYaml()).toBeUndefined();
+    expect(mccCustomerIdFromYaml()).toBeUndefined();
   });
 
   it("reads the LOGIN id, never the target id customerIdFromYaml prefers", () => {
     // customerIdFromYaml answers "which account do we query" (target first), so
     // reusing it here would report a leaf account as the manager.
-    writeFileSync(credsPath, "target_customer_id: 1111111111\nlogin_customer_id: 4444444444\n");
-    expect(loginCustomerIdFromYaml()).toBe("4444444444");
+    writeFileSync(credsPath, "target_customer_id: 1111111111\nmcc_customer_id: 4444444444\n");
+    expect(mccCustomerIdFromYaml()).toBe("4444444444");
     expect(customerIdFromYaml()).toBe("1111111111");
   });
 
   it("throws (rather than reporting 'no login') when the credentials are unreadable", () => {
-    expect(() => loginCustomerIdFromYaml()).toThrow();
+    expect(() => mccCustomerIdFromYaml()).toThrow();
   });
 });

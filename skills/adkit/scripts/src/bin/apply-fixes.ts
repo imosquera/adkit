@@ -13,7 +13,7 @@
  * Plan shape (all sections optional):
  * {
  *   "customerId": "1111111111",
- *   "loginCustomerId": null,
+ *   "mccCustomerId": null,
  *   "landingUrl": "https://www.example.com/ideas/<slug>",   // default for new sitelinks
  *   "rewrites":  [{"adId": 123, "headlines": [<15>], "descriptions": [<4>], "path1"?: "demo", "path2"?: "trial", "finalUrl"?: "https://..."}],   // full replace; optional display-path change / URL repoint
  *   "appendHeadlines": [{"adId": 123, "add": ["..."]}],      // merge with live, keep existing
@@ -486,7 +486,7 @@ export async function liveHeadlines(
 /** The parsed fixes plan. All sections are optional. */
 export interface FixesPlan extends Record<string, unknown> {
   customerId?: unknown;
-  loginCustomerId?: string | null;
+  mccCustomerId?: string | null;
   landingUrl?: string;
   rewrites?: Array<Record<string, unknown>>;
   appendHeadlines?: Array<Record<string, unknown>>;
@@ -742,9 +742,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 2;
   }
   const customer = String(plan.customerId);
-  // Mirror the Python `plan.get("loginCustomerId")`: always an explicit value (null
+  // Mirror the Python `plan.get("mccCustomerId")`: always an explicit value (null
   // when absent), so load_client clears the MCC header for direct-access accounts.
-  const login = plan.loginCustomerId ?? null;
+  const login = plan.mccCustomerId ?? null;
   const defaultUrl = plan.landingUrl;
 
   const client = loadClient(login);

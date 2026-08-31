@@ -3,13 +3,12 @@
  *
  * Folds together two things that used to live in separate files:
  *  - the Google Ads API **credentials** (`developer_token`, `client_id`,
- *    `client_secret`, `refresh_token`, `login_customer_id`,
- *    `target_customer_id`) that `render-yaml` used to write to
+ *    `client_secret`, `refresh_token`) that `render-yaml` used to write to
  *    `~/.config/google-ads/google-ads.yaml`;
- *  - the **non-secret project defaults** `ads.sh init` scaffolds (the Secret
- *    Manager project, the read backend, and the `create`/`report` output
- *    directories) that an operator would otherwise re-pass as flags or
- *    re-export as env vars every session.
+ *  - the **non-secret project defaults** `ads.sh init` scaffolds (the two
+ *    customer ids, the Secret Manager project, the read backend, and the
+ *    `create`/`report` output directories) that an operator would otherwise
+ *    re-pass as flags or re-export as env vars every session.
  *
  * The combined file carries real secrets, so — unlike the plain-defaults file
  * this replaced — it is git-ignored and per-machine, at the repo root (or the
@@ -22,8 +21,8 @@
  * {@link resolveTier}.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 /** The project config `init`/`render-yaml` write and every entrypoint may read. */
@@ -32,7 +31,8 @@ export interface AdkitConfig {
   client_id?: string;
   client_secret?: string;
   refresh_token?: string;
-  login_customer_id?: string;
+  /** Account numbers, not credentials — plain local preferences, never in Secret Manager. */
+  mcc_customer_id?: string;
   target_customer_id?: string;
   /** PageSpeed Insights API key — optional; enables `audit`'s PSI auto-diagnosis (issue #40). */
   psi_api_key?: string;
@@ -58,13 +58,21 @@ export const CREDENTIAL_FIELDS: readonly ConfigField[] = [
   { key: "client_id", label: "OAuth client id", default: "", sensitive: false },
   { key: "client_secret", label: "OAuth client secret", default: "", sensitive: true },
   { key: "refresh_token", label: "OAuth refresh token", default: "", sensitive: true },
-  { key: "login_customer_id", label: "Default manager/login customer id (used as login-customer-id when no --manager flag is passed)", default: "", sensitive: false },
-  { key: "target_customer_id", label: "Default target/leaf customer id", default: "", sensitive: false },
   { key: "psi_api_key", label: "PageSpeed Insights API key (optional — enables `audit`'s PSI landing-page diagnosis; leave blank to skip)", default: "", sensitive: true },
 ];
 
-/** The non-secret project-preference fields. */
+/**
+ * The non-secret project-preference fields.
+ *
+ * The two customer ids lead the list: they are Google Ads **account numbers**, not
+ * credentials — visible in the Ads UI, safe in a ticket or a screenshot — so they
+ * live here in `.adkit.yaml` rather than behind a Secret Manager round trip. Both
+ * are optional: an account reached directly (no manager) simply omits
+ * `mcc_customer_id`.
+ */
 export const PREFERENCE_FIELDS: readonly ConfigField[] = [
+  { key: "mcc_customer_id", label: "Manager (MCC) account id — 10 digits, no dashes. Leave BLANK if you reach the account directly, without a manager", default: "", sensitive: false },
+  { key: "target_customer_id", label: "Google Ads account id to operate on — 10 digits, no dashes", default: "", sensitive: false },
   { key: "secrets_project", label: "GCP Secret Manager project", default: "your-project-prod", sensitive: false },
   { key: "read_backend", label: "Read backend (sdk|mcp)", default: "sdk", sensitive: false },
   { key: "reports_dir", label: "Reports output directory", default: "ads/output/reports", sensitive: false },
@@ -72,7 +80,7 @@ export const PREFERENCE_FIELDS: readonly ConfigField[] = [
   { key: "ideas_dir", label: "Processed-ideas directory", default: "ideas/processed", sensitive: false },
 ];
 
-/** Every config field, in yaml-emit and prompt order: credentials first, then preferences. */
+/** Every config field, in yaml-emit and prompt order: credentials first, then preferences (the customer ids leading them). */
 export const CONFIG_FIELDS: readonly ConfigField[] = [...CREDENTIAL_FIELDS, ...PREFERENCE_FIELDS];
 
 /** Path to the project config file (env override wins), resolved against the current working directory. */
@@ -126,6 +134,14 @@ export function buildConfigYamlBody(values: ReadonlyMap<string, string>): string
   return [...header, ...fieldLines, "use_proto_plus: true"].join("\n") + "\n";
 }
 
+/**
+ * The config with `key` set to `value` — a new object, never a mutation of `config`.
+ * Pure; the write itself is {@link writeConfigField}'s job.
+ */
+export function withConfigField(config: AdkitConfig, key: keyof AdkitConfig, value: string): AdkitConfig {
+  return { ...config, [key]: value };
+}
+
 /** Parse a config yaml body into an {@link AdkitConfig}. Pure; unknown/missing fields are simply absent. */
 export function parseConfig(text: string): AdkitConfig {
   return (parseYaml(text) as AdkitConfig | null) ?? {};
@@ -150,8 +166,30 @@ export function configToValueMap(config: AdkitConfig): Map<string, string> {
 }
 
 /**
+ * Set a single field in `.adkit.yaml`, carrying every other field through
+ * untouched, and write the result atomically with 0600 perms (the file also holds
+ * real credentials).
+ *
+ * The read-modify-write is deliberate: this is called on a config that may have
+ * been edited since it was loaded, and it must never drop a field it doesn't know
+ * about the way a blind overwrite would. Used by the prompt-and-persist path in
+ * `lib/customer-id.ts` — see the note there about a read-only command writing this
+ * file.
+ */
+export function writeConfigField(key: keyof AdkitConfig, value: string): void {
+  const target = configPath();
+  const merged = withConfigField(loadConfig(), key, value);
+  const dir = dirname(target);
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = join(dir, `adkit-${process.pid}-${Date.now()}.yaml`);
+  writeFileSync(tmpPath, buildConfigYamlBody(configToValueMap(merged)), { mode: 0o600 });
+  chmodSync(tmpPath, 0o600);
+  renameSync(tmpPath, target);
+}
+
+/**
  * Resolve one setting through the flag -> env -> config -> fallback tiers,
- * the same shape as `resolveCustomer`/`resolveLoginCustomerId` in `cli/args.ts`.
+ * the same shape as `resolveCustomer`/`resolveMccCustomerId` in `cli/args.ts`.
  * The first non-blank tier wins; blank/whitespace is treated as absent.
  */
 export function resolveTier(

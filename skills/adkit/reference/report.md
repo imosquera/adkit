@@ -32,16 +32,17 @@ This prints the path to a raw YAML file under `ads/output/reports/` named
 credentials → run `ads.sh render-yaml`; or no enabled campaigns matched), stop
 and report the error to the user — do not fabricate a report.
 
-**Manager / login-customer-id.** There is no default manager id. The login header
+**Manager / mcc-customer-id.** There is no default manager id. The login header
 is resolved through this precedence chain, first non-blank wins:
 
 1. `--manager <id>` on the command line,
 2. the `GOOGLE_ADS_LOGIN_CUSTOMER_ID` environment variable,
-3. the `login_customer_id` in `google-ads.yaml` (seeded by `ads.sh render-yaml`
-   from Secret Manager) — inherited, the same source `audit` and `preflight` use.
+3. the `mcc_customer_id` in `.adkit.yaml` (set by `ads.sh init` or a hand-edit —
+   it is an account number, not a secret) — inherited, the same source `audit`
+   and `preflight` use.
 
 If neither the flag nor the variable supplies a value, the run inherits whatever
-`google-ads.yaml` carries: an MCC login when the file has one, and no login header
+`.adkit.yaml` carries: an MCC login when the file has one, and no login header
 at all when it does not — which is exactly what a directly-accessible account
 needs. Ids may be given in dashed form (`222-222-2222`) and are normalised to 10
 digits; a malformed id is rejected up front, naming the tier it came from
@@ -50,10 +51,10 @@ count as absent, so an exported-but-empty variable falls through rather than
 clearing an MCC login.
 
 The `manager_id` field in the raw YAML records the id actually used — including
-one inherited from `google-ads.yaml` — and is `null` when no login header was sent
+one inherited from `.adkit.yaml` — and is `null` when no login header was sent
 (or, rarely, when the credentials could not be read back to name it). If a query
 fails, the error text names the manager the run actually went through, or says the
-login came from `google-ads.yaml`, so you can see which tier supplied it.
+login came from `.adkit.yaml`, so you can see which tier supplied it.
 
 Read that YAML. Its shape: `customer_id`, `manager_id`, `window`
 (`start`/`end`/`days`/`partial_day`), `generated_at`, arrays `campaigns`,

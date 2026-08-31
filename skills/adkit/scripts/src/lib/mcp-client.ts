@@ -20,7 +20,7 @@
  * dispatch seam that observes the `ADKIT_READ_BACKEND` selector at runtime.
  */
 
-import { type AdsClient, type AdsMutateOperation, type GaqlRow, KEEP_YAML_LOGIN, loadClient, type MutateResult, readBackend } from "./auth.js";
+import { type AdsClient, type AdsMutateOperation, type GaqlRow, KEEP_YAML_MCC, loadClient, type MutateResult, readBackend } from "./auth.js";
 import type { SearchArgs } from "../gaql/search-args.js";
 
 /** The `search` tool's parameter object, per the google-ads-mcp tool signature. */
@@ -106,7 +106,7 @@ export function createMcpReadClient(): AdsClient {
  * selecting `mcp` today produces a client whose reads throw {@link McpNotConfiguredError}.
  */
 export function loadReadClient(
-  loginCustomerId: Parameters<typeof loadClient>[0] = KEEP_YAML_LOGIN,
+  mccCustomerId: Parameters<typeof loadClient>[0] = KEEP_YAML_MCC,
 ): AdsClient {
-  return readBackend() === "mcp" ? createMcpReadClient() : loadClient(loginCustomerId);
+  return readBackend() === "mcp" ? createMcpReadClient() : loadClient(mccCustomerId);
 }

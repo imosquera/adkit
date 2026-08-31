@@ -5,7 +5,7 @@
  * entrypoint that calls the Google Ads KeywordPlanIdeaService's
  * `generate_keyword_ideas` — an RPC NOT covered by the {@link AdsClient}
  * search/mutate abstraction. It therefore talks to `google-ads-api` directly,
- * building a `Customer` from the same google-ads.yaml credentials and calling
+ * building a `Customer` from the same .adkit.yaml credentials and calling
  * `customer.keywordPlanIdeas.generateKeywordIdeas(request)`.
  *
  * The SDK call is isolated behind {@link generateIdeaRows}; everything else — the
@@ -18,8 +18,8 @@ import { isMainModule } from "../cli/entry.js";
 import { GoogleAdsApi, enums, type services } from "google-ads-api";
 import { parse as parseYaml } from "yaml";
 import { credentialsPath } from "../lib/auth.js";
-import { resolveCustomer } from "../cli/args.js";
-import { sdkErrorMessage } from "../cli/output.js";
+import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
+import { emitJson, sdkErrorMessage } from "../cli/output.js";
 import { formatBulletText } from "../lib/markdown.js";
 import { MAX_KEYWORD_CHARS, type ApiIdea, type Candidate, unionCandidates } from "../lib/merge.js";
 import { competitionLabel } from "../lib/metrics.js";
@@ -43,13 +43,13 @@ export interface KeywordIdeasArgs {
   readonly pageUrl: string | null;
 }
 
-/** Minimal slice of google-ads.yaml this entrypoint needs to build a Customer. */
+/** Minimal slice of .adkit.yaml this entrypoint needs to build a Customer. */
 interface AdsYaml {
   developer_token?: string;
   client_id?: string;
   client_secret?: string;
   refresh_token?: string;
-  login_customer_id?: string | number;
+  mcc_customer_id?: string | number;
 }
 
 /**
@@ -247,10 +247,10 @@ export function seedOnlyDicts(seeds: readonly string[]): CandidateDict[] {
 }
 
 /**
- * The one SDK-touching function: build a Customer from google-ads.yaml and call
+ * The one SDK-touching function: build a Customer from .adkit.yaml and call
  * `keywordPlanIdeas.generateKeywordIdeas`, returning the raw result rows.
  *
- * `login_customer_id` is carried from the yaml (the KeywordPlanIdeaService is
+ * `mcc_customer_id` is carried from the yaml (the KeywordPlanIdeaService is
  * called against the operating account directly). Kept tiny and side-effect-only
  * so the pure mapping above stays testable without a live account.
  */
@@ -266,7 +266,7 @@ export async function generateIdeaRows(
   const customer = api.Customer({
     customer_id: request.customer_id ?? "",
     refresh_token: creds.refresh_token ?? "",
-    ...(creds.login_customer_id !== undefined ? { login_customer_id: String(creds.login_customer_id) } : {}),
+    ...(creds.mcc_customer_id !== undefined ? { login_customer_id: String(creds.mcc_customer_id) } : {}),
   });
   // The SDK method's param type is the concrete request class (with toJSON); the
   // plain `I…Request` object is accepted at runtime, so narrow to the expected type.
@@ -296,11 +296,12 @@ export async function main(
   generate: (req: services.IGenerateKeywordIdeasRequest) => Promise<IdeaRow[]> = generateIdeaRows,
 ): Promise<number> {
   const args = parseArgs(argv);
-  const customerId = resolveCustomer([args.customerId]);
-  if (!customerId) {
-    process.stderr.write(
-      "error: --customer-id, GOOGLE_ADS_CUSTOMER_ID, or login_customer_id in google-ads.yaml required\n",
-    );
+  // Required to operate: resolves, or asks once on a TTY, or fails loudly. Never guesses.
+  let customerId: string;
+  try {
+    customerId = await resolveTargetCustomerId(args.customerId);
+  } catch (exc) {
+    emitJson(customerIdErrorEnvelope(exc));
     return 2;
   }
 

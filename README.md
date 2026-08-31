@@ -23,7 +23,23 @@ npx skills add git@github.com:imosquera/adkit.git
 
 ## Setup
 
-Secrets are stored in GCP Secret Manager and rendered locally on demand — nothing is committed to the repo.
+Four credentials — developer token, OAuth client id, client secret, refresh token (plus an
+optional PageSpeed key) — are stored in GCP Secret Manager and rendered locally on demand;
+nothing is committed to the repo.
+
+The two customer ids are **not** credentials. `target_customer_id` (the account you operate
+on) and `mcc_customer_id` (the manager you reach it through, if any) are 10-digit Google Ads
+account numbers printed in the Ads UI, so they live in `.adkit.yaml` as ordinary preferences
+set by `ads.sh init`. `render-yaml` never fetches or overwrites them. Omit `mcc_customer_id`
+for an account you reach directly, without a manager — absent is the correct setting there,
+and nothing will ever prompt you for it. If `target_customer_id` is missing when a command
+needs it, you are asked once on a terminal and the answer is saved; in CI the command exits
+non-zero naming the field instead of guessing.
+
+**Scaffold the local config (once per project):**
+```bash
+ads.sh init
+```
 
 **One-time secret seed:**
 ```bash

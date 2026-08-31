@@ -60,7 +60,7 @@ function fakeClient(pick: (query: string) => unknown[], onSearch?: () => void): 
 }
 
 describe("resolveAuditCustomer (bug 4: MCC/leaf resolution)", () => {
-  const yamlMcc = () => "9999999999"; // yaml has only a login_customer_id (an MCC)
+  const yamlMcc = () => "9999999999"; // yaml has only a mcc_customer_id (an MCC)
 
   it("prefers the --customer flag", () => {
     const got = resolveAuditCustomer({ customer: "1234567890" }, { GOOGLE_ADS_CUSTOMER_ID: "2222222222" }, {

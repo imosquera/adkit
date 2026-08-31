@@ -91,18 +91,18 @@ export function readBackend(): ReadBackend {
 }
 
 /**
- * Sentinel distinguishing "keep the yaml's login_customer_id header" (pass nothing)
+ * Sentinel distinguishing "keep the yaml's mcc_customer_id header" (pass nothing)
  * from "override it" (pass a value, including `null` to clear the MCC header for
  * directly-accessible accounts).
  */
-export const KEEP_YAML_LOGIN = Symbol("keep-yaml-login");
+export const KEEP_YAML_MCC = Symbol("keep-yaml-mcc");
 
 interface AdsYaml {
   developer_token?: string;
   client_id?: string;
   client_secret?: string;
   refresh_token?: string;
-  login_customer_id?: string | number;
+  mcc_customer_id?: string | number;
   target_customer_id?: string | number;
 }
 
@@ -130,18 +130,18 @@ function readCredentials(): AdsYaml {
 }
 
 /**
- * The yaml's `login_customer_id` — the MCC login HEADER — and nothing else;
+ * The yaml's `mcc_customer_id` — the MCC login HEADER — and nothing else;
  * `undefined` when the credentials carry none.
  *
  * Deliberately not {@link customerIdFromYaml}: that one answers "which account do we
  * QUERY" and prefers `target_customer_id`, so it would report a leaf id as the
  * manager. Unlike it, this does NOT swallow a read failure — a caller that only
  * wants a display value decides for itself that an unreadable file is tolerable
- * (see {@link KEEP_YAML_LOGIN}'s consumers), and a caller on the main path must not
+ * (see {@link KEEP_YAML_MCC}'s consumers), and a caller on the main path must not
  * silently see "no login" when the truth is "could not tell".
  */
-export function loginCustomerIdFromYaml(): string | undefined {
-  const login = readCredentials().login_customer_id;
+export function mccCustomerIdFromYaml(): string | undefined {
+  const login = readCredentials().mcc_customer_id;
   return login ? String(login) : undefined;
 }
 
@@ -149,10 +149,10 @@ export function loginCustomerIdFromYaml(): string | undefined {
 export function customerIdFromYaml(): string | null {
   try {
     const data = readCredentials();
-    // target_customer_id is the leaf operating account; login_customer_id is the MCC.
+    // target_customer_id is the leaf operating account; mcc_customer_id is the MCC.
     // `||` (not `??`) so a falsy-but-present target (0/"") falls through, matching
     // the Python `target or login`.
-    const cid = data.target_customer_id || data.login_customer_id;
+    const cid = data.target_customer_id || data.mcc_customer_id;
     return cid ? String(cid) : null;
   } catch {
     return null;
@@ -160,33 +160,33 @@ export function customerIdFromYaml(): string | null {
 }
 
 /**
- * Map a caller's login-customer-id decision + the yaml's own `login_customer_id`
+ * Map a caller's mcc-customer-id decision + the yaml's own `mcc_customer_id`
  * to the header value the SDK should carry (`undefined` = send no header).
  *
  * Pure, and split out of {@link loadClient} so the three-way sentinel semantics are
  * pinnable without live credentials:
- *  - {@link KEEP_YAML_LOGIN} → the yaml's value (or no header when the yaml has none),
+ *  - {@link KEEP_YAML_MCC} → the yaml's value (or no header when the yaml has none),
  *  - `null` → no header, regardless of what the yaml carries,
  *  - a string → that MCC id.
  */
-export function resolveLoginHeader(
-  loginCustomerId: string | null | typeof KEEP_YAML_LOGIN,
-  yamlLogin: string | undefined,
+export function resolveMccHeader(
+  mccCustomerId: string | null | typeof KEEP_YAML_MCC,
+  yamlMcc: string | undefined,
 ): string | undefined {
-  return loginCustomerId === KEEP_YAML_LOGIN ? yamlLogin : loginCustomerId ?? undefined;
+  return mccCustomerId === KEEP_YAML_MCC ? yamlMcc : mccCustomerId ?? undefined;
 }
 
 /**
- * Build the real {@link AdsClient} from the google-ads.yaml credentials.
+ * Build the real {@link AdsClient} from the .adkit.yaml credentials.
  *
- * `loginCustomerId` semantics mirror the Python `load_client`:
- *  - omitted ({@link KEEP_YAML_LOGIN}) → keep the yaml's login_customer_id (the MCC).
+ * `mccCustomerId` semantics mirror the Python `load_client`:
+ *  - omitted ({@link KEEP_YAML_MCC}) → keep the yaml's mcc_customer_id (the MCC).
  *  - `null` → clear the header for accounts you access DIRECTLY (an MCC header would
  *    otherwise break with USER_PERMISSION_DENIED). Most audit targets are direct.
  *  - a string MCC id → reach a leaf account through that manager.
  */
 export function loadClient(
-  loginCustomerId: string | null | typeof KEEP_YAML_LOGIN = KEEP_YAML_LOGIN,
+  mccCustomerId: string | null | typeof KEEP_YAML_MCC = KEEP_YAML_MCC,
 ): AdsClient {
   const creds = readCredentials();
   const api = new GoogleAdsApi({
@@ -195,14 +195,14 @@ export function loadClient(
     developer_token: creds.developer_token ?? "",
   });
   const refreshToken = creds.refresh_token ?? "";
-  const yamlLogin = creds.login_customer_id !== undefined ? String(creds.login_customer_id) : undefined;
-  const resolvedLogin = resolveLoginHeader(loginCustomerId, yamlLogin);
+  const yamlMcc = creds.mcc_customer_id !== undefined ? String(creds.mcc_customer_id) : undefined;
+  const resolvedMcc = resolveMccHeader(mccCustomerId, yamlMcc);
 
   const customerFor = (customerId: string) =>
     api.Customer({
       customer_id: customerId,
       refresh_token: refreshToken,
-      ...(resolvedLogin !== undefined ? { login_customer_id: resolvedLogin } : {}),
+      ...(resolvedMcc !== undefined ? { login_customer_id: resolvedMcc } : {}),
     });
 
   return {

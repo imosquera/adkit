@@ -23,7 +23,9 @@ Mechanics (the JSON envelope, credentials, customer-id resolution) are in **`ref
 ads.sh init
 ```
 
-- **Interactive**: prompts once for each field in `lib/config.ts`'s `CONFIG_FIELDS` — the Google Ads credentials first (`developer_token`, `client_id`, `client_secret`, `refresh_token`, `login_customer_id`, `target_customer_id`; credential fields are read without echo), then the non-secret project preferences (`secrets_project`, `read_backend`, `reports_dir`, `briefs_dir`, `ideas_dir`). A blank answer keeps the field's default (shown inline in the prompt); a field left blank with no default is simply omitted from the file.
+- **Interactive**: prompts once for each field in `lib/config.ts`'s `CONFIG_FIELDS` — the Google Ads credentials first (`developer_token`, `client_id`, `client_secret`, `refresh_token`, `psi_api_key`; read without echo, except the public `client_id`), then the non-secret project preferences (`mcc_customer_id`, `target_customer_id`, `secrets_project`, `read_backend`, `reports_dir`, `briefs_dir`, `ideas_dir`). A blank answer keeps the field's default (shown inline in the prompt); a field left blank with no default is simply omitted from the file.
+- **The ids live in the yaml; only the four real credentials come from Secret Manager.** `bootstrap-secrets` seeds and `render-yaml` fetches exactly `developer_token`, `client_id`, `client_secret`, `refresh_token` (plus the optional `psi_api_key`). `target_customer_id` and `mcc_customer_id` are account numbers — they are set here or by hand-editing `.adkit.yaml`, and `render-yaml` never fetches or overwrites them. Omit `mcc_customer_id` entirely for a directly-accessible account (no manager); leaving it blank is correct, not incomplete.
+- **If you skip `target_customer_id` here, the first command that needs it will ask.** Any subcommand that resolves no target id — no flag, no `GOOGLE_ADS_CUSTOMER_ID`, no yaml entry — prompts once on a terminal, validates the answer (10 digits, dashes stripped), writes it into `.adkit.yaml`, and carries on; you are not asked again. With no terminal (CI, a pipe) it does not prompt: it exits non-zero with the `ok:false` envelope naming the field and the config path. `mcc_customer_id` is never prompted for — absent means "directly accessible".
 - **Create-if-missing**: if `.adkit.yaml` already exists, `init` prints a message and leaves it untouched — it never overwrites. To redo it, delete the file (or hand-edit it directly) and rerun.
 - **`.gitignore`**: every run makes sure `.gitignore` excludes `.adkit.yaml` (adding the entry if it's missing), since the file carries real credentials. This happens even when the config file already existed and `init` otherwise no-ops, so a stale or unprotected `.gitignore` gets retrofitted.
 - Run it from the project root — `.adkit.yaml` is written to `process.cwd()` (or the `ADKIT_CONFIG` path override).
@@ -31,7 +33,7 @@ ads.sh init
 ## After `init`
 
 - If you don't yet have the Google Ads credentials themselves seeded in Secret Manager, run `ads.sh bootstrap-secrets` once.
-- `ads.sh render-yaml` pulls the credential fields from Secret Manager and merges them into `.adkit.yaml`, leaving the preferences `init` set untouched.
+- `ads.sh render-yaml` pulls the credential fields from Secret Manager and merges them into `.adkit.yaml`, leaving the preferences `init` set — the customer ids included — untouched.
 - Run `ads.sh preflight` once per session afterward to confirm the credentials work and the target customer is reachable.
 
 ## Report

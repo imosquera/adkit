@@ -36,7 +36,7 @@ import {
 } from "../adbriefs/store.js";
 import { diffBriefs } from "../adbriefs/diff.js";
 import { buildState, statePathForCampaign, writeState } from "../adbriefs/state.js";
-import { resolveCustomer } from "../cli/args.js";
+import { resolveTargetCustomerId } from "../cli/customer-id.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
 import {
   DEFAULT_TOP_N,
@@ -345,15 +345,13 @@ async function assertFinalUrlsReachable(brief: Brief): Promise<void> {
 }
 
 /**
- * Resolve the customer id from the brief, then env, then google-ads.yaml (via
- * {@link resolveCustomer}). Dies if nothing resolves.
+ * Resolve the customer id to publish into: the brief's own field, then the env,
+ * then `.adkit.yaml` — and, when none of those carries one, a single TTY prompt
+ * that persists the answer (see `cli/customer-id.ts`). Never guesses; off a TTY it
+ * throws rather than proceeding against an account nobody named.
  */
-export function customerIdFor(brief: Brief): string {
-  const chosen = resolveCustomer([brief.customerId, process.env["GOOGLE_ADS_CUSTOMER_ID"]]);
-  if (!chosen) {
-    die("no customerId in brief, GOOGLE_ADS_CUSTOMER_ID env, or login_customer_id in google-ads.yaml");
-  }
-  return chosen;
+export async function customerIdFor(brief: Brief): Promise<string> {
+  return resolveTargetCustomerId(brief.customerId);
 }
 
 /**
@@ -402,7 +400,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       await assertFinalUrlsReachable(brief);
     }
 
-    const customerId = customerIdFor(brief);
+    const customerId = await customerIdFor(brief);
     const agNames = brief.adGroups.map((ag) => ag.name);
 
     const keywordCount = brief.adGroups.reduce((n, ag) => n + ag.keywords.length, 0);

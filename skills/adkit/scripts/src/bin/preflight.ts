@@ -3,7 +3,7 @@
  *
  * Faithful port of `ads_skill/bin/preflight.py`. Runs the cheap, offline checks
  * first (the `GOOGLE_ADS_CUSTOMER_ID` env var is a 10-digit id; the
- * google-ads.yaml credentials file exists) WITHOUT touching the SDK, then does a
+ * .adkit.yaml credentials file exists) WITHOUT touching the SDK, then does a
  * single live API check confirming the OAuth identity can see the target
  * customer. Every failure is emitted as the shared `{ ok: false, message, step }`
  * envelope; success as `{ ok: true, ... }`.
@@ -93,7 +93,7 @@ export async function main(): Promise<number> {
   // --- live API check (requires the SDK) ---
   let client: ReturnType<typeof loadClient>;
   try {
-    // login_customer_id = null: most preflight targets are directly-accessible.
+    // mcc_customer_id = null: most preflight targets are directly-accessible.
     client = loadClient(null);
   } catch (exc) {
     // A module-not-found here means the SDK / deps aren't installed.
@@ -132,7 +132,7 @@ export async function main(): Promise<number> {
     emitJson(
       errorEnvelope(
         `customer ${customerId} is not accessible with these credentials: ${sdkErrorMessage(exc)}. ` +
-          "Confirm the login_customer_id in google-ads.yaml is the MCC that manages this customer.",
+          "Confirm the mcc_customer_id in .adkit.yaml is the MCC that manages this customer.",
         { step: "access" },
       ),
     );

@@ -36,13 +36,13 @@ describe("checkCustomerIdEnv", () => {
 
 describe("checkCredentialsExist", () => {
   it("passes when the file exists", () => {
-    expect(checkCredentialsExist("/some/google-ads.yaml", () => true)).toBeNull();
+    expect(checkCredentialsExist("/some/.adkit.yaml", () => true)).toBeNull();
   });
 
   it("fails (step 'credentials') when the file is missing", () => {
-    const failure = checkCredentialsExist("/nope/google-ads.yaml", () => false);
+    const failure = checkCredentialsExist("/nope/.adkit.yaml", () => false);
     expect(failure?.step).toBe("credentials");
-    expect(failure?.message).toContain("/nope/google-ads.yaml");
+    expect(failure?.message).toContain("/nope/.adkit.yaml");
     expect(failure?.message).toMatch(/render-yaml/);
   });
 });

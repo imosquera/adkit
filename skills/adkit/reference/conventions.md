@@ -20,11 +20,22 @@ ads.sh <subcommand> [args…]
 - **No persistent server, no MCP** — every invocation is a single Node process.
 - Subcommands: `init`, `preflight`, `create`, `audit`, `update`, `keyword-ideas`, `report`, `render-yaml`, `bootstrap-secrets` (`apply-fixes` is a deprecated alias for `update`).
 
-## Customer-id vs login-customer-id
+## `target_customer_id` vs `mcc_customer_id`
 
-- **`--customer <id>`** (a.k.a. `customerId` / `GOOGLE_ADS_CUSTOMER_ID`) is the **leaf account** the operation reads or mutates.
-- **`--login-customer-id <MCC>`** (a.k.a. `--manager`) is only needed when the leaf is reached *through* a manager account. **Omit it for directly-accessible accounts** — the default `None` is correct for directly-accessible clients.
-- **Format rule:** every customer/manager id is **10 digits, no dashes**. Strip any dashes a human typed before passing them through.
+The two ids answer different questions, and the names say which: the **target** is
+what you operate on, the **MCC** is what you go through to reach it.
+
+- **`target_customer_id`** (`--customer <id>` / `GOOGLE_ADS_CUSTOMER_ID`) is the **leaf account** the operation reads or mutates. **Required** — every command needs to know what it is acting on.
+- **`mcc_customer_id`** (`--mcc-customer-id <MCC>`, a.k.a. `--manager`) is the manager account the leaf is reached *through*, sent as the login header. **Optional, and absent is a real answer**: omit it entirely for a directly-accessible account — no header is the correct behaviour there, not a missing setting. Nothing ever prompts for it or blocks on it.
+- **Format rule:** every customer/manager id is **10 digits**. Dashes are accepted on input (`123-456-7890`, the form the Ads UI shows) and stripped once at the boundary; anything that is not 10 digits after stripping is rejected, naming the tier it came from and what was wrong with it.
+- **When `target_customer_id` resolves nowhere** — no flag, no env var, no `.adkit.yaml` entry — the command does not guess. On a terminal it asks once and saves the answer to `.adkit.yaml`; with no terminal (CI, a pipe) it exits non-zero with the standard `ok:false` envelope naming the field, the config path, and the fix. There is no fallback to Secret Manager.
+- If the API rejects a call in a way that means the leaf is only reachable through a manager, the error names `mcc_customer_id` as the thing to set.
+
+> **Naming note:** the wire/SDK field is still Google's `login_customer_id`, and the
+> environment variable is still `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — both are Google's
+> names, kept as-is at the boundary. Everywhere adkit owns the name (the
+> `.adkit.yaml` key, the flags, the code) it is `mcc_customer_id`, because "login"
+> reads like a credential and this is an account number.
 
 ## JSON envelope contract
 
@@ -44,18 +55,27 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 - Everything local lives in one file: `.adkit.yaml` at the repo root (or the
   `ADKIT_CONFIG` / legacy `GOOGLE_ADS_CREDENTIALS` path). It carries both the Google
   Ads API **credentials** (`developer_token`, `client_id`, `client_secret`,
-  `refresh_token`, `login_customer_id`, `target_customer_id`) and non-secret
-  **project preferences** (the Secret Manager project, the read backend, the
-  `create`/`report` output directories). It contains real secrets — **git-ignored,
-  per-machine, never commit it**. Secrets themselves are seeded in Google Secret
-  Manager (project `your-project-prod`).
+  `refresh_token`, plus the optional `psi_api_key`) and non-secret **project
+  preferences** (`mcc_customer_id`, `target_customer_id`, the Secret Manager
+  project, the read backend, the `create`/`report` output directories). It contains
+  real secrets — **git-ignored, per-machine, never commit it**. The credentials
+  themselves are seeded in Google Secret Manager (project `your-project-prod`).
+- **The two customer ids are not secrets.** They are 10-digit Google Ads account
+  numbers, visible in the Ads UI and safe in a ticket or a screenshot, so they live
+  in `.adkit.yaml` as ordinary preferences — set by `ads.sh init` or a hand-edit,
+  never in Secret Manager, never fetched or overwritten by `render-yaml`. Both are
+  optional: an account reached directly (no manager) simply omits
+  `mcc_customer_id`, and `target_customer_id` is asked for once (on a terminal) or
+  reported as a named `ok:false` failure (off one) rather than guessed. There is no
+  fallback to Secret Manager for either — see the section above.
 - `ads.sh init` scaffolds it with a one-time interactive prompt — **create-if-missing**;
   it never overwrites an existing file. Every run also makes sure `.gitignore`
   excludes `.adkit.yaml` (adding the entry if missing), whether or not the config
   file itself already existed — a `.gitignore` predating this command is retrofitted.
 - `ads.sh render-yaml` pulls the credential fields from Secret Manager and **merges**
-  them in, leaving any preferences `init` (or a hand-edit) already set untouched. One-time
-  seed of the secrets themselves: `ads.sh bootstrap-secrets`.
+  them in, leaving any preferences `init` (or a hand-edit) already set — the customer
+  ids included — untouched. One-time seed of the secrets themselves:
+  `ads.sh bootstrap-secrets` (credentials only; it never prompts for a customer id).
 - Precedence for every field: an explicit flag, then the matching env var, then
   `.adkit.yaml`, then a hardcoded default — the same flag→env→yaml tiering as
   customer-id resolution above. See `lib/config.ts`'s `resolveTier`.
@@ -81,7 +101,7 @@ built as a **reversible seam**, selected by one env var:
     (`pipx run --spec git+https://github.com/googleads/google-ads-mcp.git google-ads-mcp`),
     driven as an **embedded stdio MCP client** (an HTTP transport can be substituted at the
     same seam without changing call-sites).
-  - **Auth**: reuse the existing `google-ads.yaml` via the MCP Python client's yaml option
+  - **Auth**: reuse the existing `.adkit.yaml` via the MCP Python client's yaml option
     where possible; the alternative is ADC (`GOOGLE_APPLICATION_CREDENTIALS`) plus
     `GOOGLE_PROJECT_ID` and `GOOGLE_ADS_DEVELOPER_TOKEN`.
 

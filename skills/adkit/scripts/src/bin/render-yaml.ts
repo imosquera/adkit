@@ -5,12 +5,13 @@
  * the combined `.adkit.yaml` (see {@link "../lib/config.js"}) rather than a
  * dedicated `google-ads.yaml`. Each field is pulled via `gcloud secrets versions
  * access latest`, then **merged** into whatever config already exists at
- * {@link "../lib/config.js".configPath} — an operator's `secrets_project`,
- * `read_backend`, or output-dir preferences (set by `ads.sh init`, or hand-edited)
- * survive a re-render; only the credential fields are replaced. Required secrets
- * that are missing abort (the `gcloud` call throws); the optional
- * `target_customer_id` and `psi_api_key` fields are skipped when absent. The file
- * is written atomically
+ * {@link "../lib/config.js".configPath} — an operator's customer ids,
+ * `secrets_project`, `read_backend`, or output-dir preferences (set by `ads.sh
+ * init`, or hand-edited) survive a re-render; only the credential fields are
+ * replaced. In particular `mcc_customer_id`/`target_customer_id` are account
+ * numbers, not secrets: they are never fetched and never overwritten here.
+ * Required secrets that are missing abort (the `gcloud` call throws); the optional
+ * `psi_api_key` field is skipped when absent. The file is written atomically
  * (temp file + rename) with 0600 perms so the plaintext credentials never briefly
  * exist world-readable.
  *
@@ -32,8 +33,8 @@ export const PROJECT = resolveTier(null, process.env["GOOGLE_ADS_SECRETS_PROJECT
 
 /**
  * One credential field: the yaml key, its Secret Manager secret name, and whether
- * it is required. `target_customer_id` is skill-local (not a real google-ads client
- * field), so it is optional — skipped rather than fatal when its secret is absent.
+ * it is required. A `required: false` field is skipped rather than fatal when its
+ * secret is absent.
  */
 export interface SecretSpec {
   field: string;
@@ -47,10 +48,8 @@ export const SECRETS: readonly SecretSpec[] = [
   { field: "client_id", secret: "google-ads-client-id", required: true },
   { field: "client_secret", secret: "google-ads-client-secret", required: true },
   { field: "refresh_token", secret: "google-ads-refresh-token", required: true },
-  { field: "login_customer_id", secret: "google-ads-login-customer-id", required: true },
-  { field: "target_customer_id", secret: "google-ads-target-customer-id", required: false },
-  // Optional, like target_customer_id: not every operator has PSI access, and
-  // audit's PSI diagnosis degrades gracefully (skips with a reason) without it.
+  // Optional: not every operator has PSI access, and audit's PSI diagnosis
+  // degrades gracefully (skips with a reason) without it.
   { field: "psi_api_key", secret: "google-pagespeed-api-key", required: false },
 ];
 
@@ -104,9 +103,9 @@ function writeAtomic(target: string, body: string): void {
 
 /**
  * Fetch every secret from Secret Manager and merge it into the existing config
- * (fresh credential values win; every other field — `secrets_project`,
- * `read_backend`, the output dirs — is carried over unchanged). Pure given an
- * already-fetched secrets map and the existing config.
+ * (fresh credential values win; every other field — the customer ids,
+ * `secrets_project`, `read_backend`, the output dirs — is carried over unchanged).
+ * Pure given an already-fetched secrets map and the existing config.
  */
 export function mergeSecretsIntoConfig(existing: ReturnType<typeof loadConfig>, secrets: ReadonlyMap<string, string>): Map<string, string> {
   const merged = configToValueMap(existing);

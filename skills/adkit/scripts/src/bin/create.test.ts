@@ -308,11 +308,11 @@ describe("customerIdFor", () => {
   const briefWith = (customerId?: string): Brief =>
     ({ customerId, adGroups: [], campaign: {} }) as unknown as Brief;
 
-  it("prefers the brief's customerId, dash-stripped", () => {
+  it("prefers the brief's customerId, dash-stripped", async () => {
     const prev = process.env["GOOGLE_ADS_CUSTOMER_ID"];
     delete process.env["GOOGLE_ADS_CUSTOMER_ID"];
     try {
-      expect(customerIdFor(briefWith("111-111-1111"))).toBe("1111111111");
+      expect(await customerIdFor(briefWith("111-111-1111"))).toBe("1111111111");
     } finally {
       if (prev !== undefined) {
         process.env["GOOGLE_ADS_CUSTOMER_ID"] = prev;
@@ -320,11 +320,11 @@ describe("customerIdFor", () => {
     }
   });
 
-  it("falls back to the GOOGLE_ADS_CUSTOMER_ID env when the brief has none", () => {
+  it("falls back to the GOOGLE_ADS_CUSTOMER_ID env when the brief has none", async () => {
     const prev = process.env["GOOGLE_ADS_CUSTOMER_ID"];
     process.env["GOOGLE_ADS_CUSTOMER_ID"] = "1234567890";
     try {
-      expect(customerIdFor(briefWith())).toBe("1234567890");
+      expect(await customerIdFor(briefWith())).toBe("1234567890");
     } finally {
       if (prev === undefined) {
         delete process.env["GOOGLE_ADS_CUSTOMER_ID"];

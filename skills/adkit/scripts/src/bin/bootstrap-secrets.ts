@@ -21,29 +21,33 @@ import { loadConfig, resolveTier } from "../lib/config.js";
 /** GCP project the secrets live in: env var, then the project config, then the Python-mirroring default. */
 export const PROJECT = resolveTier(null, process.env["GOOGLE_ADS_SECRETS_PROJECT"], loadConfig().secrets_project, "your-project-prod")!;
 
-/** The secret names to seed, in prompt order. Load-bearing — must match render-yaml. */
+/**
+ * The secret names to seed, in prompt order. Load-bearing — must match render-yaml.
+ * Only real credentials belong here: the target/MCC customer ids are account
+ * numbers and live in `.adkit.yaml` instead (`ads.sh init`).
+ */
 export const SECRETS: readonly string[] = [
   "google-ads-developer-token",
   "google-ads-client-id",
   "google-ads-client-secret",
   "google-ads-refresh-token",
-  "google-ads-login-customer-id",
-  "google-ads-target-customer-id",
   // Optional — enables `audit`'s PSI landing-page diagnosis (issue #40). A blank
   // answer here still creates/updates the secret with an empty value; render-yaml
-  // treats it as an optional field, same as google-ads-target-customer-id.
+  // treats it as an optional field.
   "google-pagespeed-api-key",
 ];
 
 /**
- * The non-sensitive secrets: their prompt echoes (they are ids, not credentials).
- * Everything else is read without echo.
+ * The non-sensitive secrets: their prompt echoes (they are public identifiers, not
+ * credentials). Everything else is read without echo.
+ *
+ * Down to one entry: the two customer ids used to sit here too, and that they did
+ * was the tell that they were never secrets. They are now `.adkit.yaml` preferences
+ * (`ads.sh init`) and are absent from {@link SECRETS} entirely. The set stays a set
+ * — the classification is a property of the list, not of the single name that
+ * currently satisfies it.
  */
-const NON_SENSITIVE = new Set([
-  "google-ads-client-id",
-  "google-ads-login-customer-id",
-  "google-ads-target-customer-id",
-]);
+const NON_SENSITIVE = new Set(["google-ads-client-id"]);
 
 /** True when `name`'s value is sensitive (read without echo). Pure. */
 export function isSensitive(name: string): boolean {
