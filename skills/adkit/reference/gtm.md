@@ -1,6 +1,6 @@
 ---
 description: "Build the full Go-To-Market block for a processed idea: Keyword Planner-decorated keywords (volume/competition/CPC), a semantic Keyword Themes grouping (the ad-group source of truth for /adkit create), PLUS a theme-matched Responsive Search Ad set (15 headlines / 4 descriptions) per theme. Reads raw, writes processed under Go To Market > Keywords + Keyword Themes + Ad Copy. (Merged ads:keywords + idea:adcopy.)"
-argument-hint: "ideas/raw/<file>.md | ideas/processed/<file>.md [--geo geoTargetConstants/N] [--language languageConstants/N] [optional idea notes]"
+argument-hint: "<raw-dir>/<file>.md | <ideas-dir>/<file>.md [--geo geoTargetConstants/N] [--language languageConstants/N] [optional idea notes]"
 user-invocable: true
 disable-model-invocation: false
 ---
@@ -27,16 +27,33 @@ Your job is to append practical search keywords to one existing markdown file fo
 
 You also judge each theme's buying-cycle temperature directly from its member keywords and recommend an offer / CTA whose threat level matches that temperature, so the landing page does not ask for too much (or too little) given where the visitor actually is in their buying cycle.
 
+## The ideas directories (configurable)
+
+Both directories come from the `ideas_dir` setting, so a project can put adkit's
+outputs wherever it likes — see `reference/conventions.md`. Resolve them ONCE, before
+anything else:
+
+- **`<ideas-dir>`** — the **processed**-ideas directory. Read `ideas_dir` from
+  `.adkit.yaml` at the repo root (or the `ADKIT_CONFIG` path when that env var is set);
+  the `ADKIT_IDEAS_DIR` env var overrides it. Absent from both ⇒ **`ideas/processed`**,
+  the historical default.
+- **`<raw-dir>`** — the **raw**-ideas directory: a sibling of `<ideas-dir>` named `raw`,
+  i.e. `<parent of ideas-dir>/raw`. The default `ideas/processed` therefore yields
+  `ideas/raw`, exactly as before; `ads/ideas/processed` would yield `ads/ideas/raw`.
+
+Everywhere below, `<ideas-dir>` and `<raw-dir>` mean these two resolved paths — never
+the literal strings.
+
 ## Input Contract
 
 1. `$ARGUMENTS` is required.
-2. Parse the first path-like token from `$ARGUMENTS` as the input idea markdown file, preserving quoted paths with spaces. It may be a **raw** file (`ideas/raw/<name>.md`) or an already-**processed** file (`ideas/processed/<name>.md`) — accept either.
-3. The file must exist, must be a markdown file (`.md` or `.markdown`), and MUST resolve under `ideas/raw/` **or** `ideas/processed/` relative to the current working directory (this worktree). Do NOT look in sibling worktrees, the main checkout, or any other path outside this worktree.
+2. Parse the first path-like token from `$ARGUMENTS` as the input idea markdown file, preserving quoted paths with spaces. It may be a **raw** file (`<raw-dir>/<name>.md`) or an already-**processed** file (`<ideas-dir>/<name>.md`) — accept either.
+3. The file must exist, must be a markdown file (`.md` or `.markdown`), and MUST resolve under `<raw-dir>/` **or** `<ideas-dir>/` relative to the current working directory (this worktree). Do NOT look in sibling worktrees, the main checkout, or any other path outside this worktree.
 4. Determine the **source** and **output** paths from the input:
-   - If the input is under `ideas/raw/`, the source is that raw file and the **output** is the same name under `ideas/processed/` (swap `ideas/raw/` → `ideas/processed/`). Example: `ideas/raw/inventive.md` → output `ideas/processed/inventive.md`. If the processed file does not exist yet, create it with a minimal frontmatter + the keywords section (the rest of the processed idea is the job of `/idea:process`).
-   - If the input is **already** under `ideas/processed/`, the source and output are that same file — read it in place for context and write the Go To Market sections back into it. Do NOT require or fabricate a raw stub; the processed file already carries the full context.
+   - If the input is under `<raw-dir>/`, the source is that raw file and the **output** is the same name under `<ideas-dir>/` (swap `<raw-dir>/` → `<ideas-dir>/`). Example, with the defaults: `ideas/raw/inventive.md` → output `ideas/processed/inventive.md`. If the processed file does not exist yet, create it with a minimal frontmatter + the keywords section (the rest of the processed idea is the job of `/idea:process`).
+   - If the input is **already** under `<ideas-dir>/`, the source and output are that same file — read it in place for context and write the Go To Market sections back into it. Do NOT require or fabricate a raw stub; the processed file already carries the full context.
 5. Treat all remaining `$ARGUMENTS` text as optional idea notes. If optional idea notes are present, use them as additional context alongside the input markdown file content.
-6. If no valid idea markdown file is provided, return: `Error: Provide a valid idea markdown file path under this worktree's ideas/raw/ or ideas/processed/ directory, for example ideas/raw/example.md or ideas/processed/example.md.`
+6. If no valid idea markdown file is provided, return: `Error: Provide a valid idea markdown file path under this worktree's <raw-dir>/ or <ideas-dir>/ directory, for example <raw-dir>/example.md or <ideas-dir>/example.md.` — with both placeholders replaced by the resolved paths, so the operator is told the directory this project actually uses.
 
 ## Output Contract
 
@@ -149,9 +166,10 @@ content"). Tie them to something the landing page could actually ship.
 
 ## Execution Steps
 
-1. Parse `$ARGUMENTS`. Extract the input markdown file path (under `ideas/raw/` **or** `ideas/processed/`). Extract optional `--geo <value>` and `--language <value>` tokens (treat as paired). Remaining text is idea notes.
+0. Resolve `<ideas-dir>` and `<raw-dir>` per *The ideas directories* above, before parsing anything.
+1. Parse `$ARGUMENTS`. Extract the input markdown file path (under `<raw-dir>/` **or** `<ideas-dir>/`). Extract optional `--geo <value>` and `--language <value>` tokens (treat as paired). Remaining text is idea notes.
 2. Validate the input markdown file exists.
-3. Compute the **processed** output path: if the input is under `ideas/raw/`, replace `ideas/raw/` with `ideas/processed/`; if the input is already under `ideas/processed/`, the output is that same file. If the processed file does not exist, create it with minimal frontmatter (`---\nsource_file: <input path>\n---`) so subsequent edits attach somewhere stable.
+3. Compute the **processed** output path: if the input is under `<raw-dir>/`, replace `<raw-dir>/` with `<ideas-dir>/`; if the input is already under `<ideas-dir>/`, the output is that same file. If the processed file does not exist, create it with minimal frontmatter (`---\nsource_file: <input path>\n---`) so subsequent edits attach somewhere stable.
 4. Read the full input markdown file for context. When the input is a raw file, also read any existing processed file for context. (Operator edits to keywords are still discarded when the section is rewritten.)
 5. **Anchor on the idea's core theme, then brainstorm seeds.** First extract 3–6 *core theme tokens* from the raw idea — its differentiator, primary audience, and the specific channels/jobs it names (for a brand-voice reply tool: `brand voice`, `replies`, `reviews`, `comments`, `social`, `DTC`). These tokens are the relevance yardstick reused in steps 9 and 11; record them. Then brainstorm an initial candidate list (`seeds`) from the raw idea + optional notes + theme tokens, using the Keyword Research Guidance and Buying-Cycle Temperature & Offer Matching sections above. **Seeds must combine the category with the differentiator and audience** (`brand voice reply tool`, `reply to reviews ai`, `social comment response`) — do NOT seed bare category stems alone (`chatbot`, `ai writing tool`); Keyword Planner expands bare stems into generic consumer noise that drowns the on-theme niche. (Seeds may pair the differentiator with the category to *probe* its volume, but do not expect zero-volume differentiator phrasings to survive as kept keywords — see Keyword Research Guidance item 8.)
 6. Extract the first `https?://` URL found in either the raw or processed file. If none, leave it empty.

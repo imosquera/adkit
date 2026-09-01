@@ -104,9 +104,9 @@ export function parseState(data: unknown): CampaignState {
   return CampaignStateSchema.parse(data);
 }
 
-/** Pure: absolute-or-relative path to a campaign's state file under `root`/adbriefs/. */
-export function statePathForCampaign(root: string, brief: Brief): string {
-  return join(root, ADBRIEFS_DIR, `${slugForCampaign(brief)}${STATE_SUFFIX}`);
+/** Pure: absolute-or-relative path to a campaign's state file under `root`/`dir`/. */
+export function statePathForCampaign(root: string, brief: Brief, dir: string = ADBRIEFS_DIR): string {
+  return join(root, dir, `${slugForCampaign(brief)}${STATE_SUFFIX}`);
 }
 
 /**
@@ -141,8 +141,8 @@ export function serializeState(state: CampaignState): string {
  * needed. Returns the path written. Paired with {@link writeBrief} — the intent brief and
  * its state file share a slug.
  */
-export function writeState(root: string, brief: Brief, state: CampaignState): string {
-  const path = statePathForCampaign(root, brief);
+export function writeState(root: string, brief: Brief, state: CampaignState, dir: string = ADBRIEFS_DIR): string {
+  const path = statePathForCampaign(root, brief, dir);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, serializeState(state));
   return path;
@@ -192,8 +192,8 @@ export interface StateIndex {
  * naming it (a corrupt state file must not silently drop a campaign from the index).
  * Returns empty maps when the `adbriefs/` directory does not exist yet.
  */
-export function loadStateIndex(root: string): StateIndex {
-  const dir = join(root, ADBRIEFS_DIR);
+export function loadStateIndex(root: string, briefsDir: string = ADBRIEFS_DIR): StateIndex {
+  const dir = join(root, briefsDir);
   const index: StateIndex = { byCampaignId: new Map(), byAdGroupId: new Map(), byAdId: new Map() };
   if (!existsSync(dir)) {
     return index;

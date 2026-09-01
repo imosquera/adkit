@@ -14,6 +14,9 @@ import {
   loadConfig,
   parseConfig,
   PREFERENCE_FIELDS,
+  resolveBriefsDir,
+  resolveIdeasDir,
+  resolveReportsDir,
   resolveTier,
 } from "./config.js";
 
@@ -220,5 +223,70 @@ describe("resolveTier", () => {
     expect(resolveTier("  ", "env", "config", "fallback")).toBe("env");
     expect(resolveTier(null, "  ", "config", "fallback")).toBe("config");
     expect(resolveTier(null, undefined, "  ", "fallback")).toBe("fallback");
+  });
+});
+
+// The three output directories were declared, prompted for by `init`, and read by
+// nothing — setting them in .adkit.yaml moved no file (issue #69). These lock in that
+// each one is actually honoured, through the same flag -> env -> yaml -> default chain
+// as every other setting, AND that an unset project still lands on the old paths.
+describe("resolveReportsDir / resolveBriefsDir / resolveIdeasDir", () => {
+  const ENV_KEYS = ["ADKIT_REPORTS_DIR", "ADKIT_BRIEFS_DIR", "ADKIT_IDEAS_DIR"] as const;
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const k of ENV_KEYS) {
+      saved.set(k, process.env[k]);
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      const v = saved.get(k);
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  // The whole point of the defaults: an existing project that sets none of these keeps
+  // writing exactly where it wrote before the settings were honoured.
+  it("falls back to the historical hard-coded paths when nothing is set", () => {
+    expect(resolveReportsDir(null, {})).toBe("ads/output/reports");
+    expect(resolveBriefsDir(null, {})).toBe("adbriefs");
+    expect(resolveIdeasDir(null, {})).toBe("ideas/processed");
+  });
+
+  it("reads the yaml tier", () => {
+    expect(resolveReportsDir(null, { reports_dir: "ads/reports" })).toBe("ads/reports");
+    expect(resolveBriefsDir(null, { briefs_dir: "ads/briefs" })).toBe("ads/briefs");
+    expect(resolveIdeasDir(null, { ideas_dir: "ads/ideas" })).toBe("ads/ideas");
+  });
+
+  it("prefers the env var over the yaml tier", () => {
+    process.env["ADKIT_REPORTS_DIR"] = "env/reports";
+    process.env["ADKIT_BRIEFS_DIR"] = "env/briefs";
+    process.env["ADKIT_IDEAS_DIR"] = "env/ideas";
+    expect(resolveReportsDir(null, { reports_dir: "yaml/reports" })).toBe("env/reports");
+    expect(resolveBriefsDir(null, { briefs_dir: "yaml/briefs" })).toBe("env/briefs");
+    expect(resolveIdeasDir(null, { ideas_dir: "yaml/ideas" })).toBe("env/ideas");
+  });
+
+  it("prefers an explicit flag over both", () => {
+    process.env["ADKIT_REPORTS_DIR"] = "env/reports";
+    expect(resolveReportsDir("flag/reports", { reports_dir: "yaml/reports" })).toBe("flag/reports");
+  });
+
+  // Blank/whitespace is "absent", not "the empty directory" — otherwise a key left
+  // blank by `init` would resolve every path to the repo root.
+  it("treats a blank value as absent and falls through", () => {
+    expect(resolveBriefsDir("   ", { briefs_dir: "" })).toBe("adbriefs");
+  });
+
+  // The prompt `init` shows and the fallback the resolver uses must not drift apart.
+  it("matches the defaults PREFERENCE_FIELDS prompts with", () => {
+    const promptDefault = (key: string) => PREFERENCE_FIELDS.find((f) => f.key === key)!.default;
+    expect(promptDefault("reports_dir")).toBe(resolveReportsDir(null, {}));
+    expect(promptDefault("briefs_dir")).toBe(resolveBriefsDir(null, {}));
+    expect(promptDefault("ideas_dir")).toBe(resolveIdeasDir(null, {}));
   });
 });

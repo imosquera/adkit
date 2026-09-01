@@ -43,6 +43,18 @@ export interface AdkitConfig {
   ideas_dir?: string;
 }
 
+/**
+ * Default output directories, relative to the repo root.
+ *
+ * Named rather than inlined because each one is needed in two places that MUST
+ * agree: the {@link PREFERENCE_FIELDS} prompt `init` shows, and the `resolve*Dir`
+ * fallback tier below. A project that sets nothing keeps writing exactly where it
+ * wrote before these settings were honoured.
+ */
+export const DEFAULT_REPORTS_DIR = "ads/output/reports";
+export const DEFAULT_BRIEFS_DIR = "adbriefs";
+export const DEFAULT_IDEAS_DIR = "ideas/processed";
+
 /** One config field: its yaml key, prompt label, default value, and whether its input should be echoed. */
 export interface ConfigField {
   key: keyof AdkitConfig;
@@ -75,9 +87,9 @@ export const PREFERENCE_FIELDS: readonly ConfigField[] = [
   { key: "target_customer_id", label: "Google Ads account id to operate on — 10 digits, no dashes", default: "", sensitive: false },
   { key: "secrets_project", label: "GCP Secret Manager project", default: "your-project-prod", sensitive: false },
   { key: "read_backend", label: "Read backend (sdk|mcp)", default: "sdk", sensitive: false },
-  { key: "reports_dir", label: "Reports output directory", default: "ads/output/reports", sensitive: false },
-  { key: "briefs_dir", label: "Brief output directory", default: "adbriefs", sensitive: false },
-  { key: "ideas_dir", label: "Processed-ideas directory", default: "ideas/processed", sensitive: false },
+  { key: "reports_dir", label: "Reports output directory", default: DEFAULT_REPORTS_DIR, sensitive: false },
+  { key: "briefs_dir", label: "Brief output directory", default: DEFAULT_BRIEFS_DIR, sensitive: false },
+  { key: "ideas_dir", label: "Processed-ideas directory", default: DEFAULT_IDEAS_DIR, sensitive: false },
 ];
 
 /** Every config field, in yaml-emit and prompt order: credentials first, then preferences (the customer ids leading them). */
@@ -204,4 +216,31 @@ export function resolveTier(
     }
   }
   return fallback;
+}
+
+/**
+ * The three output directories, resolved through the same flag -> env -> yaml ->
+ * default chain as every other setting ({@link resolveTier}).
+ *
+ * `config` is injectable so a caller can resolve several directories against one
+ * already-loaded config rather than re-reading `.adkit.yaml` per call; it defaults
+ * to {@link loadConfig} for the common single-lookup case.
+ *
+ * Each returns a directory RELATIVE to the repo root — callers `join` it onto the
+ * root they already thread, so an operator can point all three at one folder
+ * (`ads/ideas`, `ads/briefs`, `ads/reports`) without any call site learning about
+ * absolute paths.
+ */
+export function resolveReportsDir(flag?: string | null, config: AdkitConfig = loadConfig()): string {
+  return resolveTier(flag, process.env["ADKIT_REPORTS_DIR"], config.reports_dir, DEFAULT_REPORTS_DIR) ?? DEFAULT_REPORTS_DIR;
+}
+
+/** The brief store's directory — see {@link resolveReportsDir}. */
+export function resolveBriefsDir(flag?: string | null, config: AdkitConfig = loadConfig()): string {
+  return resolveTier(flag, process.env["ADKIT_BRIEFS_DIR"], config.briefs_dir, DEFAULT_BRIEFS_DIR) ?? DEFAULT_BRIEFS_DIR;
+}
+
+/** The processed-ideas directory `/adkit gtm` reads and writes — see {@link resolveReportsDir}. */
+export function resolveIdeasDir(flag?: string | null, config: AdkitConfig = loadConfig()): string {
+  return resolveTier(flag, process.env["ADKIT_IDEAS_DIR"], config.ideas_dir, DEFAULT_IDEAS_DIR) ?? DEFAULT_IDEAS_DIR;
 }
