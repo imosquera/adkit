@@ -473,6 +473,13 @@ describe("reportPath", () => {
       "/work/ads/output/reports/2026-06-22-1111111111-raw.yaml",
     );
   });
+
+  // issue #69: reports_dir used to be collected and ignored.
+  it("honours a configured reports directory", () => {
+    expect(reportPath("/work", "2026-06-22", "1111111111", "ads/reports")).toBe(
+      "/work/ads/reports/2026-06-22-1111111111-raw.yaml",
+    );
+  });
 });
 
 describe("main (fake client, temp cwd)", () => {

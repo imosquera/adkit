@@ -68,6 +68,7 @@ import { z } from "zod";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 import { ADBRIEFS_DIR, AdbriefsError, writeBrief } from "../adbriefs/store.js";
+import { resolveBriefsDir } from "../lib/config.js";
 import { diffBriefs, type BriefDiff } from "../adbriefs/diff.js";
 import { loadStateIndex } from "../adbriefs/state.js";
 import {
@@ -535,8 +536,8 @@ function dollars(micros: number): string {
 // ---------------------------------------------------------------------------
 
 /** Path to `adbriefs/<slug>.yaml`, given a slug already resolved via the state index. */
-function briefPathForSlug(root: string, slug: string): string {
-  return join(root, ADBRIEFS_DIR, `${slug}.yaml`);
+function briefPathForSlug(root: string, slug: string, dir: string = ADBRIEFS_DIR): string {
+  return join(root, dir, `${slug}.yaml`);
 }
 
 /**
@@ -547,8 +548,8 @@ function briefPathForSlug(root: string, slug: string): string {
  * freshly-authored brief (store.ts's `loadBriefIfExists` is not reusable here for
  * exactly that reason, and store.ts is otherwise unchanged by this feature).
  */
-function loadBriefAtSlug(root: string, slug: string): Brief | null {
-  const path = briefPathForSlug(root, slug);
+function loadBriefAtSlug(root: string, slug: string, dir: string = ADBRIEFS_DIR): Brief | null {
+  const path = briefPathForSlug(root, slug, dir);
   if (!existsSync(path)) {
     return null;
   }
@@ -602,13 +603,18 @@ interface StagedBrief {
  * remove-only edit) must never reach the diff/write path — it is skipped instead of
  * silently corrupting `adbriefs/<slug>.yaml`.
  */
-function stageResolvedGroups(root: string, groups: ResolvedPlanGroup[], computed: ApplyPlanComputed): StagedBrief[] {
+function stageResolvedGroups(
+  root: string,
+  groups: ResolvedPlanGroup[],
+  computed: ApplyPlanComputed,
+  dir: string = ADBRIEFS_DIR,
+): StagedBrief[] {
   return groups
     .filter((g) => g.slug !== "")
     .map((group) => {
       let current: Brief | null;
       try {
-        current = loadBriefAtSlug(root, group.slug);
+        current = loadBriefAtSlug(root, group.slug, dir);
       } catch (exc) {
         if (exc instanceof AdbriefsError) {
           return {
@@ -618,7 +624,7 @@ function stageResolvedGroups(root: string, groups: ResolvedPlanGroup[], computed
             diff: null,
             skipReason: "invalid-brief" as const,
             message:
-              `adbriefs brief ${briefPathForSlug(root, group.slug)} could not be parsed — ` +
+              `adbriefs brief ${briefPathForSlug(root, group.slug, dir)} could not be parsed — ` +
               `${exc.message.split("\n")[0]}. Skipping brief staging for this campaign.`,
           };
         }
@@ -635,7 +641,7 @@ function stageResolvedGroups(root: string, groups: ResolvedPlanGroup[], computed
           diff: null,
           skipReason: "collision" as const,
           message:
-            `adbriefs collision: ${briefPathForSlug(root, group.slug)} already describes campaign ` +
+            `adbriefs collision: ${briefPathForSlug(root, group.slug, dir)} already describes campaign ` +
             `"${current.campaign.name}", but the plan's state index resolved it as "${group.campaignName}". ` +
             "Refusing to stage — rename one campaign or move the brief.",
         };
@@ -654,7 +660,7 @@ function stageResolvedGroups(root: string, groups: ResolvedPlanGroup[], computed
             diff: null,
             skipReason: "invalid-result" as const,
             message:
-              `adbriefs staging for ${briefPathForSlug(root, group.slug)} produced a brief that violates its ` +
+              `adbriefs staging for ${briefPathForSlug(root, group.slug, dir)} produced a brief that violates its ` +
               `schema:\n${lines.join("\n")}\nSkipping — nothing written for this campaign.`,
           };
         }
@@ -691,10 +697,11 @@ function briefEnvelopeEntry(
   s: StagedBrief,
   synced: boolean,
   writtenPath: string | null,
+  dir: string = ADBRIEFS_DIR,
 ): Record<string, unknown> {
   return {
     slug: s.slug,
-    briefPath: writtenPath ?? (s.skipReason === null ? briefPathForSlug(root, s.slug) : null),
+    briefPath: writtenPath ?? (s.skipReason === null ? briefPathForSlug(root, s.slug, dir) : null),
     briefSynced: synced,
     briefDiff: s.diff ? { changed: s.diff.changed, added: s.diff.added, removed: s.diff.removed } : null,
     briefStagingSkipped: s.skipReason !== null,
@@ -849,7 +856,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // index, stage the already-computed changes above into a proposed copy, and diff
   // against disk — on EVERY run, dry-run included (FR-001, FR-002, FR-003, FR-010).
   const adbriefsRoot = process.cwd();
-  const stateIndex = loadStateIndex(adbriefsRoot);
+  const briefsDir = resolveBriefsDir();
+  const stateIndex = loadStateIndex(adbriefsRoot, briefsDir);
   const noStateFileAtAll =
     stateIndex.byCampaignId.size === 0 && stateIndex.byAdGroupId.size === 0 && stateIndex.byAdId.size === 0;
   // A skipped bidding entry (biddingSkips) must never reach brief staging either — the
@@ -860,7 +868,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const stagingPlan = { ...plan, bidding: biddingChanges };
   const planGroups = resolvePlanGroups(stagingPlan, stateIndex);
   const unresolvedIds = planGroups.find((g) => g.slug === "")?.unresolvedIds ?? [];
-  const staged = stageResolvedGroups(adbriefsRoot, planGroups, { defaultLandingUrl: defaultUrl, adGroupCreates: agCreates });
+  const staged = stageResolvedGroups(
+    adbriefsRoot,
+    planGroups,
+    { defaultLandingUrl: defaultUrl, adGroupCreates: agCreates },
+    briefsDir,
+  );
 
   for (const s of staged) {
     if (s.skipReason === "collision") {
@@ -869,7 +882,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     if (s.skipReason === "missing-brief") {
       console.log(
-        `WARNING: adbriefs/${s.slug}.state.yaml exists but adbriefs/${s.slug}.yaml does not — ` +
+        `WARNING: ${briefsDir}/${s.slug}.state.yaml exists but ${briefsDir}/${s.slug}.yaml does not — ` +
           "skipping brief staging for this campaign",
       );
       continue;
@@ -878,7 +891,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       console.log(`WARNING: ${s.message}`);
       continue;
     }
-    const path = briefPathForSlug(adbriefsRoot, s.slug);
+    const path = briefPathForSlug(adbriefsRoot, s.slug, briefsDir);
     if (s.diff!.changed) {
       console.log(`\nadbriefs brief ${path} (+${s.diff!.added}/-${s.diff!.removed}):`);
       console.log(s.diff!.render);
@@ -1073,7 +1086,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     // carrying only the preview diff computed above.
     emitStatusEnvelope(
       false,
-      staged.map((s) => briefEnvelopeEntry(adbriefsRoot, s, false, null)),
+      staged.map((s) => briefEnvelopeEntry(adbriefsRoot, s, false, null, briefsDir)),
     );
     return 0;
   }
@@ -1415,18 +1428,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const writeFailedSlugs = new Set<string>();
   const briefResults = staged.map((s) => {
     if (s.skipReason !== null || s.diff === null || failedSlugs.has(s.slug)) {
-      return briefEnvelopeEntry(adbriefsRoot, s, false, null);
+      return briefEnvelopeEntry(adbriefsRoot, s, false, null, briefsDir);
     }
     if (!s.diff.changed) {
-      return briefEnvelopeEntry(adbriefsRoot, s, true, null);
+      return briefEnvelopeEntry(adbriefsRoot, s, true, null, briefsDir);
     }
     try {
-      const path = writeBrief(adbriefsRoot, s.proposed!);
-      return briefEnvelopeEntry(adbriefsRoot, s, true, path);
+      const path = writeBrief(adbriefsRoot, s.proposed!, briefsDir);
+      return briefEnvelopeEntry(adbriefsRoot, s, true, path, briefsDir);
     } catch (exc) {
       writeFailedSlugs.add(s.slug);
-      recordFailure(`writeBrief (adbriefs/${s.slug}.yaml)`, exc, [s.slug]);
-      return briefEnvelopeEntry(adbriefsRoot, s, false, null);
+      recordFailure(`writeBrief (${briefsDir}/${s.slug}.yaml)`, exc, [s.slug]);
+      return briefEnvelopeEntry(adbriefsRoot, s, false, null, briefsDir);
     }
   });
   const allFailedSlugs = new Set([...failedSlugs, ...writeFailedSlugs]);

@@ -82,6 +82,37 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 - Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
 - Preflight resolves its customer id through the same `--customer` → `GOOGLE_ADS_CUSTOMER_ID` → `.adkit.yaml` tiering as everything else, and builds its client the **same way** the commands it gates do — honouring `mcc_customer_id` when set, sending no login header when blank. That is the point of a precondition check: a client built differently is not checking what preflight claims to check. (It previously cleared the header unconditionally, so no MCC-managed account could pass.)
 
+## Output directories
+
+adkit writes three kinds of artifact, and each one's directory is a setting — resolved
+through the same flag → env → `.adkit.yaml` → default chain as everything else:
+
+| Artifact | `.adkit.yaml` key | Env var | Default |
+| --- | --- | --- | --- |
+| Campaign briefs + state (`create`, `update`) | `briefs_dir` | `ADKIT_BRIEFS_DIR` | `adbriefs` |
+| Raw/analysis/dashboard reports (`report`) | `reports_dir` | `ADKIT_REPORTS_DIR` | `ads/output/reports` |
+| Processed idea markdown (`gtm`, `create`) | `ideas_dir` | `ADKIT_IDEAS_DIR` | `ideas/processed` |
+
+All three are **relative to the repo root**, and all three are optional — a project that
+sets none of them writes exactly where adkit has always written. Setting them is how a
+project puts every adkit artifact under one folder, e.g.:
+
+```yaml
+briefs_dir:  "ads/briefs"
+reports_dir: "ads/reports"
+ideas_dir:   "ads/ideas/processed"
+```
+
+`gtm` derives the **raw**-ideas directory as a sibling of `ideas_dir` named `raw`
+(`ideas/processed` → `ideas/raw`; `ads/ideas/processed` → `ads/ideas/raw`) — see
+`reference/gtm.md`.
+
+> These settings were declared and prompted for long before anything read them; a value
+> set in `.adkit.yaml` moved no file until issue #69. **The rest of these docs spell out
+> the default paths** (`adbriefs/<slug>.yaml`, `ads/output/reports/…`, `ideas/processed/…`)
+> because they read better as concrete examples — read them as "the configured directory,
+> which defaults to this".
+
 ## Read backend (SDK vs google-ads-mcp)
 
 Read queries are being migrated toward the official
@@ -116,7 +147,7 @@ built as a **reversible seam**, selected by one env var:
 
 ## `adbriefs/` — the local source of truth + diff-before-apply gate
 
-Every campaign has one persisted brief under `adbriefs/<slug>.yaml` at the repo root — the local **source of truth** for that campaign's full state (campaign settings, ad groups, keywords, RSAs, negatives, budget). `<slug>` is a deterministic kebab-case slug of `campaign.name`, so the same campaign always maps to the same file. The brief file **is** the `/adkit create` brief format (the zod `Brief` schema in `src/lib/schema.ts`) — nothing new to learn.
+Every campaign has one persisted brief under `adbriefs/<slug>.yaml` at the repo root (or wherever `briefs_dir` points — see *Output directories* above) — the local **source of truth** for that campaign's full state (campaign settings, ad groups, keywords, RSAs, negatives, budget). `<slug>` is a deterministic kebab-case slug of `campaign.name`, so the same campaign always maps to the same file. The brief file **is** the `/adkit create` brief format (the zod `Brief` schema in `src/lib/schema.ts`) — nothing new to learn.
 
 The flow both mutating skills follow is **write-brief → diff → apply**:
 

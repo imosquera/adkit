@@ -34,6 +34,7 @@ import {
   loadBriefIfExists,
   writeBrief,
 } from "../adbriefs/store.js";
+import { resolveBriefsDir } from "../lib/config.js";
 import { diffBriefs } from "../adbriefs/diff.js";
 import { buildState, statePathForCampaign, writeState } from "../adbriefs/state.js";
 import { resolveTargetCustomerId } from "../cli/customer-id.js";
@@ -410,20 +411,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     // via a non-dry-run run confirms it). Resolved from the live cwd (the repo/worktree
     // root the skill runs from) so a test can redirect it.
     const adbriefsRoot = process.cwd();
-    const adbriefsPath = briefPathForCampaign(adbriefsRoot, brief);
-    const statePath = statePathForCampaign(adbriefsRoot, brief);
+    const briefsDir = resolveBriefsDir();
+    const adbriefsPath = briefPathForCampaign(adbriefsRoot, brief, briefsDir);
+    const statePath = statePathForCampaign(adbriefsRoot, brief, briefsDir);
     // Surface a slug collision with a *different* campaign here — in dry-run too — so the
     // review-the-change gate catches it, not just the real publish (FR-008). Otherwise the
     // diff below would compare two unrelated campaigns and read as nonsense.
     try {
-      assertNoForeignBrief(adbriefsRoot, brief);
+      assertNoForeignBrief(adbriefsRoot, brief, briefsDir);
     } catch (exc) {
       if (exc instanceof AdbriefsError) {
         die(exc.message);
       }
       throw exc;
     }
-    const existingBrief = loadBriefIfExists(adbriefsRoot, brief);
+    const existingBrief = loadBriefIfExists(adbriefsRoot, brief, briefsDir);
     const briefDiff = diffBriefs(existingBrief, brief);
     if (briefDiff.changed) {
       process.stderr.write(
@@ -463,7 +465,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     // (FR-001). A slug collision with a different campaign is refused here, not silently
     // overwritten (FR-008).
     try {
-      writeBrief(adbriefsRoot, brief);
+      writeBrief(adbriefsRoot, brief, briefsDir);
     } catch (exc) {
       if (exc instanceof AdbriefsError) {
         die(exc.message);
@@ -481,7 +483,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     // complete id set to record.
     const stateSynced = outcome.failure === null;
     if (stateSynced) {
-      writeState(adbriefsRoot, brief, buildState(brief, outcome.results));
+      writeState(adbriefsRoot, brief, buildState(brief, outcome.results), briefsDir);
     }
 
     emitJson({

@@ -15,8 +15,9 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
+import { DEFAULT_REPORTS_DIR, resolveReportsDir } from "../lib/config.js";
 import { mccCustomerIdFromYaml, type AdsClient, type GaqlRow } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
 import type { SearchArgs } from "../gaql/search-args.js";
@@ -509,9 +510,14 @@ async function pull(
   return shapeRows({ campaigns, campaignDaily, adGroups, ads, keywords, searchTerms, geo, geoRegions });
 }
 
-/** Absolute path of the report file for a given day + customer. */
-export function reportPath(cwd: string, generatedAt: string, customer: string): string {
-  return join(cwd, "ads", "output", "reports", `${generatedAt}-${customer}-raw.yaml`);
+/**
+ * Absolute path of the report file for a given day + customer, under `dir` (relative
+ * to `cwd`). The directory is a parameter rather than literal segments so the writer
+ * below can derive its `mkdirSync` target from `dirname(reportPath(...))` — the
+ * segments used to be spelled out in both places and could drift.
+ */
+export function reportPath(cwd: string, generatedAt: string, customer: string, dir: string = DEFAULT_REPORTS_DIR): string {
+  return join(cwd, dir, `${generatedAt}-${customer}-raw.yaml`);
 }
 
 /**
@@ -622,8 +628,8 @@ export async function main(
     generatedAt,
   });
 
-  const outPath = reportPath(process.cwd(), generatedAt, customer);
-  mkdirSync(join(process.cwd(), "ads", "output", "reports"), { recursive: true });
+  const outPath = reportPath(process.cwd(), generatedAt, customer, resolveReportsDir());
+  mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, stringifyYaml(report, { sortMapEntries: false }));
   process.stdout.write(`${outPath}\n`);
   return 0;

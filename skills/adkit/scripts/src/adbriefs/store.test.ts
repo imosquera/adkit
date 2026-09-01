@@ -93,4 +93,29 @@ describe("loadBriefIfExists / writeBrief", () => {
     const collider = brief("same  slug", "other-brief");
     expect(() => writeBrief(root, collider)).toThrow(AdbriefsError);
   });
+
+  // issue #69: briefs_dir used to be collected and ignored, so the store was pinned to
+  // adbriefs/ no matter what .adkit.yaml said. The write and the read must relocate
+  // together — a brief written to a configured dir is invisible at the default one.
+  describe("with a configured briefs directory", () => {
+    it("writes, reads back, and reports the path under that directory", () => {
+      const b = brief();
+      const path = writeBrief(root, b, "ads/briefs");
+      expect(path).toBe(join(root, "ads", "briefs", `${slugForCampaign(b)}.yaml`));
+      expect(path).toBe(briefPathForCampaign(root, b, "ads/briefs"));
+      expect(loadBriefIfExists(root, b, "ads/briefs")).toEqual(b);
+    });
+
+    it("does not find a relocated brief at the default directory", () => {
+      const b = brief();
+      writeBrief(root, b, "ads/briefs");
+      expect(loadBriefIfExists(root, b)).toBeNull();
+    });
+
+    // The collision guard protects the configured path, not just the default one.
+    it("still refuses a foreign-campaign collision there", () => {
+      writeBrief(root, brief("Same Slug"), "ads/briefs");
+      expect(() => writeBrief(root, brief("same  slug", "other-brief"), "ads/briefs")).toThrow(AdbriefsError);
+    });
+  });
 });
