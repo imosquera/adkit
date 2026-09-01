@@ -2,7 +2,7 @@
  * Verify credentials + customer access before any mutation.
  *
  * Faithful port of `ads_skill/bin/preflight.py`. Runs the cheap, offline checks
- * first (the customer id resolves; the `.adkit.yaml` config file exists) WITHOUT
+ * first (the customer id resolves; the credentials file exists) WITHOUT
  * touching the SDK, then does a single live API check confirming the OAuth
  * identity can see the target customer. Every failure is emitted as the shared
  * `{ ok: false, message, step }` envelope; success as `{ ok: true, ... }`.
@@ -24,6 +24,7 @@ import { credentialsPath, loadClient, mccCustomerIdFromYaml } from "../lib/auth.
 import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
 import { managerRequiredHint } from "../lib/customer-id.js";
 import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
+import { secretsReadWarning } from "../lib/secrets-guard.js";
 
 /**
  * A resolved failure from one of the offline checks: the envelope `step` plus the
@@ -99,6 +100,16 @@ export async function main(
     return 1;
   }
 
+  // Read-side guardrail (issue #71): a credentials file sitting somewhere git can
+  // commit gets a loud warning, never a failed run. Refusing to READ a file that
+  // already exists makes nothing safer, and the recommended out-of-repo placement
+  // is outside any work tree, where `git check-ignore` has nothing to say — there
+  // this is silent. stderr, so the JSON envelope on stdout stays parseable.
+  const pathWarning = secretsReadWarning(credPath);
+  if (pathWarning) {
+    process.stderr.write(`${pathWarning}\n`);
+  }
+
   // --- live API check (requires the SDK) ---
   let client: ReturnType<typeof loadClient>;
   try {
@@ -106,7 +117,7 @@ export async function main(
     // `audit`, and `apply-fixes` use, because preflight is their precondition.
     //
     // It must not be `loadClient(null)`: null CLEARS the login-customer-id header,
-    // so preflight would send no manager id no matter what `.adkit.yaml` carries,
+    // so preflight would send no manager id no matter what the config carries,
     // and every MCC-managed account would fail USER_PERMISSION_DENIED while the
     // very commands preflight gates succeeded. The default already covers both
     // shapes — it sends the yaml's mcc_customer_id when set, and no header at all

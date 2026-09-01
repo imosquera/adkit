@@ -5,19 +5,17 @@
  * entrypoint that calls the Google Ads KeywordPlanIdeaService's
  * `generate_keyword_ideas` — an RPC NOT covered by the {@link AdsClient}
  * search/mutate abstraction. It therefore talks to `google-ads-api` directly,
- * building a `Customer` from the same .adkit.yaml credentials and calling
- * `customer.keywordPlanIdeas.generateKeywordIdeas(request)`.
+ * building a `Customer` from the same merged config every other entrypoint uses
+ * and calling `customer.keywordPlanIdeas.generateKeywordIdeas(request)`.
  *
  * The SDK call is isolated behind {@link generateIdeaRows}; everything else — the
  * request builder, the row->ApiIdea->Candidate->bullet mapping — is pure and
  * unit-tested with canned idea rows (no network).
  */
 
-import { readFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { GoogleAdsApi, enums, type services } from "google-ads-api";
-import { parse as parseYaml } from "yaml";
-import { credentialsPath } from "../lib/auth.js";
+import { loadConfig } from "../lib/config.js";
 import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
 import { emitJson, sdkErrorMessage } from "../cli/output.js";
 import { formatBulletText } from "../lib/markdown.js";
@@ -41,15 +39,6 @@ export interface KeywordIdeasArgs {
   readonly language: string;
   readonly seeds: readonly string[];
   readonly pageUrl: string | null;
-}
-
-/** Minimal slice of .adkit.yaml this entrypoint needs to build a Customer. */
-interface AdsYaml {
-  developer_token?: string;
-  client_id?: string;
-  client_secret?: string;
-  refresh_token?: string;
-  mcc_customer_id?: string | number;
 }
 
 /**
@@ -247,17 +236,20 @@ export function seedOnlyDicts(seeds: readonly string[]): CandidateDict[] {
 }
 
 /**
- * The one SDK-touching function: build a Customer from .adkit.yaml and call
+ * The one SDK-touching function: build a Customer from the merged config and call
  * `keywordPlanIdeas.generateKeywordIdeas`, returning the raw result rows.
  *
- * `mcc_customer_id` is carried from the yaml (the KeywordPlanIdeaService is
- * called against the operating account directly). Kept tiny and side-effect-only
- * so the pure mapping above stays testable without a live account.
+ * The merged config, not the credentials file alone: since the split the
+ * credentials come from `.adkit.secrets.yaml` while `mcc_customer_id` — an account
+ * number, not a secret — comes from the committed `adkit.yaml`, and reading only
+ * one of them would drop the login header for every MCC-managed account. Kept tiny
+ * and side-effect-only so the pure mapping above stays testable without a live
+ * account.
  */
 export async function generateIdeaRows(
   request: services.IGenerateKeywordIdeasRequest,
 ): Promise<IdeaRow[]> {
-  const creds = (parseYaml(readFileSync(credentialsPath(), "utf8")) as AdsYaml | null) ?? {};
+  const creds = loadConfig();
   const api = new GoogleAdsApi({
     client_id: creds.client_id ?? "",
     client_secret: creds.client_secret ?? "",

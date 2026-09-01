@@ -24,7 +24,7 @@ export const PROJECT = resolveTier(null, process.env["GOOGLE_ADS_SECRETS_PROJECT
 /**
  * The secret names to seed, in prompt order. Load-bearing — must match render-yaml.
  * Only real credentials belong here: the target/MCC customer ids are account
- * numbers and live in `.adkit.yaml` instead (`ads.sh init`).
+ * numbers and live in the committed `adkit.yaml` instead (`ads.sh init`).
  */
 export const SECRETS: readonly string[] = [
   "google-ads-developer-token",
@@ -42,7 +42,7 @@ export const SECRETS: readonly string[] = [
  * credentials). Everything else is read without echo.
  *
  * Down to one entry: the two customer ids used to sit here too, and that they did
- * was the tell that they were never secrets. They are now `.adkit.yaml` preferences
+ * was the tell that they were never secrets. They are now `adkit.yaml` preferences
  * (`ads.sh init`) and are absent from {@link SECRETS} entirely. The set stays a set
  * — the classification is a property of the list, not of the single name that
  * currently satisfies it.

@@ -28,13 +28,13 @@ what you operate on, the **MCC** is what you go through to reach it.
 - **`target_customer_id`** (`--customer <id>` / `GOOGLE_ADS_CUSTOMER_ID`) is the **leaf account** the operation reads or mutates. **Required** — every command needs to know what it is acting on.
 - **`mcc_customer_id`** (`--mcc-customer-id <MCC>`, a.k.a. `--manager`) is the manager account the leaf is reached *through*, sent as the login header. **Optional, and absent is a real answer**: omit it entirely for a directly-accessible account — no header is the correct behaviour there, not a missing setting. Nothing ever prompts for it or blocks on it.
 - **Format rule:** every customer/manager id is **10 digits**. Dashes are accepted on input (`123-456-7890`, the form the Ads UI shows) and stripped once at the boundary; anything that is not 10 digits after stripping is rejected, naming the tier it came from and what was wrong with it.
-- **When `target_customer_id` resolves nowhere** — no flag, no env var, no `.adkit.yaml` entry — the command does not guess. On a terminal it asks once and saves the answer to `.adkit.yaml`; with no terminal (CI, a pipe) it exits non-zero with the standard `ok:false` envelope naming the field, the config path, and the fix. There is no fallback to Secret Manager.
+- **When `target_customer_id` resolves nowhere** — no flag, no env var, no yaml entry — the command does not guess. On a terminal it asks once and saves the answer to `adkit.yaml`, the committed half (it is an account number, not a credential); with no terminal (CI, a pipe) it exits non-zero with the standard `ok:false` envelope naming the field, the config path, and the fix. There is no fallback to Secret Manager.
 - If the API rejects a call in a way that means the leaf is only reachable through a manager, the error names `mcc_customer_id` as the thing to set.
 
 > **Naming note:** the wire/SDK field is still Google's `login_customer_id`, and the
 > environment variable is still `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — both are Google's
 > names, kept as-is at the boundary. Everywhere adkit owns the name (the
-> `.adkit.yaml` key, the flags, the code) it is `mcc_customer_id`, because "login"
+> `adkit.yaml` key, the flags, the code) it is `mcc_customer_id`, because "login"
 > reads like a credential and this is an account number.
 
 ## JSON envelope contract
@@ -52,42 +52,99 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 
 ## Credentials, project config, & preflight
 
-- Everything local lives in one file: `.adkit.yaml` at the repo root (or the
-  `ADKIT_CONFIG` / legacy `GOOGLE_ADS_CREDENTIALS` path). It carries both the Google
-  Ads API **credentials** (`developer_token`, `client_id`, `client_secret`,
-  `refresh_token`, plus the optional `psi_api_key`) and non-secret **project
-  preferences** (`mcc_customer_id`, `target_customer_id`, the Secret Manager
-  project, the read backend, the `create`/`report` output directories). It contains
-  real secrets — **git-ignored, per-machine, never commit it**. The credentials
-  themselves are seeded in Google Secret Manager (project `your-project-prod`).
+Local config lives in **two files**, split by trust level. The line between them is
+the one adkit has always drawn in prose — the customer ids are account numbers, the
+tokens are credentials — made physical:
+
+| File | Tracked | Contents |
+| --- | --- | --- |
+| `adkit.yaml` | **committed** | `reports_dir`, `briefs_dir`, `ideas_dir`, `mcc_customer_id`, `target_customer_id`, `secrets_project`, `read_backend` |
+| `.adkit.secrets.yaml` | git-ignored | `developer_token`, `client_id`, `client_secret`, `refresh_token`, `psi_api_key` |
+| `.adkit.yaml` | git-ignored | **legacy** — the old combined file. Still read, with a deprecation notice. |
+
+- **Why two.** The preferences describe the *project*: every collaborator, every CI
+  job and every git worktree wants the same values, and none of them is a secret.
+  Folding them in with the credentials forced the whole file to be git-ignored, so a
+  worktree got none of them — which is why running `/adkit gtm` from a worktree used
+  to need an explicit `ADKIT_CONFIG=`. The filename now also says what is inside:
+  `.adkit.secrets.yaml` warns you before you paste it into an issue; `.adkit.yaml`
+  did not.
+- **Where the credentials go.** Two supported placements:
+  - **repo root** (the default) — `$CWD/.adkit.secrets.yaml`, git-ignored by `init`;
+  - **outside the repo** — e.g. `~/.config/adkit/<project>.secrets.yaml`, selected
+    with `export ADKIT_CONFIG=…`. **Prefer this one.** Nothing in the tree can commit
+    it, and it survives into git worktrees. (`GOOGLE_ADS_CREDENTIALS` is a legacy
+    alias for the same override.) `ADKIT_CONFIG` moves only the credentials;
+    `adkit.yaml` is always read from the repo root.
+- **Resolution.** `loadConfig()` merges defaults ← `adkit.yaml` ← the credentials
+  file ← any legacy `.adkit.yaml`. The legacy file is overlaid last, so a project
+  that has not migrated — one file holding both halves — keeps behaving exactly as it
+  did. Per-setting precedence is unchanged: an explicit flag, then the matching env
+  var, then the merged yaml, then a hardcoded default (`lib/config.ts`'s
+  `resolveTier`). Nothing needs migrating on a schedule.
 - **The two customer ids are not secrets.** They are 10-digit Google Ads account
   numbers, visible in the Ads UI and safe in a ticket or a screenshot, so they live
-  in `.adkit.yaml` as ordinary preferences — set by `ads.sh init` or a hand-edit,
-  never in Secret Manager, never fetched or overwritten by `render-yaml`. Both are
-  optional: an account reached directly (no manager) simply omits
-  `mcc_customer_id`, and `target_customer_id` is asked for once (on a terminal) or
-  reported as a named `ok:false` failure (off one) rather than guessed. There is no
-  fallback to Secret Manager for either — see the section above.
-- `ads.sh init` scaffolds it with a one-time interactive prompt — **create-if-missing**;
-  it never overwrites an existing file. Every run also makes sure `.gitignore`
-  excludes `.adkit.yaml` (adding the entry if missing), whether or not the config
-  file itself already existed — a `.gitignore` predating this command is retrofitted.
-- `ads.sh render-yaml` pulls the credential fields from Secret Manager and **merges**
-  them in, leaving any preferences `init` (or a hand-edit) already set — the customer
-  ids included — untouched. One-time seed of the secrets themselves:
-  `ads.sh bootstrap-secrets` (credentials only; it never prompts for a customer id).
-- Precedence for every field: an explicit flag, then the matching env var, then
-  `.adkit.yaml`, then a hardcoded default — the same flag→env→yaml tiering as
-  customer-id resolution above. See `lib/config.ts`'s `resolveTier`.
+  in the committed `adkit.yaml` — set by `ads.sh init` or a hand-edit, never in
+  Secret Manager, never fetched or overwritten by `render-yaml`. Both are optional:
+  an account reached directly (no manager) simply omits `mcc_customer_id`, and
+  `target_customer_id` is asked for once (on a terminal) or reported as a named
+  `ok:false` failure (off one) rather than guessed. There is no fallback to Secret
+  Manager for either — see the section above.
+- `ads.sh init` scaffolds **both** files with a one-time interactive prompt —
+  **create-if-missing per file**; it never overwrites an existing one, and it prompts
+  only for the half it is about to write. Every run also makes sure `.gitignore`
+  excludes `/.adkit.secrets.yaml` *and* the legacy `/.adkit.yaml` (adding whichever
+  entry is missing), whether or not either file already existed — a `.gitignore`
+  predating this command is retrofitted.
+- `ads.sh render-yaml` pulls the credential fields from Secret Manager and writes
+  **only** the credentials file, and only the credential fields: the preferences in
+  `adkit.yaml` are neither fetched nor touched. (The one exception is a target still
+  *named* `.adkit.yaml` — an unmigrated project, or an `ADKIT_CONFIG` pointing at the
+  old combined file. There both halves share one file, so both are written back;
+  trimming it to credentials would delete the operator's preferences.) One-time seed of the secrets
+  themselves: `ads.sh bootstrap-secrets` (credentials only; it never prompts for a
+  customer id).
+
+### The guardrail: credentials never land somewhere committable
+
+Before writing any file that carries credential fields, adkit judges the target path
+against git and **refuses** rather than writing, reporting the standard `ok:false`
+envelope with `step: "secrets-path"`, the path, a `reason`, and the fix. The checks,
+in order:
+
+| Check | Reason | What happens |
+| --- | --- | --- |
+| `git check-ignore --no-index <path>` says not ignored | `not-ignored` | **Refuse.** Nothing is written. Fix: add the entry to `.gitignore`, or move the file out of the repo with `ADKIT_CONFIG`. |
+| `git ls-files --error-unmatch <path>` says already tracked | `already-tracked` | **Refuse.** The existing file is left untouched. Fix: `git rm --cached`, ignore it, and **rotate every credential it has carried** — it is in the repo's history. |
+| An ancestor directory below the repo root itself holds tracked files | `tracked-ancestor` | **Warn loudly**, naming that directory, and continue. |
+
+A path outside any git work tree — the recommended `~/.config/adkit/…` placement —
+passes every check: there is nothing there that could commit it. The failure is never
+silently downgraded to a different path.
+
+The third check is not hypothetical. A vendored skill commonly lives at
+`.claude/skills/adkit` → `.agents/skills/adkit`, and "put the secrets next to adkit,
+which is gitignored" is a natural-sounding, wrong instinct: those trees are committed
+wholesale (hundreds of tracked files), so the file would be committed on the next `git
+add` — and wiped whenever the vendored skill is reinstalled.
+
+There is a **read-side** check too: when `preflight` loads a credentials file that git
+does not ignore, or that it already tracks, it prints a prominent warning on stderr
+and carries on. It never fails the run — a file that already exists is not made safer
+by refusing to read it, and the out-of-repo placement makes `check-ignore` meaningless
+anyway.
+
 - Run **`ads.sh preflight` once per session**. Non-zero exit ⇒ **stop**; surface its `step` and `message` verbatim. On success it confirms credentials work and the target customer is in the accessible list.
-- Preflight resolves its customer id through the same `--customer` → `GOOGLE_ADS_CUSTOMER_ID` → `.adkit.yaml` tiering as everything else, and builds its client the **same way** the commands it gates do — honouring `mcc_customer_id` when set, sending no login header when blank. That is the point of a precondition check: a client built differently is not checking what preflight claims to check. (It previously cleared the header unconditionally, so no MCC-managed account could pass.)
+- Preflight resolves its customer id through the same `--customer` → `GOOGLE_ADS_CUSTOMER_ID` → yaml tiering as everything else, and builds its client the **same way** the commands it gates do — honouring `mcc_customer_id` when set, sending no login header when blank. That is the point of a precondition check: a client built differently is not checking what preflight claims to check. (It previously cleared the header unconditionally, so no MCC-managed account could pass.)
 
 ## Output directories
 
 adkit writes three kinds of artifact, and each one's directory is a setting — resolved
-through the same flag → env → `.adkit.yaml` → default chain as everything else:
+through the same flag → env → yaml → default chain as everything else. All three are
+`adkit.yaml` keys — the committed half, so a collaborator, a CI job and a worktree all
+write to the same places:
 
-| Artifact | `.adkit.yaml` key | Env var | Default |
+| Artifact | `adkit.yaml` key | Env var | Default |
 | --- | --- | --- | --- |
 | Campaign briefs + state (`create`, `update`) | `briefs_dir` | `ADKIT_BRIEFS_DIR` | `adbriefs` |
 | Raw/analysis/dashboard reports (`report`) | `reports_dir` | `ADKIT_REPORTS_DIR` | `ads/output/reports` |
@@ -108,7 +165,7 @@ ideas_dir:   "ads/ideas/processed"
 `reference/gtm.md`.
 
 > These settings were declared and prompted for long before anything read them; a value
-> set in `.adkit.yaml` moved no file until issue #69. **The rest of these docs spell out
+> set in the config moved no file until issue #69. **The rest of these docs spell out
 > the default paths** (`adbriefs/<slug>.yaml`, `ads/output/reports/…`, `ideas/processed/…`)
 > because they read better as concrete examples — read them as "the configured directory,
 > which defaults to this".
@@ -133,7 +190,7 @@ built as a **reversible seam**, selected by one env var:
     (`pipx run --spec git+https://github.com/googleads/google-ads-mcp.git google-ads-mcp`),
     driven as an **embedded stdio MCP client** (an HTTP transport can be substituted at the
     same seam without changing call-sites).
-  - **Auth**: reuse the existing `.adkit.yaml` via the MCP Python client's yaml option
+  - **Auth**: reuse the existing credentials file via the MCP Python client's yaml option
     where possible; the alternative is ADC (`GOOGLE_APPLICATION_CREDENTIALS`) plus
     `GOOGLE_PROJECT_ID` and `GOOGLE_ADS_DEVELOPER_TOKEN`.
 

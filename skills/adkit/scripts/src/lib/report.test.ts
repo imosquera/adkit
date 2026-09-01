@@ -113,7 +113,7 @@ describe("remediationHint", () => {
     const h = remediationHint("User doesn't have permission to access customer", "111", {
       kind: "yaml",
     });
-    expect(h).toContain("mcc_customer_id in .adkit.yaml");
+    expect(h).toContain("mcc_customer_id in adkit.yaml");
     expect(h).not.toContain("under manager");
     expect(h).not.toContain("GOOGLE_ADS_LOGIN_CUSTOMER_ID");
   });
@@ -130,9 +130,9 @@ describe("managerPhrase / managerIdField", () => {
     expect(managerIdField({ kind: "none" })).toBeNull();
   });
 
-  it("credits .adkit.yaml when the login was inherited from it", () => {
+  it("credits adkit.yaml when the login was inherited from it", () => {
     // FR-008: an MCC-routed run must not be described as having used no manager.
-    expect(managerPhrase({ kind: "yaml" })).toContain(".adkit.yaml");
+    expect(managerPhrase({ kind: "yaml" })).toContain("mcc_customer_id in adkit.yaml");
     expect(managerPhrase({ kind: "yaml" })).not.toContain("no manager");
     expect(managerIdField({ kind: "yaml" })).toBeNull();
   });

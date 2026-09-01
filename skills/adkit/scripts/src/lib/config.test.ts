@@ -1,23 +1,38 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  activeSecretsPath,
   buildConfigYamlBody,
   CONFIG_FIELDS,
-  configExists,
-  configPath,
   configToValueMap,
   CREDENTIAL_FIELDS,
+  ensureGitignoreEntries,
   ensureGitignoreEntry,
-  GITIGNORE_ENTRY,
+  GITIGNORE_ENTRIES,
+  LEGACY_GITIGNORE_ENTRY,
+  legacyConfigExists,
+  legacyConfigPath,
+  legacyDeprecationNotice,
   loadConfig,
+  mergeConfigs,
   parseConfig,
+  preferencesPath,
   PREFERENCE_FIELDS,
+  PROJECT_YAML_SHAPE,
+  projectConfigExists,
+  projectConfigPath,
+  SECRETS_GITIGNORE_ENTRY,
+  SECRETS_YAML_SHAPE,
+  secretsExist,
+  secretsPath,
   resolveBriefsDir,
   resolveIdeasDir,
   resolveReportsDir,
   resolveTier,
+  withConfigField,
+  writeConfigField,
 } from "./config.js";
 
 describe("CONFIG_FIELDS", () => {
@@ -111,9 +126,13 @@ describe("configToValueMap", () => {
   });
 });
 
-describe("configPath / configExists / loadConfig (temp cwd)", () => {
+// The split: `adkit.yaml` is committed, `.adkit.secrets.yaml` (or the ADKIT_CONFIG
+// path) is not, and a legacy combined `.adkit.yaml` is still read on top of both.
+describe("paths, existence, and the merge order (temp cwd)", () => {
   let dir: string;
   let cwd: string;
+
+  const write = (path: string, body: string): void => writeFileSync(path, body);
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "adkit-config-"));
@@ -130,69 +149,270 @@ describe("configPath / configExists / loadConfig (temp cwd)", () => {
     delete process.env["GOOGLE_ADS_CREDENTIALS"];
   });
 
-  it("defaults configPath to .adkit.yaml under the cwd", () => {
-    expect(configPath()).toBe(join(process.cwd(), ".adkit.yaml"));
+  it("defaults the three paths to the repo root", () => {
+    expect(projectConfigPath()).toBe(join(process.cwd(), "adkit.yaml"));
+    expect(secretsPath()).toBe(join(process.cwd(), ".adkit.secrets.yaml"));
+    expect(legacyConfigPath()).toBe(join(process.cwd(), ".adkit.yaml"));
   });
 
-  it("ADKIT_CONFIG overrides the default path", () => {
-    process.env["ADKIT_CONFIG"] = join(dir, "custom.yaml");
-    expect(configPath()).toBe(join(dir, "custom.yaml"));
+  // The out-of-repo placement: nothing in the tree can commit it, and it survives
+  // into a git worktree (which an ignored root file never does).
+  it("ADKIT_CONFIG moves only the secrets file, never the committed one", () => {
+    process.env["ADKIT_CONFIG"] = join(dir, "elsewhere", "proj.secrets.yaml");
+    expect(secretsPath()).toBe(join(dir, "elsewhere", "proj.secrets.yaml"));
+    expect(projectConfigPath()).toBe(join(process.cwd(), "adkit.yaml"));
   });
 
   it("GOOGLE_ADS_CREDENTIALS is a legacy alias, used when ADKIT_CONFIG is absent", () => {
     process.env["GOOGLE_ADS_CREDENTIALS"] = join(dir, "legacy.yaml");
-    expect(configPath()).toBe(join(dir, "legacy.yaml"));
+    expect(secretsPath()).toBe(join(dir, "legacy.yaml"));
   });
 
   it("ADKIT_CONFIG wins over GOOGLE_ADS_CREDENTIALS when both are set", () => {
     process.env["ADKIT_CONFIG"] = join(dir, "new.yaml");
-    process.env["GOOGLE_ADS_CREDENTIALS"] = join(dir, "legacy.yaml");
-    expect(configPath()).toBe(join(dir, "new.yaml"));
+    process.env["GOOGLE_ADS_CREDENTIALS"] = join(dir, "old.yaml");
+    expect(secretsPath()).toBe(join(dir, "new.yaml"));
   });
 
-  it("configExists is false with no file and true once written", () => {
-    expect(configExists()).toBe(false);
-    writeFileSync(configPath(), 'secrets_project: "proj-x"\n');
-    expect(configExists()).toBe(true);
+  it("reports each file's existence independently", () => {
+    expect(projectConfigExists()).toBe(false);
+    expect(secretsExist()).toBe(false);
+    expect(legacyConfigExists()).toBe(false);
+    write(projectConfigPath(), 'secrets_project: "proj-x"\n');
+    expect(projectConfigExists()).toBe(true);
+    expect(secretsExist()).toBe(false);
+    write(secretsPath(), 'developer_token: "tok"\n');
+    expect(secretsExist()).toBe(true);
   });
 
-  it("loadConfig returns {} when the file is absent", () => {
+  it("loadConfig returns {} when no file exists", () => {
     expect(loadConfig()).toEqual({});
   });
 
-  it("loadConfig reads the written config", () => {
-    writeFileSync(configPath(), 'secrets_project: "proj-x"\nread_backend: "mcp"\n');
-    expect(loadConfig()).toEqual({ secrets_project: "proj-x", read_backend: "mcp" });
+  it("merges the committed preferences with the credentials file", () => {
+    write(projectConfigPath(), 'secrets_project: "proj-x"\nreports_dir: "ads/reports"\nmcc_customer_id: "4444444444"\n');
+    write(secretsPath(), 'developer_token: "tok"\nrefresh_token: "rtok"\n');
+    expect(loadConfig()).toEqual({
+      secrets_project: "proj-x",
+      reports_dir: "ads/reports",
+      mcc_customer_id: "4444444444",
+      developer_token: "tok",
+      refresh_token: "rtok",
+    });
   });
 
-  it("loadConfig returns {} for unreadable/malformed yaml rather than throwing", () => {
-    writeFileSync(configPath(), "not: [valid: yaml");
-    expect(loadConfig()).toEqual({});
+  // Merge order, stated as a rule: adkit.yaml <- secrets <- legacy.
+  it("lets the secrets file win over adkit.yaml where they overlap", () => {
+    write(projectConfigPath(), 'secrets_project: "from-project"\n');
+    write(secretsPath(), 'secrets_project: "from-secrets"\n');
+    expect(loadConfig().secrets_project).toBe("from-secrets");
+  });
+
+  it("overlays a legacy .adkit.yaml last, so it wins over both", () => {
+    write(projectConfigPath(), 'secrets_project: "from-project"\nreports_dir: "ads/reports"\n');
+    write(secretsPath(), 'secrets_project: "from-secrets"\ndeveloper_token: "from-secrets"\n');
+    write(legacyConfigPath(), 'secrets_project: "from-legacy"\ndeveloper_token: "from-legacy"\n');
+    const config = loadConfig();
+    expect(config.secrets_project).toBe("from-legacy");
+    expect(config.developer_token).toBe("from-legacy");
+    // A field the legacy file does not carry still comes through from below it.
+    expect(config.reports_dir).toBe("ads/reports");
+  });
+
+  // Compatibility: an unmigrated project holds both halves in one file and must
+  // behave exactly as it did before the split.
+  it("reads an unmigrated project out of the legacy file alone", () => {
+    write(legacyConfigPath(), 'developer_token: "tok"\nmcc_customer_id: "4444444444"\nreports_dir: "legacy/reports"\n');
+    expect(loadConfig()).toEqual({
+      developer_token: "tok",
+      mcc_customer_id: "4444444444",
+      reports_dir: "legacy/reports",
+    });
+    expect(resolveReportsDir(null, loadConfig())).toBe("legacy/reports");
+  });
+
+  it("treats a malformed layer as absent rather than throwing", () => {
+    write(projectConfigPath(), 'secrets_project: "proj-x"\n');
+    write(secretsPath(), "not: [valid: yaml");
+    expect(loadConfig()).toEqual({ secrets_project: "proj-x" });
+  });
+
+  // activeSecretsPath is the READ path: it falls back to the legacy file so an
+  // unmigrated project's credentials are still found (and named in error text).
+  it("activeSecretsPath prefers the secrets file, falls back to legacy, else names the secrets file", () => {
+    expect(activeSecretsPath()).toBe(secretsPath());
+    write(legacyConfigPath(), 'developer_token: "tok"\n');
+    expect(activeSecretsPath()).toBe(legacyConfigPath());
+    write(secretsPath(), 'developer_token: "tok"\n');
+    expect(activeSecretsPath()).toBe(secretsPath());
+  });
+
+  it("activeSecretsPath honours an explicit override even when the file is absent", () => {
+    write(legacyConfigPath(), 'developer_token: "tok"\n');
+    process.env["ADKIT_CONFIG"] = join(dir, "elsewhere.yaml");
+    expect(activeSecretsPath()).toBe(join(dir, "elsewhere.yaml"));
+  });
+
+  it("preferencesPath is adkit.yaml, except on an unmigrated project", () => {
+    expect(preferencesPath()).toBe(projectConfigPath());
+    write(legacyConfigPath(), 'secrets_project: "proj-x"\n');
+    expect(preferencesPath()).toBe(legacyConfigPath());
+    write(projectConfigPath(), 'secrets_project: "proj-x"\n');
+    expect(preferencesPath()).toBe(projectConfigPath());
+  });
+});
+
+// The persist path behind the prompted target_customer_id. The temp dir is not a
+// git repo, so the guardrail has nothing to say about it.
+describe("writeConfigField (temp cwd)", () => {
+  let dir: string;
+  let cwd: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "adkit-write-"));
+    cwd = process.cwd();
+    process.chdir(dir);
+    delete process.env["ADKIT_CONFIG"];
+    delete process.env["GOOGLE_ADS_CREDENTIALS"];
+  });
+
+  afterEach(() => {
+    process.chdir(cwd);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("writes the preference into the committed adkit.yaml, never the secrets file", () => {
+    writeFileSync(projectConfigPath(), 'secrets_project: "proj-x"\n');
+    writeFileSync(secretsPath(), 'developer_token: "dev-tok"\n');
+    writeConfigField("target_customer_id", "1234567890");
+    const project = readFileSync(projectConfigPath(), "utf8");
+    expect(project).toContain('target_customer_id: "1234567890"');
+    expect(project).toContain('secrets_project: "proj-x"');
+    // The credential was never merged in — the secrets file is read by nothing here.
+    expect(project).not.toContain("dev-tok");
+    expect(readFileSync(secretsPath(), "utf8")).toBe('developer_token: "dev-tok"\n');
+  });
+
+  it("keeps writing the legacy combined file on an unmigrated project", () => {
+    writeFileSync(legacyConfigPath(), 'developer_token: "dev-tok"\nmcc_customer_id: "4444444444"\n');
+    writeConfigField("target_customer_id", "1234567890");
+    const written = readFileSync(legacyConfigPath(), "utf8");
+    expect(written).toContain('target_customer_id: "1234567890"');
+    expect(written).toContain('developer_token: "dev-tok"');
+    expect(written).toContain('mcc_customer_id: "4444444444"');
+    expect(existsSync(projectConfigPath())).toBe(false);
+  });
+});
+
+describe("mergeConfigs / withConfigField", () => {
+  it("lets later layers win per field, leaving fields they omit alone", () => {
+    expect(mergeConfigs([{ secrets_project: "a", reports_dir: "r" }, { secrets_project: "b" }])).toEqual({
+      secrets_project: "b",
+      reports_dir: "r",
+    });
+  });
+
+  it("returns {} for no layers", () => {
+    expect(mergeConfigs([])).toEqual({});
+  });
+
+  it("withConfigField returns a new object rather than mutating", () => {
+    const original = { secrets_project: "proj-x" };
+    expect(withConfigField(original, "target_customer_id", "1234567890")).toEqual({
+      secrets_project: "proj-x",
+      target_customer_id: "1234567890",
+    });
+    expect(original).toEqual({ secrets_project: "proj-x" });
+  });
+});
+
+describe("legacyDeprecationNotice", () => {
+  it("names both files to create and which fields go in each", () => {
+    const notice = legacyDeprecationNotice("/repo/.adkit.yaml");
+    expect(notice).toContain("/repo/.adkit.yaml");
+    expect(notice).toContain(".adkit.secrets.yaml");
+    expect(notice).toContain("adkit.yaml");
+    expect(notice).toContain("developer_token");
+    expect(notice).toContain("reports_dir");
   });
 });
 
 describe("ensureGitignoreEntry", () => {
   it("appends the entry to an empty .gitignore", () => {
-    expect(ensureGitignoreEntry("", GITIGNORE_ENTRY)).toBe("/.adkit.yaml\n");
+    expect(ensureGitignoreEntry("", SECRETS_GITIGNORE_ENTRY)).toBe("/.adkit.secrets.yaml\n");
   });
 
   it("appends the entry after a blank-line separator when content already exists", () => {
-    expect(ensureGitignoreEntry("node_modules/\n", GITIGNORE_ENTRY)).toBe("node_modules/\n\n/.adkit.yaml\n");
+    expect(ensureGitignoreEntry("node_modules/\n", SECRETS_GITIGNORE_ENTRY)).toBe(
+      "node_modules/\n\n/.adkit.secrets.yaml\n",
+    );
   });
 
   it("is a no-op when the entry is already present", () => {
-    const content = "node_modules/\n/.adkit.yaml\n";
-    expect(ensureGitignoreEntry(content, GITIGNORE_ENTRY)).toBe(content);
+    const content = "node_modules/\n/.adkit.secrets.yaml\n";
+    expect(ensureGitignoreEntry(content, SECRETS_GITIGNORE_ENTRY)).toBe(content);
   });
 
   it("matches an existing entry regardless of surrounding whitespace", () => {
-    const content = "node_modules/\n  /.adkit.yaml  \n";
-    expect(ensureGitignoreEntry(content, GITIGNORE_ENTRY)).toBe(content);
+    const content = "node_modules/\n  /.adkit.secrets.yaml  \n";
+    expect(ensureGitignoreEntry(content, SECRETS_GITIGNORE_ENTRY)).toBe(content);
   });
 
   it("does not match a different entry sharing a substring", () => {
-    expect(ensureGitignoreEntry("skills/.adkit.yaml\n", GITIGNORE_ENTRY)).toBe(
-      "skills/.adkit.yaml\n\n/.adkit.yaml\n",
+    expect(ensureGitignoreEntry("skills/.adkit.secrets.yaml\n", SECRETS_GITIGNORE_ENTRY)).toBe(
+      "skills/.adkit.secrets.yaml\n\n/.adkit.secrets.yaml\n",
+    );
+  });
+
+  // The legacy entry stays in the set: an unmigrated project's .adkit.yaml still
+  // holds credentials, so dropping its protection would expose them.
+  it("ensureGitignoreEntries adds both entries, and keeps the legacy one", () => {
+    expect(GITIGNORE_ENTRIES).toEqual([SECRETS_GITIGNORE_ENTRY, LEGACY_GITIGNORE_ENTRY]);
+    expect(ensureGitignoreEntries("", GITIGNORE_ENTRIES)).toBe("/.adkit.secrets.yaml\n\n/.adkit.yaml\n");
+  });
+
+  it("ensureGitignoreEntries adds only what is missing", () => {
+    expect(ensureGitignoreEntries("/.adkit.yaml\n", GITIGNORE_ENTRIES)).toBe("/.adkit.yaml\n\n/.adkit.secrets.yaml\n");
+  });
+});
+
+// The shapes are what keep credentials out of the committed file: the emitter walks
+// the shape's fields, so a credential in the value map simply has nowhere to go.
+describe("buildConfigYamlBody shapes", () => {
+  const everything = new Map([
+    ["developer_token", "dev-tok"],
+    ["psi_api_key", "psi"],
+    ["mcc_customer_id", "4444444444"],
+    ["reports_dir", "ads/reports"],
+  ]);
+
+  it("PROJECT_YAML_SHAPE emits only preferences, and says the file is safe to commit", () => {
+    const body = buildConfigYamlBody(everything, PROJECT_YAML_SHAPE);
+    expect(body).toContain('mcc_customer_id: "4444444444"');
+    expect(body).toContain('reports_dir: "ads/reports"');
+    expect(body).not.toContain("dev-tok");
+    expect(body).not.toContain("psi_api_key");
+    expect(body).toContain("safe to commit");
+    // use_proto_plus belongs to the credentials file the client libraries read.
+    expect(body).not.toContain("use_proto_plus");
+  });
+
+  it("SECRETS_YAML_SHAPE emits only credentials, and says never to commit it", () => {
+    const body = buildConfigYamlBody(everything, SECRETS_YAML_SHAPE);
+    expect(body).toContain('developer_token: "dev-tok"');
+    expect(body).toContain('psi_api_key: "psi"');
+    expect(body).not.toContain("mcc_customer_id");
+    expect(body).not.toContain("reports_dir");
+    expect(body).toContain("never commit");
+    expect(body).toContain("use_proto_plus: true");
+  });
+
+  it("configToValueMap can be narrowed to one shape's fields", () => {
+    expect(configToValueMap({ developer_token: "tok", reports_dir: "r" }, CREDENTIAL_FIELDS)).toEqual(
+      new Map([["developer_token", "tok"]]),
+    );
+    expect(configToValueMap({ developer_token: "tok", reports_dir: "r" }, PREFERENCE_FIELDS)).toEqual(
+      new Map([["reports_dir", "r"]]),
     );
   });
 });

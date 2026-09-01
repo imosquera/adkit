@@ -934,7 +934,7 @@ export async function runPsi(
   if (!apiKey) {
     return {
       skipped:
-        "no credential — set PAGESPEED_API_KEY, pass --psi-key, or run `ads.sh bootstrap-secrets` + `ads.sh render-yaml` to source psi_api_key from .adkit.yaml / Secret Manager, to diagnose low landing-page scores",
+        "no credential — set PAGESPEED_API_KEY, pass --psi-key, or run `ads.sh bootstrap-secrets` + `ads.sh render-yaml` to source psi_api_key from .adkit.secrets.yaml / Secret Manager, to diagnose low landing-page scores",
       results: [],
     };
   }
@@ -1087,7 +1087,7 @@ const VALID_DAYS = new Set([7, 14, 30]);
 
 /**
  * Resolve the PageSpeed Insights API key: `--psi-key` flag → `PAGESPEED_API_KEY`
- * env → `.adkit.yaml`'s `psi_api_key` (populated via `bootstrap-secrets` +
+ * env → the config's `psi_api_key` (in `.adkit.secrets.yaml`, populated via `bootstrap-secrets` +
  * `render-yaml` from GCP Secret Manager's `google-pagespeed-api-key`, the same
  * pipeline the Google Ads credentials already flow through) → `null` (PSI degrades
  * gracefully — see {@link runPsi}). Pure given the three already-read tiers.
@@ -1152,7 +1152,7 @@ function parseAudarArgs(argv: string[]): ParsedArgs {
  * Resolve the customer to QUERY: `--customer` flag → `GOOGLE_ADS_CUSTOMER_ID` env
  * → yaml (target, then login). Mirrors create.ts precedence. Including the env leaf
  * is the fix for the MCC trap: without it, an operator with only `mcc_customer_id`
- * (an MCC) in .adkit.yaml would query metrics against the manager and hit
+ * (an MCC) in adkit.yaml would query metrics against the manager and hit
  * "Metrics cannot be requested for a manager account" even with a leaf exported.
  */
 export function resolveAuditCustomer(
@@ -1174,7 +1174,7 @@ export function managerMetricsHint(): string {
   return (
     "metrics were requested against a manager (MCC) account, which Google Ads rejects. " +
     "Pass --customer <leaf-account-id> (or export GOOGLE_ADS_CUSTOMER_ID=<leaf>). " +
-    ".adkit.yaml's mcc_customer_id is the MCC login header, not a query target."
+    "adkit.yaml's mcc_customer_id is the MCC login header, not a query target."
   );
 }
 

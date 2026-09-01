@@ -34,7 +34,7 @@ outputs wherever it likes — see `reference/conventions.md`. Resolve them ONCE,
 anything else:
 
 - **`<ideas-dir>`** — the **processed**-ideas directory. Read `ideas_dir` from
-  `.adkit.yaml` at the repo root (or the `ADKIT_CONFIG` path when that env var is set);
+  `adkit.yaml` at the repo root — the committed config, so a git worktree gets it too;
   the `ADKIT_IDEAS_DIR` env var overrides it. Absent from both ⇒ **`ideas/processed`**,
   the historical default.
 - **`<raw-dir>`** — the **raw**-ideas directory: a sibling of `<ideas-dir>` named `raw`,

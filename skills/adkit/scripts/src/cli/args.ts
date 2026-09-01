@@ -51,7 +51,7 @@ export const MCC_CUSTOMER_ID_ENV = "GOOGLE_ADS_LOGIN_CUSTOMER_ID";
  * The value {@link loadClient} / `loadReadClient` accept as their mcc-customer-id:
  *  - a `string` MCC id → reach the leaf through that manager,
  *  - `null` → send no login header (direct access),
- *  - {@link KEEP_YAML_MCC} → inherit whatever .adkit.yaml carries.
+ *  - {@link KEEP_YAML_MCC} → inherit whatever the config carries.
  */
 export type MccCustomerId = string | null | typeof KEEP_YAML_MCC;
 
@@ -59,7 +59,7 @@ export type MccCustomerId = string | null | typeof KEEP_YAML_MCC;
  * The parsed mcc-customer-id decision, TAGGED with the tier that supplied it.
  *
  * The tier is part of the answer, not bookkeeping: `{ source: "yaml" }` means "defer
- * to the credentials", under which a header IS still sent whenever .adkit.yaml
+ * to the credentials", under which a header IS still sent whenever the config
  * carries a `mcc_customer_id`. Collapsing it into a bare `null` would make an
  * MCC-routed run report and blame "no manager" (FR-008).
  *

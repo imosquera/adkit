@@ -1,36 +1,62 @@
 /**
  * One-time interactive scaffold of the project's local config (see
- * {@link "../lib/config.js"}) into `.adkit.yaml`: both the Google Ads
- * credentials and the non-secret project preferences (Secret Manager project,
- * read backend, output dirs).
+ * {@link "../lib/config.js"}), across the two files it now lives in:
  *
- * Create-if-missing, mirroring `bootstrap-secrets.ts`: an existing config file is
- * never clobbered — rerun after deleting it, or hand-edit it directly. Running
- * `ads.sh render-yaml` afterward refreshes just the credential fields from
- * Secret Manager without disturbing the preferences entered here.
+ *  - `adkit.yaml` — the non-secret project preferences (the two customer ids, the
+ *    Secret Manager project, the read backend, the three output dirs). **Committed**:
+ *    it describes the project, so a collaborator, a CI job, and a git worktree all
+ *    get the same values without rediscovering them.
+ *  - `.adkit.secrets.yaml` — the Google Ads credentials, written 0600 and
+ *    git-ignored. `ADKIT_CONFIG` moves it out of the repo entirely, which is the
+ *    stronger placement.
  *
- * Every run also makes sure `.gitignore` excludes `.adkit.yaml` — the file
- * carries real credentials, so this happens unconditionally (not only on a
- * fresh write), in case the file or an unprotected `.gitignore` predates this
- * command.
+ * Create-if-missing per file, mirroring `bootstrap-secrets.ts`: an existing file is
+ * never clobbered, and only the fields belonging to a file that is actually being
+ * written are prompted for. A legacy combined `.adkit.yaml` stops the scaffold
+ * altogether and prints the deprecation notice naming the two files to create.
+ *
+ * Every run also makes sure `.gitignore` excludes both the secrets file and the
+ * legacy `.adkit.yaml` — they carry real credentials, so this happens
+ * unconditionally (not only on a fresh write), in case a file or an unprotected
+ * `.gitignore` predates this command. Before the credentials are written the target
+ * path is judged by the guardrail in `lib/secrets-guard.ts`; a committable path is
+ * refused with the standard `ok:false` envelope rather than written to.
  *
  * The IO (terminal prompts, fs) is isolated at the edges; the prompt text and the
- * yaml body come from pure functions in `lib/config.ts`.
+ * yaml bodies come from pure functions in `lib/config.ts`.
  */
 
 import { createInterface, type Interface } from "node:readline";
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { isMainModule } from "../cli/entry.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
-import { buildConfigYamlBody, configExists, configPath, CONFIG_FIELDS, ensureGitignoreEntry, GITIGNORE_ENTRY } from "../lib/config.js";
+import {
+  buildConfigYamlBody,
+  type ConfigField,
+  CREDENTIAL_FIELDS,
+  ensureGitignoreEntries,
+  GITIGNORE_ENTRIES,
+  legacyConfigExists,
+  legacyConfigPath,
+  legacyDeprecationNotice,
+  PREFERENCE_FIELDS,
+  PROJECT_YAML_SHAPE,
+  projectConfigExists,
+  projectConfigPath,
+  SECRETS_YAML_SHAPE,
+  secretsExist,
+  secretsPath,
+  writeYamlAtomic,
+} from "../lib/config.js";
+import { assertWritableSecretsPath, SecretsPathError } from "../lib/secrets-guard.js";
 
 /** The prompt text for a field, showing its default inline. Pure. */
 export function promptFor(label: string, defaultValue: string): string {
   return defaultValue ? `${label} [${defaultValue}]: ` : `${label}: `;
 }
 
-/** The line printed once the file is written. Pure. */
+/** The line printed once a file is written. Pure. */
 export function doneLine(path: string): string {
   return `wrote ${path}\n`;
 }
@@ -40,31 +66,32 @@ export function existsLine(path: string): string {
   return `${path} already exists — leaving it in place. Edit it directly, or delete it and rerun init.\n`;
 }
 
-/** The line printed when a `.gitignore` entry is added. Pure. */
-export function gitignoredLine(path: string): string {
-  return `added ${GITIGNORE_ENTRY} to ${path}\n`;
+/** The line printed when `.gitignore` entries are added. Pure. */
+export function gitignoredLine(entries: readonly string[], path: string): string {
+  return `added ${entries.join(", ")} to ${path}\n`;
 }
 
 /**
- * Ensure the repo's `.gitignore` (alongside `.adkit.yaml`, same directory) excludes
- * it, so a file carrying real credentials never gets committed by accident — even
- * if it already existed before this run. Writes only when the entry is missing;
- * a fresh `.gitignore` is created if none exists yet. Returns whether it wrote.
+ * Ensure the repo's `.gitignore` excludes both the credentials file and the legacy
+ * combined `.adkit.yaml`, so a file carrying real credentials never gets committed
+ * by accident — even if it already existed before this run. Writes only when an
+ * entry is missing; a fresh `.gitignore` is created if none exists yet. Returns the
+ * entries it added.
  */
-function ensureGitignored(configDir: string): boolean {
-  const gitignorePath = join(configDir, ".gitignore");
+function ensureGitignored(repoDir: string): readonly string[] {
+  const gitignorePath = join(repoDir, ".gitignore");
   let existing = "";
   try {
     existing = readFileSync(gitignorePath, "utf8");
   } catch {
-    // No .gitignore yet — ensureGitignoreEntry starts one.
+    // No .gitignore yet — ensureGitignoreEntries starts one.
   }
-  const updated = ensureGitignoreEntry(existing, GITIGNORE_ENTRY);
+  const updated = ensureGitignoreEntries(existing, GITIGNORE_ENTRIES);
   if (updated === existing) {
-    return false;
+    return [];
   }
   writeFileSync(gitignorePath, updated);
-  return true;
+  return GITIGNORE_ENTRIES.filter((entry) => !existing.split("\n").some((line) => line.trim() === entry));
 }
 
 /**
@@ -84,10 +111,13 @@ function muteEcho(rl: Interface, promptText: string): () => void {
 }
 
 /**
- * Prompt for every config field, falling back to its default on a blank answer.
+ * Prompt for each of `fields`, falling back to its default on a blank answer.
  * Sensitive fields (credentials) are read without echo. Returns a
  * `field -> value` map with only non-blank fields present, in the same shape
  * {@link buildConfigYamlBody} expects.
+ *
+ * `fields` is exactly the set belonging to the files about to be written, so
+ * rerunning init after deleting one file asks only for that file's half.
  *
  * Reads answers via the readline `Interface`'s async iterator rather than
  * chained `rl.question()` calls: over a piped (non-TTY) stdin that delivers all
@@ -96,12 +126,12 @@ function muteEcho(rl: Interface, promptText: string): () => void {
  * hand it. Iterating `for await` over the same interface consumes exactly one
  * line per field and does not lose data either way.
  */
-export async function promptAll(): Promise<Map<string, string>> {
+export async function promptAll(fields: readonly ConfigField[]): Promise<Map<string, string>> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const lines = rl[Symbol.asyncIterator]();
     const entries: Array<[string, string]> = [];
-    for (const field of CONFIG_FIELDS) {
+    for (const field of fields) {
       const text = promptFor(field.label, field.default);
       process.stdout.write(text);
       const unmute = field.sensitive ? muteEcho(rl, text) : null;
@@ -123,22 +153,69 @@ export async function promptAll(): Promise<Map<string, string>> {
 }
 
 /**
- * Scaffold `.adkit.yaml` if it doesn't already exist. Returns the process exit
- * code (0 on success, whether that means it wrote the file or left an existing
- * one in place). Written with 0600 perms — the file carries real credentials.
+ * Scaffold whichever of the two config files is missing. Returns the process exit
+ * code (0 on success, whether that means it wrote a file or left existing ones in
+ * place; 1 when the guardrail refuses the credentials path).
  */
 export async function main(): Promise<number> {
-  const target = configPath();
-  if (ensureGitignored(dirname(target))) {
-    process.stdout.write(gitignoredLine(join(dirname(target), ".gitignore")));
+  const repoDir = process.cwd();
+  const added = ensureGitignored(repoDir);
+  if (added.length > 0) {
+    process.stdout.write(gitignoredLine(added, join(repoDir, ".gitignore")));
   }
-  if (configExists()) {
-    process.stdout.write(existsLine(target));
+
+  // An unmigrated project holds both halves in one file: leave it exactly as it is
+  // (it still wins over both new files) and say what to create by hand.
+  if (legacyConfigExists()) {
+    process.stdout.write(existsLine(legacyConfigPath()));
+    process.stdout.write(legacyDeprecationNotice());
     return 0;
   }
-  const values = await promptAll();
-  writeFileSync(target, buildConfigYamlBody(values), { mode: 0o600 });
-  process.stdout.write(doneLine(target));
+
+  const project = projectConfigPath();
+  const secrets = secretsPath();
+  const needProject = !projectConfigExists();
+  const needSecrets = !secretsExist();
+  if (!needProject) {
+    process.stdout.write(existsLine(project));
+  }
+  if (!needSecrets) {
+    process.stdout.write(existsLine(secrets));
+  }
+  if (!needProject && !needSecrets) {
+    return 0;
+  }
+
+  // Judge the credentials path BEFORE prompting: the verdict does not depend on the
+  // answers, and refusing after four credentials have been typed would be rude.
+  if (needSecrets) {
+    try {
+      const warning = assertWritableSecretsPath(secrets);
+      if (warning) {
+        process.stderr.write(`${warning}\n`);
+      }
+    } catch (exc) {
+      if (exc instanceof SecretsPathError) {
+        emitJson(errorEnvelope(exc.message, { step: exc.step, path: exc.path, reason: exc.reason }));
+        return 1;
+      }
+      throw exc;
+    }
+  }
+
+  const values = await promptAll([
+    ...(needSecrets ? CREDENTIAL_FIELDS : []),
+    ...(needProject ? PREFERENCE_FIELDS : []),
+  ]);
+
+  if (needProject) {
+    writeYamlAtomic(project, buildConfigYamlBody(values, PROJECT_YAML_SHAPE), 0o644);
+    process.stdout.write(doneLine(project));
+  }
+  if (needSecrets) {
+    writeYamlAtomic(secrets, buildConfigYamlBody(values, SECRETS_YAML_SHAPE), 0o600);
+    process.stdout.write(doneLine(secrets));
+  }
   return 0;
 }
 

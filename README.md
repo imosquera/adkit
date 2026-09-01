@@ -29,8 +29,10 @@ nothing is committed to the repo.
 
 The two customer ids are **not** credentials. `target_customer_id` (the account you operate
 on) and `mcc_customer_id` (the manager you reach it through, if any) are 10-digit Google Ads
-account numbers printed in the Ads UI, so they live in `.adkit.yaml` as ordinary preferences
-set by `ads.sh init`. `render-yaml` never fetches or overwrites them. Omit `mcc_customer_id`
+account numbers printed in the Ads UI, so they live in the **committed** `adkit.yaml` as
+ordinary preferences set by `ads.sh init`, alongside the output directories and the read
+backend. The credentials go in a separate, git-ignored `.adkit.secrets.yaml` (or, better,
+somewhere outside the repo entirely via `ADKIT_CONFIG`). `render-yaml` never fetches or overwrites them. Omit `mcc_customer_id`
 for an account you reach directly, without a manager — absent is the correct setting there,
 and nothing will ever prompt you for it. If `target_customer_id` is missing when a command
 needs it, you are asked once on a terminal and the answer is saved; in CI the command exits

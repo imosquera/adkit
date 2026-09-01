@@ -4,7 +4,7 @@
  * `mcc_customer_id` header.
  *
  * Neither is a credential — both are 10-digit account ids printed in the Ads UI —
- * so they live in `.adkit.yaml` as ordinary preferences (see
+ * so they live in the committed `adkit.yaml` as ordinary preferences (see
  * {@link "./config.js".PREFERENCE_FIELDS}) and are never fetched from Secret
  * Manager. Nothing here reads a secret, and there is deliberately no fallback to
  * one: an id that exists only in a previously-seeded secret is gone as far as this
@@ -148,7 +148,7 @@ export interface TargetCustomerIdDeps {
   readonly flag?: string | null | undefined;
   /** The environment to read {@link CUSTOMER_ID_ENV} from. Required — never ambient. */
   readonly env: Record<string, string | undefined>;
-  /** The already-loaded `.adkit.yaml`. */
+  /** The already-loaded, merged config. */
   readonly config: AdkitConfig;
   /** Where that config lives, for the error text and the persist. */
   readonly configPath: string;
@@ -156,29 +156,30 @@ export interface TargetCustomerIdDeps {
   readonly isTty: boolean;
   /** Ask the operator once. Only ever called when `isTty`. */
   readonly prompt: (text: string) => Promise<string>;
-  /** Write the answer into `.adkit.yaml`. Only ever called after a successful parse. */
+  /** Write the answer into the preferences file. Only ever called after a successful parse. */
   readonly persist: (id: CustomerId) => void;
   /** Where the "saved …" confirmation goes (stderr: stdout carries the JSON envelope). */
   readonly notify: (line: string) => void;
 }
 
 /**
- * Resolve the leaf account to operate on: flag → env → `.adkit.yaml` → ask.
+ * Resolve the leaf account to operate on: flag → env → the config → ask.
  *
  * Required to operate, so there is no "resolved to nothing" outcome — this either
  * returns a {@link CustomerId} or throws. On a TTY the operator is asked once, the
- * answer is validated, and it is **written into `.adkit.yaml`** so no later run
+ * answer is validated, and it is **written into `adkit.yaml`** so no later run
  * asks again. Off a TTY (CI, a pipe) it throws {@link MissingTargetCustomerIdError},
  * which the entrypoint turns into the standard `ok:false` envelope; it never
  * prompts into a pipe that cannot answer, and never guesses.
  *
  * NOTE — the persist deliberately lets a read-only command (`audit`, `report`,
- * `research`) write `.adkit.yaml`. Nothing but `init` and `render-yaml` does that
+ * `research`) write the config. Nothing but `init` and `render-yaml` does that
  * today, so it is a real widening of who touches the file and is called out here
  * rather than left to be discovered. The trade is one prompt per project against
  * one prompt per run: the value is an account number the operator just typed by
- * hand, it lands in a git-ignored per-machine file, and only the single missing
- * field is added — every other field is carried through untouched. The write is
+ * hand, it lands in the committed `adkit.yaml` (it is an account number, safe to
+ * share), and only the single missing field is added — every other field in that
+ * file is carried through untouched. The write is
  * announced on stderr ({@link persistedLine}), never silent.
  *
  * A malformed value at any tier — including the typed answer — throws
@@ -213,7 +214,7 @@ export async function requireTargetCustomerId(deps: TargetCustomerIdDeps): Promi
 
 /**
  * Resolve the manager (MCC) login header: flag → `GOOGLE_ADS_LOGIN_CUSTOMER_ID` →
- * `.adkit.yaml`, or `null` when no tier carries one.
+ * the config, or `null` when no tier carries one.
  *
  * `null` is a RESULT, not a failure: an account reached directly has no manager, and
  * conventions.md says to omit the header entirely for it. So this never prompts and

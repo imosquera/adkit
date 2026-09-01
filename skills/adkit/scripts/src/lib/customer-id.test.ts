@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { configPath, loadConfig, writeConfigField } from "./config.js";
+import { loadConfig, preferencesPath, projectConfigPath, writeConfigField } from "./config.js";
 import {
   InvalidCustomerIdError,
   MissingTargetCustomerIdError,
@@ -169,19 +169,24 @@ describe("managerRequiredHint", () => {
   });
 });
 
-// Test 4 (persistence half): the prompted answer really lands in .adkit.yaml, and
-// every other field survives the write.
-describe("prompt-and-persist writes .adkit.yaml", () => {
+// Test 4 (persistence half): the prompted answer really lands in the preferences
+// file — the committed `adkit.yaml`, since the id is an account number, not a
+// secret — and every other field in that file survives the write.
+describe("prompt-and-persist writes adkit.yaml", () => {
   let dir: string;
+  let cwd: string;
   let prevConfig: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "adkit-cid-"));
+    cwd = process.cwd();
+    process.chdir(dir);
     prevConfig = process.env["ADKIT_CONFIG"];
-    process.env["ADKIT_CONFIG"] = join(dir, ".adkit.yaml");
+    delete process.env["ADKIT_CONFIG"];
   });
 
   afterEach(() => {
+    process.chdir(cwd);
     if (prevConfig === undefined) {
       delete process.env["ADKIT_CONFIG"];
     } else {
@@ -191,28 +196,45 @@ describe("prompt-and-persist writes .adkit.yaml", () => {
   });
 
   it("adds target_customer_id and leaves every other field untouched", async () => {
-    writeFileSync(
-      configPath(),
-      'developer_token: "dev-tok"\nmcc_customer_id: "4444444444"\nsecrets_project: "proj-x"\nuse_proto_plus: true\n',
-    );
+    writeFileSync(projectConfigPath(), 'mcc_customer_id: "4444444444"\nsecrets_project: "proj-x"\n');
     const id = await requireTargetCustomerId(
       deps({
         isTty: true,
         prompt: async () => "123-456-7890",
         config: loadConfig(),
-        configPath: configPath(),
+        configPath: preferencesPath(),
         persist: (value: CustomerId) => writeConfigField("target_customer_id", value),
       }),
     );
     expect(id).toBe("1234567890");
-    const written = readFileSync(configPath(), "utf8");
+    const written = readFileSync(projectConfigPath(), "utf8");
     expect(written).toContain('target_customer_id: "1234567890"');
-    expect(written).toContain('developer_token: "dev-tok"');
     expect(written).toContain('mcc_customer_id: "4444444444"');
     expect(written).toContain('secrets_project: "proj-x"');
     // And the next run resolves from the file instead of asking again.
     const prompt = vi.fn(async () => "9999999999");
     expect(await requireTargetCustomerId(deps({ isTty: true, prompt, config: loadConfig() }))).toBe("1234567890");
     expect(prompt).not.toHaveBeenCalled();
+  });
+
+  // Compatibility: an unmigrated project keeps its one combined file, credentials
+  // and all — the persist must not strand the id in a new file the legacy one
+  // would then out-rank.
+  it("writes into the legacy .adkit.yaml when that is all the project has", async () => {
+    writeFileSync(join(dir, ".adkit.yaml"), 'developer_token: "dev-tok"\nsecrets_project: "proj-x"\n');
+    const id = await requireTargetCustomerId(
+      deps({
+        isTty: true,
+        prompt: async () => "1234567890",
+        config: loadConfig(),
+        configPath: preferencesPath(),
+        persist: (value: CustomerId) => writeConfigField("target_customer_id", value),
+      }),
+    );
+    expect(id).toBe("1234567890");
+    const written = readFileSync(join(dir, ".adkit.yaml"), "utf8");
+    expect(written).toContain('target_customer_id: "1234567890"');
+    expect(written).toContain('developer_token: "dev-tok"');
+    expect(loadConfig().target_customer_id).toBe("1234567890");
   });
 });

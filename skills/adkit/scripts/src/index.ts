@@ -61,8 +61,26 @@ export {
   readBackend,
 } from "./lib/auth.js";
 export type { AdsClient, AdsMutateOperation, GaqlRow, GaqlValue, MutateResult, ReadBackend } from "./lib/auth.js";
-export { CONFIG_FIELDS, configExists, configPath, loadConfig, resolveTier } from "./lib/config.js";
-export type { AdkitConfig, ConfigField } from "./lib/config.js";
+export {
+  activeSecretsPath,
+  CONFIG_FIELDS,
+  CREDENTIAL_FIELDS,
+  legacyConfigExists,
+  legacyConfigPath,
+  loadConfig,
+  mergeConfigs,
+  preferencesPath,
+  PREFERENCE_FIELDS,
+  projectConfigExists,
+  projectConfigPath,
+  readConfigFile,
+  resolveTier,
+  secretsExist,
+  secretsPath,
+} from "./lib/config.js";
+export type { AdkitConfig, ConfigField, ConfigYamlShape } from "./lib/config.js";
+export { judgeSecretsPath, secretsReadWarning, SecretsPathError } from "./lib/secrets-guard.js";
+export type { GitFacts, SecretsPathVerdict } from "./lib/secrets-guard.js";
 export { createMcpReadClient, loadReadClient, McpNotConfiguredError, toMcpSearchParams } from "./lib/mcp-client.js";
 export type { McpAdsClient, McpSearchParams } from "./lib/mcp-client.js";
 

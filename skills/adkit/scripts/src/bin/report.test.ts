@@ -933,7 +933,7 @@ describe("main (fake client, temp cwd)", () => {
     expect(text).not.toContain("with no manager");
   });
 
-  it("credits .adkit.yaml when the inherited login cannot be read back", async () => {
+  it("credits adkit.yaml when the inherited login cannot be read back", async () => {
     // Unreadable credentials mean "a login may have been inherited, value unknown" —
     // distinct from "no header was sent", so the message must not claim the latter.
     rmSync(credsPath, { force: true });
@@ -941,7 +941,7 @@ describe("main (fake client, temp cwd)", () => {
       failingClient("User doesn't have permission"),
     );
     expect(code).toBe(1);
-    expect(text).toContain(".adkit.yaml");
+    expect(text).toContain("adkit.yaml");
     expect(text).not.toContain("with no manager");
   });
 

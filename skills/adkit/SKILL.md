@@ -35,7 +35,7 @@ Read the [shared conventions](reference/conventions.md) once before any subcomma
 
 | Command | Category | Description | Reference |
 | --- | --- | --- | --- |
-| `init` | Setup | One-time interactive scaffold of `.adkit.yaml` (credentials + project preferences) | [reference/init.md](reference/init.md) |
+| `init` | Setup | One-time interactive scaffold of `adkit.yaml` (committed preferences) + `.adkit.secrets.yaml` (git-ignored credentials) | [reference/init.md](reference/init.md) |
 | `create` | Publishing | Publish a new search campaign from a processed idea markdown file | [reference/create.md](reference/create.md) |
 | `audit` | Analysis | Audit live ad strength and surface actionable fixes (read-only) | [reference/audit.md](reference/audit.md) |
 | `update` | Publishing | Apply headline/description rewrites and sitelink changes to live ads | [reference/update.md](reference/update.md) |

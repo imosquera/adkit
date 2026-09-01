@@ -13,9 +13,17 @@
 
 import { readFileSync } from "node:fs";
 import { GoogleAdsApi, type MutateOperation } from "google-ads-api";
-import { parse as parseYaml } from "yaml";
 import { type SearchArgs, toGaql } from "../gaql/search-args.js";
-import { configPath } from "./config.js";
+import {
+  type AdkitConfig,
+  activeSecretsPath,
+  legacyConfigPath,
+  loadConfig,
+  mergeConfigs,
+  parseConfig,
+  projectConfigPath,
+  readConfigFile,
+} from "./config.js";
 
 /**
  * One atomic mutate operation. Decoupled from the SDK's heavily-generic
@@ -97,15 +105,6 @@ export function readBackend(): ReadBackend {
  */
 export const KEEP_YAML_MCC = Symbol("keep-yaml-mcc");
 
-interface AdsYaml {
-  developer_token?: string;
-  client_id?: string;
-  client_secret?: string;
-  refresh_token?: string;
-  mcc_customer_id?: string | number;
-  target_customer_id?: string | number;
-}
-
 /**
  * Convert abstraction ops to the shape the SDK's `mutateResources` expects: a
  * `remove` op's resource is unwrapped from `{ resource_name }` to the bare
@@ -120,13 +119,28 @@ export function toSdkMutateOperations(operations: AdsMutateOperation[]): Array<R
   );
 }
 
-/** Path to the credentials — an alias for `.adkit.yaml`'s {@link "./config.js".configPath}, kept under its historical name. */
+/**
+ * Path to the credentials file — {@link "./config.js".activeSecretsPath}, kept under
+ * its historical name. That is `.adkit.secrets.yaml` (or the `ADKIT_CONFIG` path),
+ * falling back to a legacy combined `.adkit.yaml` while one is still in place.
+ */
 export function credentialsPath(): string {
-  return configPath();
+  return activeSecretsPath();
 }
 
-function readCredentials(): AdsYaml {
-  return (parseYaml(readFileSync(credentialsPath(), "utf8")) as AdsYaml | null) ?? {};
+/**
+ * The merged config the client is built from: the committed `adkit.yaml`, the
+ * credentials file, and any legacy `.adkit.yaml`, layered by
+ * {@link "./config.js".loadConfig}.
+ *
+ * Merged, not just the credentials file, because the SDK client needs one field
+ * from each half: the OAuth credentials from the git-ignored file, and
+ * `mcc_customer_id` — an account number, not a secret — from the committed one.
+ * Reading only the credentials file here would silently drop the login header for
+ * every MCC-managed account, which is the exact regression a454425 fixed.
+ */
+function readCredentials(): AdkitConfig {
+  return loadConfig();
 }
 
 /**
@@ -135,14 +149,21 @@ function readCredentials(): AdsYaml {
  *
  * Deliberately not {@link customerIdFromYaml}: that one answers "which account do we
  * QUERY" and prefers `target_customer_id`, so it would report a leaf id as the
- * manager. Unlike it, this does NOT swallow a read failure — a caller that only
- * wants a display value decides for itself that an unreadable file is tolerable
- * (see {@link KEEP_YAML_MCC}'s consumers), and a caller on the main path must not
- * silently see "no login" when the truth is "could not tell".
+ * manager.
+ *
+ * The VALUE comes from the merged config — since the split it is a preference, set
+ * in the committed `adkit.yaml`. The credentials layer is nonetheless read
+ * **strictly**, so an absent or unreadable credentials file throws rather than
+ * reporting "no login": under `ADKIT_READ_BACKEND=mcp` that file is loaded by the
+ * MCP server rather than by us, so failing to read it means we cannot tell which
+ * header the run actually sent — which `bin/report.ts` reports as its own third
+ * case, distinct from "no manager". A caller that only wants a display value
+ * decides for itself that an unreadable file is tolerable.
  */
 export function mccCustomerIdFromYaml(): string | undefined {
-  const login = readCredentials().mcc_customer_id;
-  return login ? String(login) : undefined;
+  const credentials = parseConfig(readFileSync(credentialsPath(), "utf8"));
+  const merged = mergeConfigs([readConfigFile(projectConfigPath()), credentials, readConfigFile(legacyConfigPath())]);
+  return merged.mcc_customer_id ? String(merged.mcc_customer_id) : undefined;
 }
 
 /** The leaf/target customer id from the yaml (target first, then login), dash-free — or null. */
@@ -177,7 +198,7 @@ export function resolveMccHeader(
 }
 
 /**
- * Build the real {@link AdsClient} from the .adkit.yaml credentials.
+ * Build the real {@link AdsClient} from the merged config's credentials.
  *
  * `mccCustomerId` semantics mirror the Python `load_client`:
  *  - omitted ({@link KEEP_YAML_MCC}) → keep the yaml's mcc_customer_id (the MCC).

@@ -1,29 +1,40 @@
 /**
- * The project's single local config file: `.adkit.yaml`.
+ * The project's local configuration, split across two files by trust level.
  *
- * Folds together two things that used to live in separate files:
- *  - the Google Ads API **credentials** (`developer_token`, `client_id`,
- *    `client_secret`, `refresh_token`) that `render-yaml` used to write to
- *    `~/.config/google-ads/google-ads.yaml`;
- *  - the **non-secret project defaults** `ads.sh init` scaffolds (the two
- *    customer ids, the Secret Manager project, the read backend, and the
- *    `create`/`report` output directories) that an operator would otherwise
- *    re-pass as flags or re-export as env vars every session.
+ * | File | Tracked | Contents |
+ * | --- | --- | --- |
+ * | `adkit.yaml` | **committed** | the non-secret project preferences: `reports_dir`, `briefs_dir`, `ideas_dir`, `mcc_customer_id`, `target_customer_id`, `secrets_project`, `read_backend` |
+ * | `.adkit.secrets.yaml` | git-ignored | the OAuth credentials: `developer_token`, `client_id`, `client_secret`, `refresh_token`, `psi_api_key` |
+ * | `.adkit.yaml` | git-ignored | **legacy** — the old combined file, still read, with a deprecation notice |
  *
- * The combined file carries real secrets, so — unlike the plain-defaults file
- * this replaced — it is git-ignored and per-machine, at the repo root (or the
- * `ADKIT_CONFIG` path). `render-yaml` merges freshly-pulled secrets into it
- * without clobbering the non-secret fields `init` (or a hand-edit) already set.
+ * The split exists because the two halves have opposite handling. The preferences
+ * describe the *project* — every collaborator, every CI job, and every git worktree
+ * wants the same values, and they are safe in a ticket or a screenshot. The
+ * credentials describe the *machine*, must never be committed, and are seeded into
+ * and re-pulled from Secret Manager. Folding them into one file forced the
+ * preferences to be git-ignored too, so a worktree got none of them and `/adkit`
+ * needed an explicit `ADKIT_CONFIG=` to run there.
  *
- * Written by `ads.sh init` ({@link "../bin/init.js"}) and `ads.sh render-yaml`;
- * read via {@link loadConfig}. Every field is optional — an absent file
- * resolves to `{}`, and callers combine it with a flag/env tier via
- * {@link resolveTier}.
+ * The secrets file has two supported placements:
+ *  - **repo root** (the default) — `$CWD/.adkit.secrets.yaml`, git-ignored by `init`;
+ *  - **outside the repo** — e.g. `~/.config/adkit/<project>.secrets.yaml`, selected
+ *    via `ADKIT_CONFIG`. This is the stronger option: nothing in the tree can commit
+ *    it, and it survives into git worktrees.
+ *
+ * {@link loadConfig} merges defaults <- `adkit.yaml` <- the secrets file <- the
+ * legacy `.adkit.yaml`, so an unmigrated project — whose legacy file holds both
+ * halves — keeps behaving exactly as it did. Per-setting precedence (flag -> env ->
+ * yaml -> default, {@link resolveTier}) is unchanged.
+ *
+ * Written by `ads.sh init` ({@link "../bin/init.js"}, both files) and `ads.sh
+ * render-yaml` (the secrets file only). Every field is optional — absent files
+ * resolve to `{}`.
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { assertWritableSecretsPath } from "./secrets-guard.js";
 
 /** The project config `init`/`render-yaml` write and every entrypoint may read. */
 export interface AdkitConfig {
@@ -31,7 +42,7 @@ export interface AdkitConfig {
   client_id?: string;
   client_secret?: string;
   refresh_token?: string;
-  /** Account numbers, not credentials — plain local preferences, never in Secret Manager. */
+  /** Account numbers, not credentials — plain project preferences, never in Secret Manager. */
   mcc_customer_id?: string;
   target_customer_id?: string;
   /** PageSpeed Insights API key — optional; enables `audit`'s PSI auto-diagnosis (issue #40). */
@@ -64,7 +75,7 @@ export interface ConfigField {
   sensitive: boolean;
 }
 
-/** The credential fields — the ones `render-yaml` fetches from Secret Manager. Load-bearing: must match render-yaml's SECRETS. */
+/** The credential fields — the ones `render-yaml` fetches from Secret Manager, and the only ones written to the secrets file. Load-bearing: must match render-yaml's SECRETS. */
 export const CREDENTIAL_FIELDS: readonly ConfigField[] = [
   { key: "developer_token", label: "Google Ads developer token", default: "", sensitive: true },
   { key: "client_id", label: "OAuth client id", default: "", sensitive: false },
@@ -74,11 +85,11 @@ export const CREDENTIAL_FIELDS: readonly ConfigField[] = [
 ];
 
 /**
- * The non-secret project-preference fields.
+ * The non-secret project-preference fields — the committed `adkit.yaml`'s contents.
  *
  * The two customer ids lead the list: they are Google Ads **account numbers**, not
  * credentials — visible in the Ads UI, safe in a ticket or a screenshot — so they
- * live here in `.adkit.yaml` rather than behind a Secret Manager round trip. Both
+ * live in the committed half rather than behind a Secret Manager round trip. Both
  * are optional: an account reached directly (no manager) simply omits
  * `mcc_customer_id`.
  */
@@ -95,24 +106,130 @@ export const PREFERENCE_FIELDS: readonly ConfigField[] = [
 /** Every config field, in yaml-emit and prompt order: credentials first, then preferences (the customer ids leading them). */
 export const CONFIG_FIELDS: readonly ConfigField[] = [...CREDENTIAL_FIELDS, ...PREFERENCE_FIELDS];
 
-/** Path to the project config file (env override wins), resolved against the current working directory. */
-export function configPath(): string {
-  return process.env["ADKIT_CONFIG"] || process.env["GOOGLE_ADS_CREDENTIALS"] || join(process.cwd(), ".adkit.yaml");
+/** The committed project-preferences file, at the repo root. */
+export const PROJECT_CONFIG_FILENAME = "adkit.yaml";
+/** The git-ignored credentials file, at the repo root unless `ADKIT_CONFIG` moves it. */
+export const SECRETS_FILENAME = ".adkit.secrets.yaml";
+/** The legacy combined file: both halves in one git-ignored file. Still read; never written by `init`. */
+export const LEGACY_CONFIG_FILENAME = ".adkit.yaml";
+
+/** Path to the committed preferences file, resolved against the current working directory. */
+export function projectConfigPath(): string {
+  return join(process.cwd(), PROJECT_CONFIG_FILENAME);
 }
 
-/** Whether a config file already exists at {@link configPath}. */
-export function configExists(): boolean {
-  return existsSync(configPath());
+/** The `ADKIT_CONFIG` / `GOOGLE_ADS_CREDENTIALS` override, when either names a secrets file. */
+function secretsPathOverride(): string | undefined {
+  return process.env["ADKIT_CONFIG"] || process.env["GOOGLE_ADS_CREDENTIALS"] || undefined;
 }
-
-/** The `.gitignore` entry protecting `.adkit.yaml` from ever being committed with real credentials in it. */
-export const GITIGNORE_ENTRY = "/.adkit.yaml";
 
 /**
- * Add {@link GITIGNORE_ENTRY} to a `.gitignore`'s content, unless a line already
- * matches it exactly (ignoring surrounding whitespace). Pure: returns `content`
- * unchanged when the entry is already present, otherwise appends it after a
- * blank-line separator (none needed when `content` is empty).
+ * Where the credentials are written: the `ADKIT_CONFIG` override (an out-of-repo
+ * path is the recommended placement), else `.adkit.secrets.yaml` at the repo root.
+ * This is a *write* target, so it never falls back to the legacy file — `init` and
+ * `render-yaml` create the new file rather than reviving the old one.
+ */
+export function secretsPath(): string {
+  return secretsPathOverride() ?? join(process.cwd(), SECRETS_FILENAME);
+}
+
+/** Path to the legacy combined config, resolved against the current working directory. */
+export function legacyConfigPath(): string {
+  return join(process.cwd(), LEGACY_CONFIG_FILENAME);
+}
+
+/**
+ * The file the credentials are actually being READ from: the explicit override when
+ * one is set, else the secrets file when it exists, else the legacy combined file
+ * when *that* exists. Falls back to {@link secretsPath} so a "missing credentials"
+ * message names the file the operator should create.
+ */
+export function activeSecretsPath(): string {
+  const override = secretsPathOverride();
+  if (override) {
+    return override;
+  }
+  const secrets = join(process.cwd(), SECRETS_FILENAME);
+  if (existsSync(secrets)) {
+    return secrets;
+  }
+  const legacy = legacyConfigPath();
+  return existsSync(legacy) ? legacy : secrets;
+}
+
+/**
+ * Where a preference is WRITTEN back (the prompted-and-persisted
+ * `target_customer_id`): the committed `adkit.yaml`, unless this is an unmigrated
+ * project — a legacy `.adkit.yaml` and no `adkit.yaml` — in which case the legacy
+ * file keeps receiving the write, exactly as before the split.
+ */
+export function preferencesPath(): string {
+  const project = projectConfigPath();
+  if (existsSync(project)) {
+    return project;
+  }
+  const legacy = legacyConfigPath();
+  return existsSync(legacy) ? legacy : project;
+}
+
+/** Whether the committed preferences file exists. */
+export function projectConfigExists(): boolean {
+  return existsSync(projectConfigPath());
+}
+
+/** Whether the credentials file exists at {@link secretsPath}. */
+export function secretsExist(): boolean {
+  return existsSync(secretsPath());
+}
+
+/** Whether a legacy combined `.adkit.yaml` is still in place. */
+export function legacyConfigExists(): boolean {
+  return existsSync(legacyConfigPath());
+}
+
+/**
+ * Whether `path` names a legacy combined config, by filename, wherever it lives.
+ *
+ * By filename rather than by equality with {@link legacyConfigPath}, because an
+ * existing setup may point `ADKIT_CONFIG` at a `.adkit.yaml` outside the repo. That
+ * file holds both halves, so a writer must keep writing both halves to it — trimming
+ * it to credentials would silently delete the operator's preferences.
+ */
+export function isLegacyConfigFile(path: string): boolean {
+  return basename(path) === LEGACY_CONFIG_FILENAME;
+}
+
+/**
+ * The notice printed when a legacy combined `.adkit.yaml` is still in place.
+ *
+ * Names both files to create and which fields go in each, so the hand-migration is
+ * obvious — there is deliberately no automated `init --migrate` (tracked as a
+ * follow-up); nothing has to move on a schedule, and the legacy file keeps working
+ * untouched until it does.
+ */
+export function legacyDeprecationNotice(path: string = legacyConfigPath()): string {
+  const credentials = CREDENTIAL_FIELDS.map((f) => f.key).join(", ");
+  const preferences = PREFERENCE_FIELDS.map((f) => f.key).join(", ");
+  return (
+    `${path} is the legacy combined config — still read, but deprecated. Split it into two files:\n` +
+    `  ${SECRETS_FILENAME}  (git-ignored, chmod 600) — ${credentials}\n` +
+    `  ${PROJECT_CONFIG_FILENAME}        (commit it)              — ${preferences}\n` +
+    `Then delete ${LEGACY_CONFIG_FILENAME}. Until you do, its values keep winning over both.\n`
+  );
+}
+
+/** The `.gitignore` entry protecting the credentials file. */
+export const SECRETS_GITIGNORE_ENTRY = `/${SECRETS_FILENAME}`;
+/** The `.gitignore` entry protecting a legacy combined `.adkit.yaml`, kept so unmigrated projects stay covered. */
+export const LEGACY_GITIGNORE_ENTRY = `/${LEGACY_CONFIG_FILENAME}`;
+/** Every entry `init` guarantees, in the order it appends them. */
+export const GITIGNORE_ENTRIES: readonly string[] = [SECRETS_GITIGNORE_ENTRY, LEGACY_GITIGNORE_ENTRY];
+
+/**
+ * Add `entry` to a `.gitignore`'s content, unless a line already matches it exactly
+ * (ignoring surrounding whitespace). Pure: returns `content` unchanged when the
+ * entry is already present, otherwise appends it after a blank-line separator (none
+ * needed when `content` is empty).
  */
 export function ensureGitignoreEntry(content: string, entry: string): string {
   const alreadyPresent = content.split("\n").some((line) => line.trim() === entry);
@@ -124,18 +241,71 @@ export function ensureGitignoreEntry(content: string, entry: string): string {
   return `${prefix}${entry}\n`;
 }
 
+/** {@link ensureGitignoreEntry} folded over several entries, in order. Pure. */
+export function ensureGitignoreEntries(content: string, entries: readonly string[]): string {
+  return entries.reduce(ensureGitignoreEntry, content);
+}
+
 /**
- * Serialize resolved field values into the yaml body text (trailing newline
- * included). Pure: fields absent from `values` (or blank) are skipped. Always
- * ends with `use_proto_plus: true`, matching the value the google-ads client
- * libraries have historically expected in this file.
+ * How one yaml file is rendered: which fields it may carry, the comment header
+ * that opens it, and the trailing lines that close it.
+ *
+ * A shape is what keeps the credentials out of the committed file: the emitter
+ * walks `fields`, so a value that has no field in this shape cannot be written,
+ * however it got into the value map.
  */
-export function buildConfigYamlBody(values: ReadonlyMap<string, string>): string {
-  const header = [
+export interface ConfigYamlShape {
+  readonly fields: readonly ConfigField[];
+  readonly header: readonly string[];
+  readonly trailer: readonly string[];
+}
+
+/**
+ * The legacy combined file: every field, secrets included.
+ *
+ * `use_proto_plus: true` closes it — the value the google-ads client libraries have
+ * historically expected in this file.
+ */
+export const COMBINED_YAML_SHAPE: ConfigYamlShape = {
+  fields: CONFIG_FIELDS,
+  header: [
     "# Written by adkit init/render-yaml. Contains secrets — do not commit.",
     "# Explicit flags and env vars still override these values at run time.",
-  ];
-  const fieldLines = CONFIG_FIELDS.flatMap((field) => {
+  ],
+  trailer: ["use_proto_plus: true"],
+};
+
+/** The git-ignored credentials file: the credential fields and nothing else. */
+export const SECRETS_YAML_SHAPE: ConfigYamlShape = {
+  fields: CREDENTIAL_FIELDS,
+  header: [
+    "# Written by adkit init/render-yaml. CREDENTIALS — never commit this file.",
+    "# Project preferences live in the committed adkit.yaml, not here.",
+  ],
+  trailer: ["use_proto_plus: true"],
+};
+
+/** The committed preferences file: the non-secret fields and nothing else. */
+export const PROJECT_YAML_SHAPE: ConfigYamlShape = {
+  fields: PREFERENCE_FIELDS,
+  header: [
+    "# Written by adkit init. Project preferences — safe to commit.",
+    "# Credentials live in the git-ignored .adkit.secrets.yaml, never here.",
+    "# Explicit flags and env vars still override these values at run time.",
+  ],
+  trailer: [],
+};
+
+/**
+ * Serialize resolved field values into the yaml body text (trailing newline
+ * included), emitting only the fields `shape` admits. Pure: fields absent from
+ * `values` (or blank) are skipped.
+ */
+export function buildConfigYamlBody(
+  values: ReadonlyMap<string, string>,
+  shape: ConfigYamlShape = COMBINED_YAML_SHAPE,
+): string {
+  const fieldLines = shape.fields.flatMap((field) => {
     const value = values.get(field.key);
     if (!value) {
       return [];
@@ -143,7 +313,7 @@ export function buildConfigYamlBody(values: ReadonlyMap<string, string>): string
     const escaped = value.replace(/"/g, '\\"');
     return [`${field.key}: "${escaped}"`];
   });
-  return [...header, ...fieldLines, "use_proto_plus: true"].join("\n") + "\n";
+  return [...shape.header, ...fieldLines, ...shape.trailer].join("\n") + "\n";
 }
 
 /**
@@ -159,28 +329,71 @@ export function parseConfig(text: string): AdkitConfig {
   return (parseYaml(text) as AdkitConfig | null) ?? {};
 }
 
-/** Load the project config from {@link configPath}, or `{}` when the file is absent or unreadable. */
-export function loadConfig(): AdkitConfig {
+/**
+ * Layer configs left-to-right, later layers winning per field. Pure. A field a
+ * layer does not carry never overwrites an earlier layer's value.
+ */
+export function mergeConfigs(layers: readonly AdkitConfig[]): AdkitConfig {
+  return layers.reduce<AdkitConfig>((acc, layer) => ({ ...acc, ...layer }), {});
+}
+
+/** Read and parse one config file, or `{}` when it is absent or unreadable. */
+export function readConfigFile(path: string): AdkitConfig {
   try {
-    return parseConfig(readFileSync(configPath(), "utf8"));
+    return parseConfig(readFileSync(path, "utf8"));
   } catch {
     return {};
   }
 }
 
-/** The present (non-blank) fields of `config`, as a `field -> value` map in {@link CONFIG_FIELDS} order — the shape {@link buildConfigYamlBody} expects. */
-export function configToValueMap(config: AdkitConfig): Map<string, string> {
-  const entries = CONFIG_FIELDS.flatMap((field): Array<[string, string]> => {
+/**
+ * The effective config: `adkit.yaml` <- the secrets file <- the legacy
+ * `.adkit.yaml`.
+ *
+ * The secrets file wins over the committed preferences where they overlap (it
+ * should not overlap, but a hand-edit is not going to be argued with), and the
+ * legacy combined file is overlaid last — it holds both halves, so an unmigrated
+ * project simply keeps winning and behaves exactly as it did before the split.
+ */
+export function loadConfig(): AdkitConfig {
+  return mergeConfigs([
+    readConfigFile(projectConfigPath()),
+    readConfigFile(activeSecretsPath()),
+    readConfigFile(legacyConfigPath()),
+  ]);
+}
+
+/** The present (non-blank) fields of `config`, as a `field -> value` map in `fields` order — the shape {@link buildConfigYamlBody} expects. */
+export function configToValueMap(
+  config: AdkitConfig,
+  fields: readonly ConfigField[] = CONFIG_FIELDS,
+): Map<string, string> {
+  const entries = fields.flatMap((field): Array<[string, string]> => {
     const value = config[field.key];
     return value ? [[field.key, String(value)]] : [];
   });
   return new Map(entries);
 }
 
+/** Atomically write `body` to `target` with `mode` perms (temp file + rename). */
+export function writeYamlAtomic(target: string, body: string, mode: number): void {
+  const dir = dirname(target);
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = join(dir, `adkit-${process.pid}-${Date.now()}.yaml`);
+  writeFileSync(tmpPath, body, { mode });
+  chmodSync(tmpPath, mode);
+  renameSync(tmpPath, target);
+}
+
 /**
- * Set a single field in `.adkit.yaml`, carrying every other field through
- * untouched, and write the result atomically with 0600 perms (the file also holds
- * real credentials).
+ * Set a single preference in the preferences file ({@link preferencesPath}),
+ * carrying every other field in THAT file through untouched.
+ *
+ * Only the file being written is re-read — never the merged config — so a
+ * credential from the secrets file can never be copied into the committed
+ * `adkit.yaml`. On an unmigrated project the target is the legacy combined file,
+ * which does carry credentials: it is written under the combined shape at 0600, and
+ * only after {@link assertWritableSecretsPath} confirms the path is not committable.
  *
  * The read-modify-write is deliberate: this is called on a config that may have
  * been edited since it was loaded, and it must never drop a field it doesn't know
@@ -189,14 +402,14 @@ export function configToValueMap(config: AdkitConfig): Map<string, string> {
  * file.
  */
 export function writeConfigField(key: keyof AdkitConfig, value: string): void {
-  const target = configPath();
-  const merged = withConfigField(loadConfig(), key, value);
-  const dir = dirname(target);
-  mkdirSync(dir, { recursive: true });
-  const tmpPath = join(dir, `adkit-${process.pid}-${Date.now()}.yaml`);
-  writeFileSync(tmpPath, buildConfigYamlBody(configToValueMap(merged)), { mode: 0o600 });
-  chmodSync(tmpPath, 0o600);
-  renameSync(tmpPath, target);
+  const target = preferencesPath();
+  const isLegacy = isLegacyConfigFile(target);
+  const shape = isLegacy ? COMBINED_YAML_SHAPE : PROJECT_YAML_SHAPE;
+  if (isLegacy) {
+    assertWritableSecretsPath(target);
+  }
+  const merged = withConfigField(readConfigFile(target), key, value);
+  writeYamlAtomic(target, buildConfigYamlBody(configToValueMap(merged, shape.fields), shape), isLegacy ? 0o600 : 0o644);
 }
 
 /**
@@ -223,7 +436,7 @@ export function resolveTier(
  * default chain as every other setting ({@link resolveTier}).
  *
  * `config` is injectable so a caller can resolve several directories against one
- * already-loaded config rather than re-reading `.adkit.yaml` per call; it defaults
+ * already-loaded config rather than re-reading the yaml files per call; it defaults
  * to {@link loadConfig} for the common single-lookup case.
  *
  * Each returns a directory RELATIVE to the repo root — callers `join` it onto the

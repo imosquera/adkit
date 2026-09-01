@@ -600,7 +600,7 @@ export async function main(
     const hint = isManagerMetrics ? "" : remediationHint(msgs, customer, manager);
     // Name the manager ACTUALLY used so the operator can see which tier supplied it
     // (flag/env/credentials), rather than a fabricated id — and say the login came
-    // from .adkit.yaml when it did, instead of claiming none was used.
+    // from adkit.yaml when it did, instead of claiming none was used.
     const via = managerPhrase(manager);
     process.stderr.write(
       `error: Google Ads query failed for customer ${customer}${via}: ` +

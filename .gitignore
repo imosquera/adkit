@@ -222,8 +222,11 @@ __marimo__/
 # Node / JS
 node_modules/
 
-# adkit's local project config — carries real Google Ads API credentials
+# adkit's local credentials — real Google Ads API tokens
 # (see skills/adkit/scripts/src/lib/config.ts). Per-machine; never commit.
+# The project preferences live in the COMMITTED adkit.yaml, which is not ignored.
+/.adkit.secrets.yaml
+# Legacy: the old combined config, both halves in one file. Still read; still secret.
 /.adkit.yaml
 
 # Claude Code local session state — ignore everything except the committed speckit skills

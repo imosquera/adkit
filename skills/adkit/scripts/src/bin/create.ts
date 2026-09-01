@@ -347,7 +347,7 @@ async function assertFinalUrlsReachable(brief: Brief): Promise<void> {
 
 /**
  * Resolve the customer id to publish into: the brief's own field, then the env,
- * then `.adkit.yaml` — and, when none of those carries one, a single TTY prompt
+ * then `adkit.yaml` — and, when none of those carries one, a single TTY prompt
  * that persists the answer (see `cli/customer-id.ts`). Never guesses; off a TTY it
  * throws rather than proceeding against an account nobody named.
  */

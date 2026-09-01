@@ -3,13 +3,17 @@
  *
  * `lib/customer-id.ts` holds the whole decision tree as a pure function over
  * injected effects; this is the one place those effects are bound to the real
- * terminal, the real `.adkit.yaml`, and the real stderr. Entrypoints call
+ * terminal, the real config files, and the real stderr. The id is a preference, so
+ * it is read from the merged config and written back to the preferences file
+ * ({@link "../lib/config.js".preferencesPath}) — the committed `adkit.yaml`, or a
+ * legacy `.adkit.yaml` while one is still in place. Entrypoints call
  * {@link resolveTargetCustomerId} and never assemble the deps themselves.
  */
 
 import { createInterface } from "node:readline";
 import { errorEnvelope } from "./output.js";
-import { configPath, loadConfig, writeConfigField } from "../lib/config.js";
+import { loadConfig, preferencesPath, writeConfigField } from "../lib/config.js";
+import { SecretsPathError } from "../lib/secrets-guard.js";
 import {
   type CustomerId,
   InvalidCustomerIdError,
@@ -37,7 +41,7 @@ function askOnTerminal(text: string): Promise<string> {
 
 /**
  * Resolve the leaf account id for an entrypoint: flag → `GOOGLE_ADS_CUSTOMER_ID` →
- * `.adkit.yaml` → prompt-and-persist on a TTY, throwing otherwise.
+ * the merged config → prompt-and-persist on a TTY, throwing otherwise.
  *
  * Throws `MissingTargetCustomerIdError` / `InvalidCustomerIdError`; the caller
  * turns either into the standard `ok:false` envelope. `env` and `isTty` are
@@ -52,7 +56,7 @@ export function resolveTargetCustomerId(
     flag,
     env,
     config: loadConfig(),
-    configPath: configPath(),
+    configPath: preferencesPath(),
     isTty,
     prompt: askOnTerminal,
     // The read-only-command-writes-config trade is documented at the lib call site.
@@ -70,16 +74,23 @@ export function resolveMccCustomerIdOrNull(
   flag: string | null | undefined,
   env: Record<string, string | undefined> = process.env,
 ): CustomerId | null {
-  return resolveOptionalMccCustomerId(flag, env, loadConfig(), configPath());
+  return resolveOptionalMccCustomerId(flag, env, loadConfig(), preferencesPath());
 }
 
 /**
- * Turn a customer-id failure into the standard `ok:false` envelope, so every
- * entrypoint reports a missing or malformed id identically. Both error types carry
- * their own `step`; anything else is rethrown rather than swallowed into a
- * misleading customer-id failure.
+ * Turn a config-resolution failure into the standard `ok:false` envelope, so every
+ * entrypoint reports a missing or malformed id identically.
+ *
+ * {@link SecretsPathError} is included because the persist can hit the guardrail:
+ * on an unmigrated project the preferences file is the legacy combined `.adkit.yaml`,
+ * which carries credentials, so writing it to a committable path is refused. Each
+ * error type carries its own `step`; anything else is rethrown rather than swallowed
+ * into a misleading customer-id failure.
  */
 export function customerIdErrorEnvelope(exc: unknown): ReturnType<typeof errorEnvelope> {
+  if (exc instanceof SecretsPathError) {
+    return errorEnvelope(exc.message, { step: exc.step, path: exc.path, reason: exc.reason });
+  }
   if (exc instanceof MissingTargetCustomerIdError) {
     return errorEnvelope(exc.message, { step: exc.step, field: exc.field, config_path: exc.configPath });
   }
