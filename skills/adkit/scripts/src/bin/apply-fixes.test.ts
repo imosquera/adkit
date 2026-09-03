@@ -23,9 +23,17 @@ import { parseBrief } from "../lib/schema.js";
 // The shell resolves its client via loadClient; the test swaps in a fake (mirrors the
 // Python monkeypatch of `af.load_client`). `currentClient` is what loadClient returns.
 let currentClient: AdsClient;
+/** The mcc-customer-id `main` actually handed the client seam, for the resolution tests. */
+let seenLogin: unknown;
 vi.mock("../lib/auth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/auth.js")>();
-  return { ...actual, loadClient: () => currentClient };
+  return {
+    ...actual,
+    loadClient: (login: unknown) => {
+      seenLogin = login;
+      return currentClient;
+    },
+  };
 });
 
 // A test can set this to a campaign name to simulate that campaign's writeBrief call
@@ -130,10 +138,113 @@ function captureStdout(): { text: () => string } {
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "apply-fixes-"));
+  seenLogin = undefined;
 });
 afterEach(() => {
   vi.restoreAllMocks();
   failWriteForCampaignName = null;
+});
+
+// ---------------------------------------------------------------------------
+// mcc-customer-id resolution (bug 7, update half). `update` read the MCC from the
+// plan file alone; a --mcc-customer-id flag was silently dropped by the positional
+// filter, and an absent plan key sent an explicit `null`, which CLEARS the login
+// header rather than deferring to adkit.yaml. Every MCC-managed account failed
+// authorization_error 2 while the same id worked for create/preflight/audit.
+// ---------------------------------------------------------------------------
+
+describe("update mcc-customer-id resolution (bug 7)", () => {
+  let prevCwd: string;
+
+  beforeEach(() => {
+    prevCwd = process.cwd();
+    process.chdir(dir);
+    currentClient = {
+      async search() {
+        return [];
+      },
+      async searchStructured() {
+        return [];
+      },
+      async mutate(): Promise<MutateResult> {
+        return { results: [] };
+      },
+    };
+  });
+
+  afterEach(() => {
+    process.chdir(prevCwd);
+  });
+
+  /** An empty (no-section) plan, optionally carrying its own mccCustomerId. */
+  function writeMccPlan(mccCustomerId?: string): string {
+    const p = join(dir, "plan.json");
+    writeFileSync(
+      p,
+      JSON.stringify({ customerId: "1111111111", ...(mccCustomerId === undefined ? {} : { mccCustomerId }) }),
+    );
+    return p;
+  }
+
+  function writeYaml(body: string): void {
+    writeFileSync(join(dir, "adkit.yaml"), body);
+  }
+
+  it("falls back to adkit.yaml's mcc_customer_id when the plan omits it (the reported bug)", async () => {
+    writeYaml('mcc_customer_id: "4444444444"\n');
+    expect(await main([writeMccPlan()], {})).toBe(0);
+    expect(seenLogin).toBe("4444444444");
+  });
+
+  it("reads an UNQUOTED yaml mcc_customer_id, which parses as a number", async () => {
+    writeYaml("mcc_customer_id: 4444444444\n");
+    expect(await main([writeMccPlan()], {})).toBe(0);
+    expect(seenLogin).toBe("4444444444");
+  });
+
+  it("honours --mcc-customer-id, which used to be dropped as an unrecognized flag", async () => {
+    writeYaml('mcc_customer_id: "4444444444"\n');
+    expect(await main([writeMccPlan("5555555555"), "--mcc-customer-id", "6666666666"], {})).toBe(0);
+    expect(seenLogin).toBe("6666666666");
+  });
+
+  it("honours the --mcc-customer-id=<id> equals form", async () => {
+    expect(await main([writeMccPlan(), "--mcc-customer-id=6666666666"], {})).toBe(0);
+    expect(seenLogin).toBe("6666666666");
+  });
+
+  it("does not mistake the flag's value for the plan path", async () => {
+    // The positional filter dropped `--`-prefixed tokens but not their values, so
+    // the id could have been read as the plan file.
+    const planPath = writeMccPlan();
+    expect(await main(["--mcc-customer-id", "6666666666", planPath], {})).toBe(0);
+    expect(seenLogin).toBe("6666666666");
+  });
+
+  it("lets the env beat the plan, and the plan beat the yaml", async () => {
+    writeYaml('mcc_customer_id: "4444444444"\n');
+    expect(await main([writeMccPlan("5555555555")], { GOOGLE_ADS_LOGIN_CUSTOMER_ID: "7777777777" })).toBe(0);
+    expect(seenLogin).toBe("7777777777");
+
+    seenLogin = undefined;
+    expect(await main([writeMccPlan("5555555555")], {})).toBe(0);
+    expect(seenLogin).toBe("5555555555");
+  });
+
+  it("sends an explicit null only when NO tier supplies one (the real direct-access case)", async () => {
+    writeYaml("reports_dir: ads/output/reports\n"); // a yaml with no mcc_customer_id
+    expect(await main([writeMccPlan()], {})).toBe(0);
+    expect(seenLogin).toBeNull();
+  });
+
+  it("rejects a non-digit mcc id before it reaches the client, as an ok:false envelope", async () => {
+    const cap = captureStdout();
+    const code = await main([writeMccPlan(), "--mcc-customer-id", "not-an-id"], {});
+    const out = cap.text();
+    expect(code).toBe(2);
+    expect(out).toContain("digits only");
+    expect(seenLogin).toBeUndefined(); // never reached the client
+  });
 });
 
 /** Write a campaignStatus-only plan and return its path. */

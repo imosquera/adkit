@@ -68,7 +68,9 @@ import { z } from "zod";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
 import { ADBRIEFS_DIR, AdbriefsError, writeBrief } from "../adbriefs/store.js";
-import { resolveBriefsDir } from "../lib/config.js";
+import { loadConfig, resolveBriefsDir, resolveTier } from "../lib/config.js";
+import { MCC_CUSTOMER_ID_ENV } from "../cli/args.js";
+import { requireDigits } from "../audit/scoring.js";
 import { diffBriefs, type BriefDiff } from "../adbriefs/diff.js";
 import { loadStateIndex } from "../adbriefs/state.js";
 import {
@@ -741,9 +743,33 @@ async function fillAdGroupRsasAndKeywords(
  * Apply a fixes plan. Dry-run by default; `--apply` mutates. Returns a process exit
  * code: 0 on success (incl. dry-run), 1 on validation failure, 2 on bad args.
  */
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
   const apply = argv.includes("--apply");
-  const paths = argv.filter((a) => !a.startsWith("--"));
+  // `--mcc-customer-id <id>` / `--mcc-customer-id=<id>`. Until this existed, every
+  // token starting with `--` other than `--apply` was silently dropped by the
+  // positional filter below — so passing the flag looked like it worked and did
+  // nothing at all.
+  const mccFlag = ((): string | null => {
+    const eq = argv.find((a) => a.startsWith("--mcc-customer-id="));
+    if (eq !== undefined) {
+      return eq.slice("--mcc-customer-id=".length);
+    }
+    const idx = argv.indexOf("--mcc-customer-id");
+    if (idx === -1) {
+      return null;
+    }
+    const next = argv[idx + 1];
+    // Never swallow a following flag as the value (mirrors report's flagValue).
+    return next === undefined || next.startsWith("--") ? null : next;
+  })();
+  const paths = argv.filter((a, i) => {
+    if (a.startsWith("--")) return false;
+    // Drop the space-form flag's value so it is not mistaken for the plan path.
+    return !(i > 0 && argv[i - 1] === "--mcc-customer-id");
+  });
   if (paths.length === 0) {
     emitJson(errorEnvelope("Provide a fixes plan JSON path"));
     return 2;
@@ -777,9 +803,31 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 2;
   }
   const customer = String(plan.customerId);
-  // Mirror the Python `plan.get("mccCustomerId")`: always an explicit value (null
-  // when absent), so load_client clears the MCC header for direct-access accounts.
-  const login = plan.mccCustomerId ?? null;
+  // Flag -> env -> the plan's own mccCustomerId -> adkit.yaml, the same precedence
+  // as every other command (conventions.md).
+  //
+  // This used to be a bare `plan.mccCustomerId ?? null`, and the `?? null` was the
+  // bug: null does not mean "unset" to loadClient, it means "send NO login header,
+  // whatever the config says" (see resolveMccHeader). So a plan without the key
+  // actively cleared the header and every MCC-managed account failed
+  // authorization_error 2 — while the identical id in adkit.yaml worked fine for
+  // create/preflight/audit. An explicit null now only happens when no tier
+  // supplies one, which is the genuine direct-access case.
+  //
+  // The plan is a tier here, not the only source, but the TARGET account
+  // deliberately stays plan-only: a plan is generated against one specific
+  // account, and letting env/yaml retarget it would apply someone's edits to the
+  // wrong customer. Routing (which manager to authenticate through) is safe to
+  // resolve from config; the destination is not.
+  const login = resolveTier(mccFlag, env[MCC_CUSTOMER_ID_ENV], plan.mccCustomerId ?? loadConfig().mcc_customer_id) ?? null;
+  try {
+    requireDigits("--mcc-customer-id", login);
+  } catch (exc) {
+    // requireDigits throws; every other bad-argument case in this entrypoint is an
+    // ok:false envelope with exit 2, so keep the reporting uniform.
+    emitJson(errorEnvelope(exc instanceof Error ? exc.message : String(exc)));
+    return 2;
+  }
   const defaultUrl = plan.landingUrl;
 
   const client = loadClient(login);
