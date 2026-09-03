@@ -167,6 +167,39 @@ describe("geoRegionQuery", () => {
   });
 });
 
+describe("report builders: includePaused (bug 9)", () => {
+  // An account with dormant history was unreportable at any window size, because
+  // every report query hard-coded campaign.status = 'ENABLED'.
+  const builders = {
+    campaignTotalsQuery,
+    campaignDailyQuery,
+    adGroupQuery,
+    adQuery,
+    keywordQuery,
+    searchTermQuery,
+    geoQuery,
+    geoRegionQuery,
+  };
+
+  it.each(Object.keys(builders))("%s filters to ENABLED by default", (name) => {
+    const q = builders[name as keyof typeof builders]("2026-06-08", "2026-06-21");
+    expect(q.conditions).toContain("campaign.status = 'ENABLED'");
+  });
+
+  it.each(Object.keys(builders))("%s drops the status filter under includePaused", (name) => {
+    const q = builders[name as keyof typeof builders]("2026-06-08", "2026-06-21", true);
+    // Dropped entirely rather than widened to != 'REMOVED', matching the audit's
+    // campaignScope behavior for its --all flag.
+    expect(q.conditions.some((c) => c.includes("campaign.status"))).toBe(false);
+    // The date window is untouched — only the status predicate is conditional.
+    expect(q.conditions).toContain("segments.date BETWEEN '2026-06-08' AND '2026-06-21'");
+  });
+
+  it("still SELECTs campaign.status under includePaused (it is reported data, not just a filter)", () => {
+    expect(campaignTotalsQuery("2026-06-08", "2026-06-21", true).fields).toContain("campaign.status");
+  });
+});
+
 describe("applyPositiveKeywordsQuery", () => {
   it("guards ids digits-only", () => {
     expect(() => applyPositiveKeywordsQuery(["123", "4x"])).toThrow();

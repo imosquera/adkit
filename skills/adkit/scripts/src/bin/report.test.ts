@@ -53,6 +53,8 @@ describe("parseArgs", () => {
       customer: null,
       manager: null,
       days: DEFAULT_DAYS,
+      allTime: false,
+      includePaused: false,
     });
   });
 
@@ -61,6 +63,8 @@ describe("parseArgs", () => {
       customer: "1234567890",
       manager: "999",
       days: 7,
+      allTime: false,
+      includePaused: false,
     });
   });
 
@@ -69,6 +73,8 @@ describe("parseArgs", () => {
       customer: null,
       manager: "42",
       days: 30,
+      allTime: false,
+      includePaused: false,
     });
   });
 
@@ -77,6 +83,8 @@ describe("parseArgs", () => {
       customer: "1234567890",
       manager: null,
       days: DEFAULT_DAYS,
+      allTime: false,
+      includePaused: false,
     });
   });
 
@@ -85,6 +93,8 @@ describe("parseArgs", () => {
       customer: "1234567890",
       manager: null,
       days: DEFAULT_DAYS,
+      allTime: false,
+      includePaused: false,
     });
   });
 
@@ -110,12 +120,32 @@ describe("parseArgs", () => {
       customer: null,
       manager: null,
       days: 7,
+      allTime: false,
+      includePaused: false,
     });
     expect(parseArgs(["--manager"]).manager).toBeNull();
   });
 
   it("takes an empty --customer= value literally (surfaces as a readable error downstream)", () => {
     expect(parseArgs(["--customer="]).customer).toBe("");
+  });
+
+  it("parses --all-time and --include-paused as valueless booleans", () => {
+    const args = parseArgs(["1234567890", "--all-time", "--include-paused"]);
+    expect(args.allTime).toBe(true);
+    expect(args.includePaused).toBe(true);
+    expect(args.customer).toBe("1234567890"); // neither flag is mistaken for the positional
+  });
+
+  it("defaults both new flags off", () => {
+    const args = parseArgs(["1234567890"]);
+    expect(args.allTime).toBe(false);
+    expect(args.includePaused).toBe(false);
+  });
+
+  it("rejects a non-numeric --days instead of letting NaN reach the query", () => {
+    expect(() => parseArgs(["--days", "notanumber"])).toThrow(/--days must be a positive integer/);
+    expect(() => parseArgs(["--days", "0"])).toThrow(/--days must be a positive integer/);
   });
 });
 

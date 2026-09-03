@@ -70,9 +70,20 @@ export function priorWindow(asOf: Date, days: number): [string, string] {
   return [isoDate(priorStartMs), isoDate(priorEndMs)];
 }
 
-/** The shared report WHERE predicates: ENABLED campaigns over the date window. */
-function _whereConds(start: string, end: string): readonly string[] {
-  return [_ENABLED, `${_DATE_FIELD} BETWEEN '${start}' AND '${end}'`];
+/**
+ * The shared report WHERE predicates: the date window, and — unless
+ * `includePaused` — ENABLED campaigns only.
+ *
+ * `includePaused` drops the status predicate entirely rather than widening it to
+ * `!= 'REMOVED'`, matching what the audit's `campaignScope` already does for its
+ * `--all` flag. An account with dormant history (paused campaigns from years
+ * back) was previously unreportable at any window size.
+ */
+function _whereConds(start: string, end: string, includePaused = false): readonly string[] {
+  return [
+    ...(includePaused ? [] : [_ENABLED]),
+    `${_DATE_FIELD} BETWEEN '${start}' AND '${end}'`,
+  ];
 }
 
 /**
@@ -93,12 +104,13 @@ function reportQuery(
   start: string,
   end: string,
   orderings?: readonly string[],
+  includePaused = false,
 ): SearchArgs {
   const fields = new Set([...dims, _STATUS_FIELD, _DATE_FIELD, ...(orderings ?? [])]);
   return {
     resource,
     fields: [...fields, ..._METRICS],
-    conditions: _whereConds(start, end),
+    conditions: _whereConds(start, end, includePaused),
     ...(orderings ? { orderings } : {}),
   };
 }
@@ -146,25 +158,33 @@ function campaignScope(
 // /adkit report builders
 // ===========================================================================
 
-export function campaignTotalsQuery(start: string, end: string): SearchArgs {
-  return reportQuery("campaign", ["campaign.id", "campaign.name"], start, end);
+export function campaignTotalsQuery(start: string, end: string, includePaused = false): SearchArgs {
+  return reportQuery("campaign", ["campaign.id", "campaign.name"], start, end, undefined, includePaused);
 }
 
-export function campaignDailyQuery(start: string, end: string): SearchArgs {
+export function campaignDailyQuery(start: string, end: string, includePaused = false): SearchArgs {
   return reportQuery(
     "campaign",
     ["campaign.id", "campaign.name", "segments.date"],
     start,
     end,
     ["segments.date"],
+    includePaused,
   );
 }
 
-export function adGroupQuery(start: string, end: string): SearchArgs {
-  return reportQuery("ad_group", ["campaign.id", "ad_group.id", "ad_group.name"], start, end);
+export function adGroupQuery(start: string, end: string, includePaused = false): SearchArgs {
+  return reportQuery(
+    "ad_group",
+    ["campaign.id", "ad_group.id", "ad_group.name"],
+    start,
+    end,
+    undefined,
+    includePaused,
+  );
 }
 
-export function adQuery(start: string, end: string): SearchArgs {
+export function adQuery(start: string, end: string, includePaused = false): SearchArgs {
   // ad_group_ad.ad.name is often blank for search ads; the report shell falls
   // back to the id so every ad has a label. ad_strength is Google's creative
   // quality grade (POOR/AVERAGE/GOOD/EXCELLENT) — a fix-the-ad signal.
@@ -180,10 +200,12 @@ export function adQuery(start: string, end: string): SearchArgs {
     ],
     start,
     end,
+    undefined,
+    includePaused,
   );
 }
 
-export function keywordQuery(start: string, end: string): SearchArgs {
+export function keywordQuery(start: string, end: string, includePaused = false): SearchArgs {
   return reportQuery(
     "keyword_view",
     [
@@ -194,15 +216,19 @@ export function keywordQuery(start: string, end: string): SearchArgs {
     ],
     start,
     end,
+    undefined,
+    includePaused,
   );
 }
 
-export function searchTermQuery(start: string, end: string): SearchArgs {
+export function searchTermQuery(start: string, end: string, includePaused = false): SearchArgs {
   return reportQuery(
     "search_term_view",
     ["campaign.id", "ad_group.id", "search_term_view.search_term"],
     start,
     end,
+    undefined,
+    includePaused,
   );
 }
 
@@ -212,12 +238,14 @@ export function searchTermQuery(start: string, end: string): SearchArgs {
  * constant id (`country_criterion_id`, e.g. 2840 = US). The report shell sums these
  * across campaigns into the per-country `geo` breakdown.
  */
-export function geoQuery(start: string, end: string): SearchArgs {
+export function geoQuery(start: string, end: string, includePaused = false): SearchArgs {
   return reportQuery(
     "geographic_view",
     ["campaign.id", "geographic_view.country_criterion_id"],
     start,
     end,
+    undefined,
+    includePaused,
   );
 }
 
@@ -226,12 +254,14 @@ export function geoQuery(start: string, end: string): SearchArgs {
  * rows segmented by `segments.geo_target_region` (US state/metro geo-target resource
  * names). The report shell sums these into the per-region `geo_regions` breakdown.
  */
-export function geoRegionQuery(start: string, end: string): SearchArgs {
+export function geoRegionQuery(start: string, end: string, includePaused = false): SearchArgs {
   return reportQuery(
     "geographic_view",
     ["campaign.id", "segments.geo_target_region"],
     start,
     end,
+    undefined,
+    includePaused,
   );
 }
 

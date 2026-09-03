@@ -1,6 +1,6 @@
 ---
-description: "Download last N days of ENABLED-campaign Google Ads metrics (down to keyword/search-term), then write a markdown analysis + a Chart.js HTML dashboard to ads/output/reports/."
-argument-hint: "--customer <id> [--manager <id>] [--days 14]  (a bare positional <customer> also works; defaults: 111-111-1111, 14 days; the manager/login id is resolved, not defaulted)"
+description: "Download Google Ads metrics (down to keyword/search-term) for a trailing window or the account's whole history, then write a markdown analysis + a Chart.js HTML dashboard to ads/output/reports/."
+argument-hint: "--customer <id> [--manager <id>] [--days 14] [--all-time] [--include-paused]  (a bare positional <customer> also works; default 14 days; BOTH the customer and the manager/login id are resolved from flag -> env -> adkit.yaml, never defaulted to a placeholder)"
 user-invocable: true
 disable-model-invocation: false
 ---
@@ -31,6 +31,24 @@ This prints the path to a raw YAML file under `ads/output/reports/` named
 `<YYYY-MM-DD>-<customer>-raw.yaml`. If the command exits non-zero (bad
 credentials → run `ads.sh render-yaml`; or no enabled campaigns matched), stop
 and report the error to the user — do not fabricate a report.
+
+**Customer.** There is no default customer id either — a placeholder default used
+to send a bare `ads.sh report` at an account nobody owns. It resolves the same way
+every other command resolves it, first non-blank wins: `--customer <id>` (or a bare
+positional id) → `GOOGLE_ADS_CUSTOMER_ID` → `target_customer_id` in `adkit.yaml` →
+a one-time prompt on a terminal, which saves the answer. With none of those, the
+run fails naming the field and the file rather than querying a made-up account.
+
+**Window and status.** By default the report covers the last `--days N` (14)
+complete days over ENABLED campaigns only. Two flags widen that:
+
+- `--all-time` — the account's entire history instead of a trailing window. Use it
+  for "what has this account ever done", e.g. an account with dormant campaigns.
+- `--include-paused` — drop the ENABLED-only filter so paused campaigns are
+  reported too. Dormant history is invisible without this at any window size.
+
+They compose: `bash ads.sh report --all-time --include-paused` is the everything
+view.
 
 **Manager / mcc-customer-id.** There is no default manager id. The login header
 is resolved through this precedence chain, first non-blank wins:

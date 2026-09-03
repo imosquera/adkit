@@ -1,6 +1,8 @@
 /**
- * IO entry: pull last N days of Google Ads performance for ENABLED campaigns and
- * write a raw report (YAML) under ads/output/reports/.
+ * IO entry: pull Google Ads performance — a trailing N-day window over ENABLED
+ * campaigns by default, or the account's whole history / paused campaigns too
+ * under --all-time / --include-paused — and write a raw report (YAML) under
+ * ads/output/reports/.
  *
  * Port of ads_skill/bin/report.py. All query construction, metric math, and
  * cluster analysis live in the pure lib layer (lib/report, lib/cluster); this
@@ -8,9 +10,11 @@
  * pure row->report shaping is factored into exported helpers (see buildReport /
  * shapeRows / recommendations) so it can be unit-tested with canned rows.
  *
- * Usage: adkit-report --customer <id> [--manager <id>] [--days 14]
+ * Usage: adkit-report [--customer <id>] [--manager <id>] [--days 14]
+ *                      [--all-time] [--include-paused]
  *        (a bare positional <customer> is still accepted for back-compat; the
- *         --customer flag wins when both are given)
+ *         --customer flag wins when both are given. Neither id is defaulted —
+ *         both resolve flag -> env -> adkit.yaml.)
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -79,6 +83,14 @@ import {
  * coming back.
  */
 export const DEFAULT_DAYS = 14;
+
+/**
+ * Window start for `--all-time`. Predates Google Ads (launched 2000), so the
+ * range covers any account's entire history. A literal early date rather than a
+ * "no date filter" query shape because every report builder selects and filters
+ * on `segments.date`, and the daily series needs it regardless.
+ */
+export const ALL_TIME_START = "2000-01-01";
 
 // ---------------------------------------------------------------------------
 // SDK row shapes — only the fields report.py reads. The TS SDK returns nested,
@@ -435,6 +447,10 @@ export interface ReportArgs {
   /** `null` when `--manager` was absent — the login is resolved from env/credentials instead. */
   manager: string | null;
   days: number;
+  /** `--all-time`: report the account's whole history instead of a trailing `days` window. */
+  allTime: boolean;
+  /** `--include-paused`: drop the ENABLED-only filter so dormant campaigns are reported too. */
+  includePaused: boolean;
 }
 
 /**
@@ -462,8 +478,13 @@ export function parseArgs(argv: string[]): ReportArgs {
   let days = DEFAULT_DAYS;
   let sawPositional = false;
   let customerFromFlag = false;
+  const allTime = argv.includes("--all-time");
+  const includePaused = argv.includes("--include-paused");
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "--all-time" || arg === "--include-paused") {
+      continue; // valueless booleans, handled above
+    }
     if (arg === "--manager") {
       const value = flagValue(argv, i);
       manager = value ?? manager;
@@ -493,7 +514,12 @@ export function parseArgs(argv: string[]): ReportArgs {
       sawPositional = true;
     }
   }
-  return { customer, manager, days };
+  if (!Number.isFinite(days) || days < 1) {
+    // A NaN from `--days notanumber` used to flow silently into dateWindow and
+    // produce a nonsense (NaN-dated) query rather than a readable complaint.
+    throw new Error(`error: --days must be a positive integer, got ${JSON.stringify(String(days))}`);
+  }
+  return { customer, manager, days, allTime, includePaused };
 }
 
 /** Run one structured read and return every row (thin IO wrapper). */
@@ -512,17 +538,18 @@ async function pull(
   start: string,
   end: string,
   dailyEnd: string,
+  includePaused = false,
 ): Promise<ReportData> {
   const [campaigns, campaignDaily, adGroups, ads, keywords, searchTerms, geo, geoRegions] =
     await Promise.all([
-      search<CampaignTotalsRow>(client, customerId, campaignTotalsQuery(start, end)),
-      search<CampaignDailyRow>(client, customerId, campaignDailyQuery(start, dailyEnd)),
-      search<AdGroupRow>(client, customerId, adGroupQuery(start, end)),
-      search<AdRow>(client, customerId, adQuery(start, end)),
-      search<KeywordRow>(client, customerId, keywordQuery(start, end)),
-      search<SearchTermRow>(client, customerId, searchTermQuery(start, end)),
-      search<GeoRow>(client, customerId, geoQuery(start, end)),
-      search<GeoRegionRow>(client, customerId, geoRegionQuery(start, end)),
+      search<CampaignTotalsRow>(client, customerId, campaignTotalsQuery(start, end, includePaused)),
+      search<CampaignDailyRow>(client, customerId, campaignDailyQuery(start, dailyEnd, includePaused)),
+      search<AdGroupRow>(client, customerId, adGroupQuery(start, end, includePaused)),
+      search<AdRow>(client, customerId, adQuery(start, end, includePaused)),
+      search<KeywordRow>(client, customerId, keywordQuery(start, end, includePaused)),
+      search<SearchTermRow>(client, customerId, searchTermQuery(start, end, includePaused)),
+      search<GeoRow>(client, customerId, geoQuery(start, end, includePaused)),
+      search<GeoRegionRow>(client, customerId, geoRegionQuery(start, end, includePaused)),
     ]);
   return shapeRows({ campaigns, campaignDaily, adGroups, ads, keywords, searchTerms, geo, geoRegions });
 }
@@ -614,13 +641,19 @@ export async function main(
 
   // The one clock read; injected into the pure layer.
   const today = new Date();
-  const [start, end] = dateWindow(today, args.days);
+  // --all-time widens the window to everything rather than adding a separate
+  // no-date query shape: every report builder filters on segments.date, and GAQL
+  // needs that field in SELECT for the daily series anyway. ALL_TIME_START
+  // predates Google Ads itself, so the range covers any account's full history.
+  const [start, end] = args.allTime
+    ? [ALL_TIME_START, dateWindow(today, 1)[1]]
+    : dateWindow(today, args.days);
   const generatedAt = isoToday(today);
   const dailyEnd = generatedAt; // daily series runs through today (partial)
 
   let data: ReportData;
   try {
-    data = await pull(client, customer, start, end, dailyEnd);
+    data = await pull(client, customer, start, end, dailyEnd, args.includePaused);
   } catch (exc) {
     // A report necessarily queries metrics, so it can hit the same "metrics on a
     // manager account" rejection (query_error 59) that audit detects. Reuse
