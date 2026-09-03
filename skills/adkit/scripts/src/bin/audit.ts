@@ -600,9 +600,48 @@ export async function campaignPriorAuctionInsights(
   );
   return rows.reduce<Record<number, string[]>>((acc, r) => {
     const cid = r.campaign.id;
-    const domain = r.auction_insight_domain.domain;
+    const domain = r.segments?.auction_insight_domain;
+    // A campaign row with no auction-insight segment carries no competitor to
+    // diff against; skipping it keeps "" out of the new-competitor list.
+    if (!domain) return acc;
     return { ...acc, [cid]: [...(acc[cid] ?? []), domain] };
   }, {});
+}
+
+/** Both Auction Insights windows, or the reason the section was skipped. */
+export interface AuctionInsightsRun {
+  /** Non-null when the section was intentionally skipped (reason for the report). */
+  skipped: string | null;
+  current: Record<number, AuctionInsightRow[]>;
+  prior: Record<number, string[]>;
+}
+
+/**
+ * Fetch both Auction Insights windows, degrading to an empty result plus a reason
+ * when the API rejects the query — the same graceful-degradation contract
+ * {@link runPsi} already uses for PageSpeed.
+ *
+ * Auction Insights is optional competitive intel layered onto the serving
+ * section; every other audit finding stands without it. Letting its failure
+ * propagate meant one `query_error` discarded a complete, already-computed audit
+ * (see the note at the call site). Availability genuinely varies by account —
+ * Google only reports it with sufficient auction volume — so "unavailable" is an
+ * expected state, not an exceptional one.
+ */
+export async function auctionInsightsOrSkip(
+  client: AdsClient,
+  customerId: string,
+  days: number,
+  campaignIds: ReadonlyArray<string | number>,
+  asOf: Date = new Date(),
+): Promise<AuctionInsightsRun> {
+  try {
+    const current = await campaignAuctionInsights(client, customerId, days, campaignIds);
+    const prior = await campaignPriorAuctionInsights(client, customerId, asOf, days, campaignIds);
+    return { skipped: null, current, prior };
+  } catch (exc) {
+    return { skipped: formatGoogleAdsError(exc), current: {}, prior: {} };
+  }
 }
 
 /**
@@ -1262,6 +1301,9 @@ export async function runAudit(
   let addNegatives: Record<number, ReturnType<typeof negativesToAdd>> = {};
   let promoteKeywords: Record<number, ReturnType<typeof keywordsToPromote>> = {};
   let auctionInsightsMap: Record<number, AuctionInsightRow[]> = {};
+  // Non-null when the Auction Insights section was skipped — reported in the
+  // envelope so a consumer can tell "no competitors found" from "not fetched".
+  let auctionInsightsSkipped: string | null = null;
   let clickCtrCandidates: Record<number, ReturnType<typeof keywordsByClicksAndCtr>> = {};
   if (!args.noServing) {
     serving = await campaignServing(client, customer, args.days, !args.all, campaignId);
@@ -1278,19 +1320,25 @@ export async function runAudit(
     const terms = await searchTerms(client, customer, args.days, campIds);
     [addNegatives, promoteKeywords] = negativesAndPromotions(terms, kwByCampaign);
 
-    auctionInsightsMap = await campaignAuctionInsights(client, customer, args.days, campIds);
-    const priorDomainsMap = await campaignPriorAuctionInsights(
-      client,
-      customer,
-      new Date(),
-      args.days,
-      campIds,
-    );
+    // Auction Insights degrades to "section skipped" instead of aborting the run.
+    // A malformed field here (query_error 32) used to take the ENTIRE audit down —
+    // creative findings, quality score, landing-page health, search terms, PSI, all
+    // discarded over one optional competitive-intel section, which also made the
+    // documented "start from an /adkit audit run" update workflow impossible. This
+    // is the only section querying a segment whose availability varies by account
+    // (Auction Insights needs sufficient auction volume), so it is the one most
+    // likely to fail for reasons that say nothing about the rest of the audit.
+    const insights = await auctionInsightsOrSkip(client, customer, args.days, campIds);
+    auctionInsightsMap = insights.current;
+    auctionInsightsSkipped = insights.skipped;
+    if (insights.skipped !== null) {
+      process.stderr.write(`note: auction insights unavailable — ${insights.skipped}\n`);
+    }
     serving = serving.map((sc) => {
       const domains = auctionInsightsMap[sc.campaignId] ?? [];
       const newDomains = newCompetitorDomains(
         domains.map((d) => d.domain),
-        priorDomainsMap[sc.campaignId] ?? [],
+        insights.prior[sc.campaignId] ?? [],
       );
       return withAuctionInsightFindings(sc, domains, newDomains);
     });
@@ -1353,6 +1401,7 @@ export async function runAudit(
       cannibalization: cannib,
       keywordCpc: stringKeyed(keywordCpcMap),
       auctionInsights: stringKeyed(auctionInsightsMap),
+      auctionInsightsSkipped,
       clusterSplits: splits,
       addNegatives: stringKeyed(addNegatives),
       promoteKeywords: stringKeyed(promoteKeywords),

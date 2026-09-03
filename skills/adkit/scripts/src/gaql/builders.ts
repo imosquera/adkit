@@ -322,16 +322,26 @@ export function auditSearchTermsQuery(
  * overlap rate, position-above rate, top-of-page rate, and outranking share
  * for every domain competing against our own campaigns. Ids guarded
  * digits-only.
+ *
+ * Auction Insights is a SEGMENT on `campaign`, not a resource of its own. This
+ * queried `FROM auction_insight_domain` selecting `auction_insight_domain.domain`,
+ * which Google rejects with `query_error 32: Unrecognized field in the query` —
+ * and since the audit had no degradation around it, that one rejection took the
+ * whole `ads.sh audit` run down, making the documented "start from an audit"
+ * workflow impossible. The SDK's own generated field tables confirm the shape:
+ * `segments.auction_insight_domain` is a member of `CampaignSegment`, all five
+ * `metrics.auction_insight_search_*` are members of `CampaignMetric`, and there
+ * is no `auction_insight_domain` entry in the `Resource` union at all.
  */
 export function auctionInsightDomainQuery(
   days: number,
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
   return inListQuery(
-    "auction_insight_domain",
+    "campaign",
     [
       "campaign.id",
-      "auction_insight_domain.domain",
+      "segments.auction_insight_domain",
       "metrics.auction_insight_search_impression_share",
       "metrics.auction_insight_search_overlap_rate",
       "metrics.auction_insight_search_position_above_rate",
@@ -357,8 +367,8 @@ export function auctionInsightDomainPriorWindowQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {
   return inListQuery(
-    "auction_insight_domain",
-    ["campaign.id", "auction_insight_domain.domain"],
+    "campaign",
+    ["campaign.id", "segments.auction_insight_domain"],
     "campaign.id",
     campaignIds,
     [`segments.date BETWEEN '${start}' AND '${end}'`],

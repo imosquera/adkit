@@ -213,7 +213,8 @@ export function normalizeServingRow(r: RawServingRow): ServingRow {
 
 export interface RawAuctionInsightRow {
   campaign: { id: number };
-  auction_insight_domain: { domain: string };
+  /** Auction Insights is a segment on `campaign`, not a resource — see auctionInsightDomainQuery. */
+  segments?: { auction_insight_domain?: string };
   metrics?: {
     auction_insight_search_impression_share?: number;
     auction_insight_search_overlap_rate?: number;
@@ -235,7 +236,7 @@ export function normalizeAuctionInsightRow(r: RawAuctionInsightRow): AuctionInsi
   const m = zeroFillMetrics(r.metrics, AUCTION_INSIGHT_METRIC_KEYS);
   return {
     campaignId: r.campaign.id,
-    domain: r.auction_insight_domain.domain,
+    domain: r.segments?.auction_insight_domain ?? "",
     impressionShare: m.auction_insight_search_impression_share,
     overlapRate: m.auction_insight_search_overlap_rate,
     positionAboveRate: m.auction_insight_search_position_above_rate,

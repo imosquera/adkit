@@ -41,13 +41,13 @@ describe("auctionInsightDomainQuery", () => {
 
   it("toGaql produces a well-formed GAQL string with every share-metric field", () => {
     expect(toGaql(auctionInsightDomainQuery(14, ["12345"]))).toBe(
-      "SELECT campaign.id, auction_insight_domain.domain, " +
+      "SELECT campaign.id, segments.auction_insight_domain, " +
         "metrics.auction_insight_search_impression_share, " +
         "metrics.auction_insight_search_overlap_rate, " +
         "metrics.auction_insight_search_position_above_rate, " +
         "metrics.auction_insight_search_top_impression_percentage, " +
         "metrics.auction_insight_search_outranking_share " +
-        "FROM auction_insight_domain " +
+        "FROM campaign " +
         "WHERE campaign.id IN (12345) AND segments.date DURING LAST_14_DAYS",
     );
   });
@@ -66,7 +66,7 @@ describe("auctionInsightDomainPriorWindowQuery", () => {
 
   it("selects only domain identity (no share metrics) over an explicit date range", () => {
     const q = auctionInsightDomainPriorWindowQuery("2026-06-07", "2026-06-13", ["12345"]);
-    expect(q.fields).toEqual(["campaign.id", "auction_insight_domain.domain"]);
+    expect(q.fields).toEqual(["campaign.id", "segments.auction_insight_domain"]);
     expect(q.conditions).toContain("segments.date BETWEEN '2026-06-07' AND '2026-06-13'");
   });
 });

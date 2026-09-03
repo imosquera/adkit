@@ -22,6 +22,7 @@ import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import { parseDifferentiationProfile } from "../lib/brand.js";
 import { MIN_KEYWORDS, requireDigits } from "../audit/scoring.js";
 import {
+  auctionInsightsOrSkip,
   auditCampaign,
   averageCpc,
   campaignAuctionInsights,
@@ -486,7 +487,7 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
     const rows = [
       {
         campaign: { id: 1 },
-        auction_insight_domain: { domain: "low.com" },
+        segments: { auction_insight_domain: "low.com" },
         metrics: {
           auction_insight_search_impression_share: 0.1,
           auction_insight_search_overlap_rate: 0.1,
@@ -497,7 +498,7 @@ describe("boundary normalizers absorb API-omitted nested fields", () => {
       },
       {
         campaign: { id: 1 },
-        auction_insight_domain: { domain: "high.com" },
+        segments: { auction_insight_domain: "high.com" },
         metrics: {
           auction_insight_search_impression_share: 0.9,
           auction_insight_search_overlap_rate: 0.2,
@@ -822,12 +823,114 @@ describe("resolvePsiKey (issue #40: PSI key sourceable from .adkit.yaml / Secret
   });
 });
 
+describe("auctionInsightsOrSkip (bug 5: a rejected section must not kill the audit)", () => {
+  /** A client whose every read is rejected the way the live API rejected the old query. */
+  function rejectingClient(): AdsClient {
+    const fail = () => {
+      throw {
+        errors: [
+          {
+            error_code: { query_error: 32 },
+            message: "Unrecognized field in the query: 'auction_insight_domain.domain'.",
+          },
+        ],
+      };
+    };
+    return {
+      async search() {
+        return fail();
+      },
+      async searchStructured() {
+        return fail();
+      },
+      async mutate(): Promise<MutateResult> {
+        throw new Error("read-only");
+      },
+    };
+  }
+
+  it("degrades to an empty result plus a reason instead of throwing", async () => {
+    const run = await auctionInsightsOrSkip(rejectingClient(), "123", 7, [1, 2]);
+    expect(run.skipped).toContain("Unrecognized field");
+    expect(run.current).toEqual({});
+    expect(run.prior).toEqual({});
+  });
+
+  it("reports skipped: null and the real data on success", async () => {
+    const rows = [
+      {
+        campaign: { id: 1 },
+        segments: { auction_insight_domain: "rival.com" },
+        metrics: { auction_insight_search_impression_share: 0.4 },
+      },
+    ];
+    const run = await auctionInsightsOrSkip(
+      fakeClient(() => rows),
+      "123",
+      7,
+      [1],
+      new Date("2026-06-22T00:00:00Z"),
+    );
+    expect(run.skipped).toBeNull();
+    expect(run.current[1]?.[0]?.domain).toBe("rival.com");
+  });
+
+  it("a full runAudit still succeeds and still emits its other sections when insights fail", async () => {
+    // The reported symptom: query_error 32 aborted the ENTIRE audit, discarding
+    // the creative report, quality score, and landing-page health along with it.
+    const campaignRow = { campaign: { id: 5, name: "Camp", status: "ENABLED" } };
+    const client: AdsClient = {
+      async search<Row = unknown>(): Promise<Row[]> {
+        return [] as Row[];
+      },
+      async searchStructured<Row = unknown>(_c: string, args: SearchArgs): Promise<Row[]> {
+        const gaql = toGaql(args);
+        if (gaql.includes("segments.auction_insight_domain")) {
+          throw {
+            errors: [{ error_code: { query_error: 32 }, message: "Unrecognized field in the query." }],
+          };
+        }
+        if (gaql.includes("FROM campaign ") && gaql.includes("campaign.name")) {
+          return [campaignRow] as Row[];
+        }
+        return [] as Row[];
+      },
+      async mutate(): Promise<MutateResult> {
+        throw new Error("read-only");
+      },
+    };
+
+    const out: string[] = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = ((s: string) => {
+      out.push(String(s));
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    let code: number;
+    try {
+      code = await runAudit(["--customer", "1234567890"], () => client, {});
+    } finally {
+      process.stdout.write = origOut;
+      process.stderr.write = origErr;
+    }
+
+    expect(code).toBe(0); // the run completes rather than exiting 1
+    const envelope = JSON.parse(out.join("")) as Record<string, unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.auctionInsightsSkipped).toContain("Unrecognized field");
+    expect(envelope).toHaveProperty("campaigns"); // the rest of the audit survived
+    expect(envelope).toHaveProperty("qualityScore");
+  });
+});
+
 describe("campaignPriorAuctionInsights", () => {
   it("groups the prior window's domains by campaign, no share metrics needed", async () => {
     const rows = [
-      { campaign: { id: 1 }, auction_insight_domain: { domain: "a.com" } },
-      { campaign: { id: 1 }, auction_insight_domain: { domain: "b.com" } },
-      { campaign: { id: 2 }, auction_insight_domain: { domain: "c.com" } },
+      { campaign: { id: 1 }, segments: { auction_insight_domain: "a.com" } },
+      { campaign: { id: 1 }, segments: { auction_insight_domain: "b.com" } },
+      { campaign: { id: 2 }, segments: { auction_insight_domain: "c.com" } },
     ];
     const result = await campaignPriorAuctionInsights(
       fakeClient(() => rows),
@@ -861,7 +964,7 @@ describe("current-vs-prior-window Auction Insights composition (no cross-run sta
     const currentRows = [
       {
         campaign: { id: 1 },
-        auction_insight_domain: { domain: "newcomer.com" },
+        segments: { auction_insight_domain: "newcomer.com" },
         metrics: {
           auction_insight_search_impression_share: 0.3,
           auction_insight_search_overlap_rate: 0.2,
@@ -871,7 +974,7 @@ describe("current-vs-prior-window Auction Insights composition (no cross-run sta
         },
       },
     ];
-    const priorRows = [{ campaign: { id: 1 }, auction_insight_domain: { domain: "old-timer.com" } }];
+    const priorRows = [{ campaign: { id: 1 }, segments: { auction_insight_domain: "old-timer.com" } }];
 
     let queryCount = 0;
     const client = fakeClient((query) => {
