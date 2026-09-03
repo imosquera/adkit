@@ -17,7 +17,6 @@ import { KEEP_YAML_MCC, type AdsClient } from "../lib/auth.js";
 import type { MccCustomerId } from "../cli/args.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import {
-  DEFAULT_CUSTOMER,
   DEFAULT_DAYS,
   buildReport,
   main,
@@ -29,6 +28,8 @@ import {
 
 /** The placeholder MCC this feature removed; must never come back as a runtime default. */
 const PLACEHOLDER_MANAGER = "2222222222";
+/** The placeholder CUSTOMER this change removed; must never come back as a runtime default. */
+const PLACEHOLDER_CUSTOMER = "1111111111";
 
 /** A raw metrics block as the SDK returns it (snake_case, numbers/micros). */
 function metrics(over: Record<string, number> = {}) {
@@ -45,9 +46,11 @@ function metrics(over: Record<string, number> = {}) {
 }
 
 describe("parseArgs", () => {
-  it("defaults with no args — and `manager` has NO default id, only absence", () => {
+  it("defaults with no args — NEITHER id has a default, only `days` does", () => {
+    // A placeholder customer would send a bare `ads.sh report` at an account
+    // nobody owns; absence must resolve through env/yaml in main() instead.
     expect(parseArgs([])).toEqual({
-      customer: DEFAULT_CUSTOMER,
+      customer: null,
       manager: null,
       days: DEFAULT_DAYS,
     });
@@ -63,7 +66,7 @@ describe("parseArgs", () => {
 
   it("equals-form flags", () => {
     expect(parseArgs(["--days=30", "--manager=42"])).toEqual({
-      customer: DEFAULT_CUSTOMER,
+      customer: null,
       manager: "42",
       days: 30,
     });
@@ -94,15 +97,17 @@ describe("parseArgs", () => {
     expect(parseArgs(["--customer", "1234567890", "999"]).customer).toBe("1234567890");
   });
 
-  it("keeps the default when --customer is given with no value", () => {
-    expect(parseArgs(["--customer"]).customer).toBe(DEFAULT_CUSTOMER);
+  it("leaves the customer unresolved when --customer is given with no value", () => {
+    // Never swallow a following token as the value; absence falls through to the
+    // env/yaml tiers rather than to a placeholder.
+    expect(parseArgs(["--customer"]).customer).toBeNull();
   });
 
   it("does not let --manager swallow a following flag as its value", () => {
     // spec Edge Cases: a valueless --manager must leave the manager absent (resolved
     // from env/credentials instead) rather than consuming an unrelated token.
     expect(parseArgs(["--manager", "--days", "7"])).toEqual({
-      customer: DEFAULT_CUSTOMER,
+      customer: null,
       manager: null,
       days: 7,
     });
@@ -632,7 +637,7 @@ describe("main (fake client, temp cwd)", () => {
     }) as typeof process.stderr.write;
     let code: number;
     try {
-      code = await main([], () => client, {});
+      code = await main(["1111111111"], () => client, {});
     } finally {
       process.stderr.write = origErr;
     }
@@ -660,7 +665,7 @@ describe("main (fake client, temp cwd)", () => {
     }) as typeof process.stderr.write;
     let code: number;
     try {
-      code = await main([], () => client, {});
+      code = await main(["1111111111"], () => client, {});
     } finally {
       process.stderr.write = origErr;
     }
@@ -701,7 +706,7 @@ describe("main (fake client, temp cwd)", () => {
     }) as typeof process.stderr.write;
     let code: number;
     try {
-      code = await main([], () => client, {});
+      code = await main(["1111111111"], () => client, {});
     } finally {
       process.stderr.write = origErr;
     }
@@ -720,7 +725,7 @@ describe("main (fake client, temp cwd)", () => {
     }) as typeof process.stderr.write;
     let code: number;
     try {
-      code = await main([], () => {
+      code = await main(["1111111111"], () => {
         throw new Error("missing .adkit.yaml");
       }, {});
     } finally {
@@ -974,6 +979,53 @@ describe("main (fake client, temp cwd)", () => {
     expect(text).toContain("ADKIT_READ_BACKEND=mcp");
     expect(text).not.toContain("could not load Google Ads credentials");
   });
+
+  describe("customer resolution (no placeholder default)", () => {
+    it("resolves the customer from GOOGLE_ADS_CUSTOMER_ID when no id is passed", async () => {
+      const { code, printed } = await runMain([], { GOOGLE_ADS_CUSTOMER_ID: "777-777-7777" });
+      expect(code).toBe(0);
+      expect(printed).toMatch(/7777777777-raw\.yaml$/);
+      const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
+      expect(parsed.customer_id).toBe("7777777777");
+    });
+
+    it("resolves the customer from the yaml's target_customer_id when no flag or env is set", async () => {
+      writeCredentials("developer_token: t\ntarget_customer_id: 8888888888\n");
+      const { code, printed } = await runMain([], {});
+      expect(code).toBe(0);
+      const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
+      expect(parsed.customer_id).toBe("8888888888");
+    });
+
+    it("lets an explicit id beat both env and yaml", async () => {
+      writeCredentials("developer_token: t\ntarget_customer_id: 8888888888\n");
+      const { printed } = await runMain(["1234567890"], { GOOGLE_ADS_CUSTOMER_ID: "7777777777" });
+      const parsed = parseYaml(readFileSync(printed, "utf8")) as Record<string, unknown>;
+      expect(parsed.customer_id).toBe("1234567890");
+    });
+
+    it("fails with a named, actionable error instead of querying a placeholder account", async () => {
+      // The reported bug: this used to silently query 1111111111 and then report
+      // "Google Ads query failed for customer 1111111111".
+      const err: string[] = [];
+      const origErr = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((s: string) => {
+        err.push(String(s));
+        return true;
+      }) as typeof process.stderr.write;
+      let code: number;
+      try {
+        code = await main([], () => fakeClient(oneCampaign), {});
+      } finally {
+        process.stderr.write = origErr;
+      }
+      expect(code).toBe(1);
+      const text = err.join("");
+      expect(text).toContain("target_customer_id");
+      expect(text).toContain("GOOGLE_ADS_CUSTOMER_ID");
+      expect(text).not.toContain(PLACEHOLDER_CUSTOMER);
+    });
+  });
 });
 
 // FR-010: the placeholder MCC must not creep back in as a runtime default.
@@ -986,4 +1038,15 @@ describe("no hardcoded manager placeholder in the report entrypoint (FR-010)", (
     expect(source).not.toContain("222-222-2222");
     expect(source).not.toContain("DEFAULT_MANAGER");
   });
+
+  // The same guard for the CUSTOMER id, which the manager fix left behind: a
+  // `DEFAULT_CUSTOMER = "1111111111"` sent a bare `ads.sh report` at a
+  // placeholder account and then blamed an id the operator never typed.
+  it("src/bin/report.ts contains no 1111111111 / 111-111-1111 literal", () => {
+    const source = readFileSync(fileURLToPath(new URL("./report.ts", import.meta.url)), "utf8");
+    expect(source).not.toContain(PLACEHOLDER_CUSTOMER);
+    expect(source).not.toContain("111-111-1111");
+    expect(source).not.toContain("DEFAULT_CUSTOMER");
+  });
 });
+

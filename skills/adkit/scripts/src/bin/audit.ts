@@ -1220,15 +1220,10 @@ export async function runAudit(
   }
   // Same flag -> env -> yaml precedence as every other command (conventions.md):
   // a flag-only read left `ads.sh audit` unable to reach an MCC-managed account
-  // via .adkit.yaml the way `create`/`preflight` already can.
-  //
-  // Coerce to string before resolveTier: an unquoted all-digits value (the
-  // documented format) parses as a YAML number, and resolveTier's blank check
-  // calls `.trim()`, which a number doesn't have.
-  const yamlMcc = loadConfig().mcc_customer_id;
+  // via .adkit.yaml the way `create`/`preflight` already can. resolveTier coerces
+  // an unquoted (numeric) YAML id itself, so there is nothing to pre-stringify.
   const mccCustomerId =
-    resolveTier(args.mccCustomerId, env[MCC_CUSTOMER_ID_ENV], yamlMcc !== undefined ? String(yamlMcc) : undefined) ??
-    null;
+    resolveTier(args.mccCustomerId, env[MCC_CUSTOMER_ID_ENV], loadConfig().mcc_customer_id) ?? null;
   requireDigits("--mcc-customer-id", mccCustomerId);
   const client = clientFactory(mccCustomerId);
 

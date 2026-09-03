@@ -55,9 +55,21 @@ const ID_SHAPE = "10 digits, dashes optional (e.g. 123-456-7890 or 1234567890)";
  * is accepted verbatim. Surrounding whitespace is trimmed. Blank/absent is not an
  * error here — it is simply "no value at this tier"; whether that is fatal is the
  * caller's decision (fatal for target, fine for login).
+ *
+ * `raw` is deliberately `unknown`-ish rather than `string`: one tier is a YAML
+ * file, and an unquoted 10-digit id (`target_customer_id: 1234567890` — the form
+ * a human hand-writes, and what the docs invite by saying "edit it directly")
+ * parses as a NUMBER. `ads.sh init` happens to write the value quoted, which is
+ * the only reason this was survivable; a hand-edited config used to crash the
+ * run with `(raw ?? "").trim is not a function` — a TypeError from a function
+ * whose contract says it never throws. Coercing here keeps that promise true for
+ * every caller instead of making each one remember to `String()` first.
  */
-export function parseCustomerId(label: string, raw: string | null | undefined): ParsedCustomerId | null {
-  const trimmed = (raw ?? "").trim();
+export function parseCustomerId(
+  label: string,
+  raw: string | number | null | undefined,
+): ParsedCustomerId | null {
+  const trimmed = (raw === null || raw === undefined ? "" : String(raw)).trim();
   if (trimmed === "") {
     return null;
   }
@@ -101,7 +113,7 @@ export class MissingTargetCustomerIdError extends Error {
 }
 
 /** Parse a tier's raw value, throwing {@link InvalidCustomerIdError} on a malformed one. Pure. */
-function parseOrThrow(label: string, raw: string | null | undefined): CustomerId | null {
+function parseOrThrow(label: string, raw: string | number | null | undefined): CustomerId | null {
   const parsed = parseCustomerId(label, raw);
   if (parsed === null) {
     return null;
@@ -119,7 +131,7 @@ function parseOrThrow(label: string, raw: string | null | undefined): CustomerId
  * against the thing the operator actually set (`GOOGLE_ADS_CUSTOMER_ID`, say)
  * rather than against a flag they never passed.
  */
-function firstParsed(tiers: ReadonlyArray<readonly [string, string | null | undefined]>): CustomerId | null {
+function firstParsed(tiers: ReadonlyArray<readonly [string, string | number | null | undefined]>): CustomerId | null {
   for (const [label, raw] of tiers) {
     const parsed = parseOrThrow(label, raw);
     if (parsed !== null) {

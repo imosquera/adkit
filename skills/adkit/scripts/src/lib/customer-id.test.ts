@@ -30,6 +30,20 @@ describe("parseCustomerId", () => {
     expect(parseCustomerId("target_customer_id", null)).toBeNull();
   });
 
+  it("accepts a NUMBER, as an unquoted yaml id parses to", () => {
+    // `target_customer_id: 1234567890` hand-written without quotes is a yaml
+    // number, and this function promises never to throw. It used to raise
+    // `(raw ?? "").trim is not a function` on exactly that config — the reason
+    // only init-written (quoted) configs worked.
+    expect(parseCustomerId("target_customer_id", 1234567890)).toEqual({ ok: true, value: "1234567890" });
+  });
+
+  it("still reports a numeric id of the wrong length as a normal parse failure", () => {
+    const parsed = parseCustomerId("target_customer_id", 12345);
+    expect(parsed).toMatchObject({ ok: false });
+    expect((parsed as { message: string }).message).toContain("too short");
+  });
+
   // "say what was wrong with what was typed" — not a generic "invalid".
   it("names the too-short case and echoes what was typed", () => {
     const parsed = parseCustomerId("target_customer_id", "12345");

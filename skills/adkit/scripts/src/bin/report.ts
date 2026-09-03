@@ -30,6 +30,8 @@ import {
   type ResolvedMcc,
 } from "../cli/args.js";
 import { sdkErrorMessage } from "../cli/output.js";
+import { resolveTargetCustomerId } from "../cli/customer-id.js";
+import { InvalidCustomerIdError, MissingTargetCustomerIdError } from "../lib/customer-id.js";
 import { isManagerMetricsError, managerMetricsHint } from "./audit.js";
 import {
   clusterSplitRecommendation,
@@ -61,11 +63,21 @@ import {
 } from "../lib/report.js";
 
 /**
- * The account we report on by default (overridable via args). There is no default
- * manager: the mcc-customer-id is RESOLVED (flag → env → credentials) rather than
- * defaulted to a literal, see {@link resolveMccCustomerId}.
+ * Neither the account nor the manager is defaulted to a literal. The
+ * mcc-customer-id is RESOLVED (flag → env → credentials, {@link resolveMccCustomerId}),
+ * and the customer is resolved the same way every other entrypoint does it
+ * (flag → `GOOGLE_ADS_CUSTOMER_ID` → `adkit.yaml`'s `target_customer_id` →
+ * prompt-and-persist on a TTY, {@link resolveTargetCustomerId}).
+ *
+ * There used to be a hardcoded placeholder customer id here. It meant a bare
+ * `ads.sh report` silently queried an account nobody owns and then blamed that
+ * id in the failure text — an id the operator never typed and cannot find in
+ * their config — while a perfectly good `target_customer_id` sat unread in
+ * `adkit.yaml`. The identical placeholder bug was already fixed once for the
+ * manager id; the customer was left behind. Both are now resolved, never
+ * defaulted, and `report.test.ts` guards this file against either literal
+ * coming back.
  */
-export const DEFAULT_CUSTOMER = "1111111111"; // 111-111-1111
 export const DEFAULT_DAYS = 14;
 
 // ---------------------------------------------------------------------------
@@ -418,7 +430,8 @@ export function buildReport(params: {
 
 /** Parsed CLI arguments (parse-don't-validate: parse once, up front). */
 export interface ReportArgs {
-  customer: string;
+  /** `null` when neither a positional nor `--customer` was given — resolved from env/yaml instead. */
+  customer: string | null;
   /** `null` when `--manager` was absent — the login is resolved from env/credentials instead. */
   manager: string | null;
   days: number;
@@ -436,11 +449,15 @@ function flagValue(argv: string[], index: number): string | undefined {
 
 /**
  * Parse argv into {@link ReportArgs}: positional `customer` then `--manager`
- * and `--days` flags, matching report.py's argparse. Falls back to defaults;
- * `manager` has no default (absence is `null`, not a placeholder id).
+ * and `--days` flags, matching report.py's argparse.
+ *
+ * Neither id has a default: an absent `customer` is `null`, not a placeholder,
+ * and is resolved through the flag → env → yaml tiers in {@link main}. Only
+ * `days` defaults, because a time window has a sane default and an account id
+ * does not.
  */
 export function parseArgs(argv: string[]): ReportArgs {
-  let customer = DEFAULT_CUSTOMER;
+  let customer: string | null = null;
   let manager: string | null = null;
   let days = DEFAULT_DAYS;
   let sawPositional = false;
@@ -563,7 +580,20 @@ export async function main(
   env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
   const args = parseArgs(argv);
-  const customer = normalizeId(args.customer);
+  // Same flag -> env -> yaml -> prompt-and-persist resolution every other
+  // entrypoint uses, rather than a placeholder literal. Failure is named and
+  // actionable (which tier, which field, which file) instead of surfacing later
+  // as an opaque "query failed for customer <id-you-never-typed>".
+  let customer: string;
+  try {
+    customer = await resolveTargetCustomerId(args.customer, env);
+  } catch (exc) {
+    if (exc instanceof MissingTargetCustomerIdError || exc instanceof InvalidCustomerIdError) {
+      process.stderr.write(`error: ${exc.message}\n`);
+      return 1;
+    }
+    throw exc;
+  }
   const login = resolveMccCustomerId(args.manager, env);
 
   let client: AdsClient;

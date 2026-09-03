@@ -416,16 +416,28 @@ export function writeConfigField(key: keyof AdkitConfig, value: string): void {
  * Resolve one setting through the flag -> env -> config -> fallback tiers,
  * the same shape as `resolveCustomer`/`resolveMccCustomerId` in `cli/args.ts`.
  * The first non-blank tier wins; blank/whitespace is treated as absent.
+ *
+ * The config tier accepts a number because it comes from YAML, where an
+ * all-digit value written without quotes (`mcc_customer_id: 1234567890`) parses
+ * as one — `AdkitConfig`'s `string` fields are a compile-time claim over runtime
+ * YAML, not a guarantee. Every tier is coerced before the blank check, which
+ * used to be a `.trim()` straight onto the raw value and threw
+ * `candidate.trim is not a function` on exactly that config. Returns a string
+ * so callers never have to care which tier won.
  */
 export function resolveTier(
   flag: string | null | undefined,
-  envValue: string | undefined,
-  configValue: string | undefined,
+  envValue: string | number | undefined,
+  configValue: string | number | undefined,
   fallback?: string,
 ): string | undefined {
   for (const candidate of [flag, envValue, configValue]) {
-    if (candidate && candidate.trim()) {
-      return candidate;
+    if (candidate === null || candidate === undefined) {
+      continue;
+    }
+    const text = String(candidate);
+    if (text.trim()) {
+      return text;
     }
   }
   return fallback;

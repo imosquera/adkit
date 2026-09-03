@@ -444,6 +444,19 @@ describe("resolveTier", () => {
     expect(resolveTier(null, "  ", "config", "fallback")).toBe("config");
     expect(resolveTier(null, undefined, "  ", "fallback")).toBe("fallback");
   });
+
+  it("accepts a NUMBER config tier, as an unquoted yaml id parses to", () => {
+    // `mcc_customer_id: 1234567890` written without quotes is a yaml number.
+    // The blank check used to call .trim() straight on it and threw
+    // `candidate.trim is not a function`, taking the whole command down.
+    expect(resolveTier(null, undefined, 1234567890 as unknown as number)).toBe("1234567890");
+    expect(resolveTier(null, 9999999999 as unknown as number, "config")).toBe("9999999999");
+  });
+
+  it("does not treat a numeric 0 as a blank tier", () => {
+    // `0` is falsy; a truthiness check would skip it and silently fall through.
+    expect(resolveTier(null, undefined, 0 as unknown as number)).toBe("0");
+  });
 });
 
 // The three output directories were declared, prompted for by `init`, and read by
