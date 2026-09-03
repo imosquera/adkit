@@ -17,6 +17,7 @@ import { KEEP_YAML_MCC, type AdsClient } from "../lib/auth.js";
 import type { MccCustomerId } from "../cli/args.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import {
+  ALL_TIME_START,
   DEFAULT_DAYS,
   buildReport,
   main,
@@ -24,6 +25,7 @@ import {
   recommendations,
   reportPath,
   shapeRows,
+  spanInDays,
 } from "./report.js";
 
 /** The placeholder MCC this feature removed; must never come back as a runtime default. */
@@ -141,6 +143,14 @@ describe("parseArgs", () => {
     const args = parseArgs(["1234567890"]);
     expect(args.allTime).toBe(false);
     expect(args.includePaused).toBe(false);
+  });
+
+  it("reports the real span in window.days under --all-time, not the --days default", () => {
+    // window.start would otherwise say 2000-01-01 while window.days said 14 —
+    // and `window` is what the markdown layer reads to describe the period.
+    expect(spanInDays("2026-06-15", "2026-06-21")).toBe(7);
+    expect(spanInDays("2026-06-21", "2026-06-21")).toBe(1);
+    expect(spanInDays(ALL_TIME_START, "2026-06-21")).toBeGreaterThan(9000);
   });
 
   it("rejects a non-numeric --days instead of letting NaN reach the query", () => {

@@ -92,6 +92,12 @@ export const DEFAULT_DAYS = 14;
  */
 export const ALL_TIME_START = "2000-01-01";
 
+/** Inclusive day count between two `YYYY-MM-DD` dates. Pure. */
+export function spanInDays(start: string, end: string): number {
+  const MS_PER_DAY = 86_400_000;
+  return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / MS_PER_DAY) + 1;
+}
+
 // ---------------------------------------------------------------------------
 // SDK row shapes — only the fields report.py reads. The TS SDK returns nested,
 // snake_case records; enums come back as STRING names, micros as numbers.
@@ -648,6 +654,10 @@ export async function main(
   const [start, end] = args.allTime
     ? [ALL_TIME_START, dateWindow(today, 1)[1]]
     : dateWindow(today, args.days);
+  // Report the span actually queried, not the --days default: under --all-time
+  // those disagree, and `window` is what the markdown layer reads to describe the
+  // period. Derived from the dates so the two can never drift.
+  const days = args.allTime ? spanInDays(start, end) : args.days;
   const generatedAt = isoToday(today);
   const dailyEnd = generatedAt; // daily series runs through today (partial)
 
@@ -686,7 +696,7 @@ export async function main(
     data,
     start,
     end,
-    days: args.days,
+    days,
     dailyEnd,
     generatedAt,
   });
