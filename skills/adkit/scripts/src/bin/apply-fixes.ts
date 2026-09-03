@@ -77,12 +77,15 @@ import {
   type ApplyPlanComputed,
   type ResolvedPlanGroup,
 } from "../adbriefs/apply-plan.js";
-import { parseBrief, type Brief } from "../lib/schema.js";
+import { parseBrief, type AdGroup, type Brief } from "../lib/schema.js";
 
 import {
   createAdGroup,
   createKeywords,
   createResponsiveSearchAd,
+  findExistingAdGroup,
+  findMissingKeywords,
+  findMissingResponsiveSearchAds,
   setAdGroupStatus,
   setAdGroupAdStatus,
   setCampaignStatus,
@@ -707,6 +710,31 @@ function briefEnvelopeEntry(
     briefStagingSkipped: s.skipReason !== null,
     briefStagingSkipReason: s.skipReason,
   };
+}
+
+/**
+ * Create whichever of `adGroup`'s RSAs/keywords aren't already live on `agRn`
+ * (content-idempotent — see {@link findMissingResponsiveSearchAds} /
+ * {@link findMissingKeywords}, the same helpers publishV1 uses). RSAs are created
+ * sequentially, not concurrently: two mutateResources calls against the same ad
+ * group at once are rejected by the API with CONCURRENT_MODIFICATION (see
+ * publish.ts). Safe to call on a brand-new ad group (everything is "missing") or
+ * one left partially populated by an earlier failed run (only the gap is filled).
+ */
+async function fillAdGroupRsasAndKeywords(
+  client: AdsClient,
+  customer: string,
+  agRn: string,
+  adGroup: AdGroup,
+): Promise<{ rsaIds: string[]; kwRns: string[] }> {
+  const missingRsas = await findMissingResponsiveSearchAds(client, customer, agRn, adGroup.responsiveSearchAds);
+  const rsaIds: string[] = [];
+  for (const rsa of missingRsas) {
+    rsaIds.push(await createResponsiveSearchAd(client, customer, rsa, agRn));
+  }
+  const missingKeywords = await findMissingKeywords(client, customer, agRn, adGroup.keywords);
+  const kwRns = await createKeywords(client, customer, missingKeywords, agRn);
+  return { rsaIds, kwRns };
 }
 
 /**
@@ -1377,38 +1405,51 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   // 9) new ad groups. A name already live in the campaign was filtered into
-  // agCreateSkips (idempotent — never a duplicate group). Each create mirrors the
+  // agCreateSkips (idempotent — never a duplicate GROUP). Each create mirrors the
   // /adkit create sequence one ad group at a time: ad group (ENABLED) -> RSAs
-  // (PAUSED) -> keywords (ENABLED). The PAUSED ads mean the group cannot serve until
-  // they're enabled, so adding a group to a live campaign starts no spend on its own.
+  // (PAUSED, sequential + content-idempotent) -> keywords (content-idempotent). The
+  // PAUSED ads mean the group cannot serve until they're enabled, so adding a group
+  // to a live campaign starts no spend on its own.
   for (const g of agCreates) {
     try {
       const campaignRn = `customers/${customer}/campaigns/${pyStr(g.campaignId)}`;
       const agRn = await createAdGroup(client, customer, g.adGroup, campaignRn);
-      // allSettled (not Promise.all): if one RSA create fails after the other
-      // already succeeded live in Ads, still let the surviving id be created —
-      // Promise.all would abort/discard on the first rejection, and since a rerun
-      // always re-creates RSAs (no findExisting for them, unlike the ad group), a
-      // silently-dropped success would mean the next run creates yet another RSA
-      // on top of the orphan, drifting past RSAS_PER_AD_GROUP. See publish.ts.
-      const rsaOutcomes = await Promise.allSettled(
-        g.adGroup.responsiveSearchAds.map((rsa) => createResponsiveSearchAd(client, customer, rsa, agRn)),
-      );
-      const failedRsa = rsaOutcomes.find((o): o is PromiseRejectedResult => o.status === "rejected");
-      if (failedRsa) {
-        throw failedRsa.reason;
-      }
-      const kwRns = await createKeywords(client, customer, g.adGroup.keywords, agRn);
+      const { rsaIds, kwRns } = await fillAdGroupRsasAndKeywords(client, customer, agRn, g.adGroup);
       console.log(
         `  + ad group ${pyRepr(g.name)} -> campaign ${pyStr(g.campaignId)}: ` +
-          `${g.adGroup.responsiveSearchAds.length}x RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,
+          `${rsaIds.length}x RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,
       );
     } catch (exc) {
       recordFailure(`adGroups (new group in campaign ${pyStr(g.campaignId)})`, exc, slugsForIds([g.campaignId], stateIndex.byCampaignId));
     }
   }
+  // agCreateSkips: the ad group NAME is already live, so it is never re-created —
+  // but an earlier run could have created it and then died before finishing its
+  // RSAs/keywords (e.g. the same CONCURRENT_MODIFICATION race the sequential fix
+  // above prevents going forward). Without this, such a group would be silently
+  // abandoned forever: every later run keeps routing it here on name alone. Resolve
+  // its resource name and complete whatever it's still missing (a no-op read + no
+  // mutate when it's already whole).
   for (const g of agCreateSkips) {
-    console.log(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
+    try {
+      const campaignRn = `customers/${customer}/campaigns/${pyStr(g.campaignId)}`;
+      const agRn = await findExistingAdGroup(client, customer, g.adGroup, campaignRn);
+      if (!agRn) {
+        console.log(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
+        continue;
+      }
+      const { rsaIds, kwRns } = await fillAdGroupRsasAndKeywords(client, customer, agRn, g.adGroup);
+      if (rsaIds.length > 0 || kwRns.length > 0) {
+        console.log(
+          `  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}: completed ` +
+            `${rsaIds.length}x RSA + ${kwRns.length} keywords it was missing`,
+        );
+      } else {
+        console.log(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
+      }
+    } catch (exc) {
+      recordFailure(`adGroups (existing group in campaign ${pyStr(g.campaignId)})`, exc, slugsForIds([g.campaignId], stateIndex.byCampaignId));
+    }
   }
 
   // Persist each staged brief ONLY after the live mutation sequence above completed

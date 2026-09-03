@@ -598,6 +598,120 @@ describe("adGroups (add-ad-group) path", () => {
     expect(out).toContain("headlines");
     expect(mutations).toEqual([]);
   });
+
+  /**
+   * A query-discriminating fake for the "complete a previously-skipped ad group"
+   * scenario: `liveAdGroupNames` (searchStructured) reports the ad group's NAME as
+   * already live in the campaign — routing it to agCreateSkips — while the raw
+   * `search` queries findExistingAdGroup / findMissingResponsiveSearchAds /
+   * findMissingKeywords hit are answered from the given canned live state.
+   */
+  function partialAdGroupClient(opts: {
+    campaignId: number;
+    agName: string;
+    agRn: string;
+    liveRsas?: Array<{ headlines: string[]; descriptions: string[] }>;
+    liveKeywords?: string[];
+  }): { client: AdsClient; mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> } {
+    const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+    const client: AdsClient = {
+      async search<Row = unknown>(_customerId: string, query: string): Promise<Row[]> {
+        if (query.includes("FROM ad_group_ad")) {
+          return (opts.liveRsas ?? []).map((r) => ({
+            ad_group_ad: {
+              ad: {
+                responsive_search_ad: {
+                  headlines: r.headlines.map((text) => ({ text })),
+                  descriptions: r.descriptions.map((text) => ({ text })),
+                },
+              },
+            },
+          })) as Row[];
+        }
+        if (query.includes("FROM ad_group_criterion")) {
+          return (opts.liveKeywords ?? []).map((text) => ({
+            ad_group_criterion: { keyword: { text, match_type: "PHRASE" } },
+          })) as Row[];
+        }
+        if (query.includes("FROM ad_group ")) {
+          return [{ ad_group: { resource_name: opts.agRn } }] as Row[];
+        }
+        return [] as Row[];
+      },
+      async searchStructured<Row = unknown>(): Promise<Row[]> {
+        return [{ campaign: { id: opts.campaignId }, ad_group: { name: opts.agName } }] as Row[];
+      },
+      async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+        mutations.push({ customerId, operations });
+        return { results: operations.map((_, i) => ({ resource_name: `customers/1/x/${i}` })) };
+      },
+    };
+    return { client, mutations };
+  }
+
+  it("agCreateSkips: completes a previously-skipped ad group's missing RSA and keyword instead of abandoning it forever", async () => {
+    // Simulates a prior apply-fixes run that created the ad group and its first RSA,
+    // then died before the second RSA or the keyword — the same bug 1/2/3 pattern
+    // fixed in publish.ts, reproduced in apply-fixes' separate add-ad-group path.
+    // Because the ad group's NAME is already live, every later run used to route it
+    // straight to agCreateSkips and never look at it again.
+    const { client, mutations } = partialAdGroupClient({
+      campaignId: 100,
+      agName: "close deals ai",
+      agRn: "customers/1111111111/adGroups/55",
+      liveRsas: [
+        {
+          headlines: Array.from({ length: 15 }, (_, i) => `headline ${i}`),
+          descriptions: Array.from({ length: 4 }, (_, i) => `description ${i}`),
+        },
+      ],
+      liveKeywords: [],
+    });
+    currentClient = client;
+    const plan = writeAdGroupsPlan([{ campaignId: "100", adGroup: adGroupBody("close deals ai") }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("completed 1x RSA + 1 keywords it was missing");
+    // Only the missing RSA (the "alt headline"/"alt description" one) and the
+    // missing keyword are created — not a duplicate of the RSA already live, and
+    // not the ad group itself (the name collision is still respected).
+    expect(mutations).toHaveLength(2);
+    expect(mutations[0]!.operations[0]!.entity).toBe("ad_group_ad");
+    expect(mutations[0]!.operations[0]!.resource.ad_group).toBe("customers/1111111111/adGroups/55");
+    expect(mutations[1]!.operations[0]!.entity).toBe("ad_group_criterion");
+  });
+
+  it("agCreateSkips: a fully-complete already-live ad group is still just skipped, no reads wasted on mutations", async () => {
+    const { client, mutations } = partialAdGroupClient({
+      campaignId: 100,
+      agName: "close deals ai",
+      agRn: "customers/1111111111/adGroups/55",
+      liveRsas: [
+        {
+          headlines: Array.from({ length: 15 }, (_, i) => `headline ${i}`),
+          descriptions: Array.from({ length: 4 }, (_, i) => `description ${i}`),
+        },
+        {
+          headlines: Array.from({ length: 15 }, (_, i) => `alt headline ${i}`),
+          descriptions: Array.from({ length: 4 }, (_, i) => `alt description ${i}`),
+        },
+      ],
+      liveKeywords: ["close deals ai"],
+    });
+    currentClient = client;
+    const plan = writeAdGroupsPlan([{ campaignId: "100", adGroup: adGroupBody("close deals ai") }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("already in campaign 100, skipped");
+    expect(out).not.toContain("completed");
+    expect(mutations).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
