@@ -16,8 +16,10 @@ import {
   AdStatusChangeSchema,
   CampaignStatusChangeSchema,
   KeywordSchema,
+  PHONE_NUMBER_MESSAGE,
   SearchPartnersChangeSchema,
   displayPathPairErrors,
+  hasPhoneNumber,
   type AdGroup,
   type Keyword,
 } from "../lib/schema.js";
@@ -440,6 +442,10 @@ function rewritesErrors(rewrites: Array<Record<string, unknown>>): string[] {
       ...(new Set(ds).size !== ds.length ? [`ad ${adId}: duplicate description`] : []),
       ...hs.filter((h) => h.length > H_MAX).map((h) => `ad ${adId}: headline >${H_MAX} (${h.length}) ${pyRepr(h)}`),
       ...ds.filter((d) => d.length > D_MAX).map((d) => `ad ${adId}: description >${D_MAX} (${d.length}) ${pyRepr(d)}`),
+      // Caught here, not mid-apply: Google rejects a phone number in ad text
+      // unconditionally, and a rewrite that trips it fails the whole ad update.
+      ...hs.filter(hasPhoneNumber).map((h) => `ad ${adId}: headline ${pyRepr(h)}: ${PHONE_NUMBER_MESSAGE}`),
+      ...ds.filter(hasPhoneNumber).map((d) => `ad ${adId}: description ${pyRepr(d)}: ${PHONE_NUMBER_MESSAGE}`),
       // Optional display-path rewrite (path1/path2): same rules as /adkit create,
       // via the shared displayPathPairErrors parser. Omitted paths add nothing.
       ...displayPathPairErrors(rw.path1, rw.path2, `ad ${adId}: `),
@@ -470,6 +476,9 @@ function appendHeadlinesErrors(
         : []),
       ...(new Set(full).size !== full.length ? [`ad ${adId}: duplicate headline after append`] : []),
       ...add.filter((h) => h.length > H_MAX).map((h) => `ad ${adId}: headline >${H_MAX} (${h.length}) ${pyRepr(h)}`),
+      // Only the ADDED headlines: an already-live headline carrying a number is
+      // Google's to police, and failing the append over it would strand the ad.
+      ...add.filter(hasPhoneNumber).map((h) => `ad ${adId}: headline ${pyRepr(h)}: ${PHONE_NUMBER_MESSAGE}`),
     ];
   };
   return appends.flatMap(one);

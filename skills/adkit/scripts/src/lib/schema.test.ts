@@ -4,6 +4,7 @@ import {
   MAX_AD_GROUPS,
   RSAS_PER_AD_GROUP,
   displayPathPairErrors,
+  hasPhoneNumber,
   parseBrief,
 } from "./schema.js";
 
@@ -84,6 +85,55 @@ describe("Brief validation", () => {
 
   it("rejects version < 1", () => {
     expect(() => parseBrief({ ...validBrief(), version: 0 })).toThrow();
+  });
+});
+
+describe("phone numbers in ad text (Google's PHONE_NUMBER_IN_AD_TEXT policy)", () => {
+  // Caught at parse time rather than mid-apply: a policy rejection partway through
+  // a multi-ad-group publish leaves that group created but empty.
+  it.each([
+    "Call 443-534-9686",
+    "443.534.9686",
+    "443 534 9686",
+    "(443) 534-9686",
+    "+1 443-534-9686",
+    "+14435349686",
+    "4435349686",
+    "1-800-555-1212",
+  ])("flags %j as a phone number", (text) => {
+    expect(hasPhoneNumber(text)).toBe(true);
+  });
+
+  // The guard has to survive real ad copy: prices, years, ratings, ranges, and
+  // long ids all carry digit runs, and a false positive here blocks a valid brief.
+  it.each([
+    "Save 30% Today",
+    "Since 1995",
+    "Book Now for 2024",
+    "Save $1,299 Instantly",
+    "Free Shipping Over $50",
+    "Open 24/7 365 Days",
+    "Top 10 Picks for 2025",
+    "5 Star Rated by 1,200 Parents",
+    "Ages 6-12 Welcome",
+    "Serving Maryland Since 2013",
+    "20% Off First 3 Months",
+    "SKU 12345678901234",
+    "1,000,000 Sessions Booked",
+  ])("does not flag %j", (text) => {
+    expect(hasPhoneNumber(text)).toBe(false);
+  });
+
+  it("rejects a brief whose headline carries a phone number, naming call extensions in the message", () => {
+    const raw = validBrief();
+    raw.adGroups[0].responsiveSearchAds[0].headlines[0] = { text: "Call 443-534-9686" };
+    expect(() => parseBrief(raw)).toThrow(/call extension/);
+  });
+
+  it("rejects a brief whose description carries a phone number", () => {
+    const raw = validBrief();
+    raw.adGroups[0].responsiveSearchAds[0].descriptions[0] = { text: "Reach our team at 443-534-9686 any weekday." };
+    expect(() => parseBrief(raw)).toThrow(/PHONE_NUMBER_IN_AD_TEXT/);
   });
 });
 

@@ -56,8 +56,19 @@ const AD_STRENGTH_NAMES: ReadonlySet<string> = new Set([
  * an ad as needing work. So this throws on an out-of-range ordinal or unknown
  * string instead of casting past the check: `AdStrengthName` stays a proof, not
  * a type-level promise.
+ *
+ * An ABSENT field is a different case and is NOT an error: legacy expanded text
+ * ads carry no `ad_strength` at all, and `ads.sh report` does not filter ad type
+ * (unlike audit, whose query is RESPONSIVE_SEARCH_AD-only), so one 2013-era ETA
+ * in the account used to throw here and kill the entire report. A missing
+ * creative grade is ordinary data, so it decodes to the enum's own name for
+ * "no value": UNSPECIFIED. That is still a real member of {@link AdStrengthName}
+ * and still fails `=== "EXCELLENT"`, so nothing downstream is misled.
  */
-export function adStrengthName(strength: string | number): AdStrengthName {
+export function adStrengthName(strength: string | number | null | undefined): AdStrengthName {
+  if (strength === null || strength === undefined || strength === "") {
+    return "UNSPECIFIED";
+  }
   const decoded = typeof strength === "number" ? enums.AdStrength[strength] : strength;
   if (!AD_STRENGTH_NAMES.has(decoded)) {
     throw new Error(`Unknown AdStrength value: ${JSON.stringify(strength)}`);

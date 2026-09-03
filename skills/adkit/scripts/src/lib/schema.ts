@@ -61,15 +61,53 @@ const dropLegacyPin = (v: unknown): unknown => {
   return v;
 };
 
+/**
+ * A phone number appearing in ad text. Google rejects this unconditionally at
+ * APPLY time with `policy_topic_entries: [{ type: PROHIBITED, topic:
+ * PHONE_NUMBER_IN_AD_TEXT }]`, so it is exactly the kind of deterministic rule
+ * that belongs at the parse boundary rather than mid-publish — a policy rejection
+ * partway through a multi-ad-group run leaves that ad group created but empty
+ * while its siblings complete.
+ *
+ * Matches the North American shapes an author actually writes: `4435349686`,
+ * `443-534-9686`, `443.534.9686`, `443 534 9686`, `(443) 534-9686`, and any of
+ * those behind a `+1` country code. The digit-boundary guards keep a longer
+ * digit run (a SKU, an id) from matching a 10-digit window inside it.
+ */
+export const PHONE_NUMBER_PATTERN = /(?<!\d)(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?!\d)/;
+
+/** True when `text` carries a phone number Google would reject as PHONE_NUMBER_IN_AD_TEXT. */
+export function hasPhoneNumber(text: string): boolean {
+  return PHONE_NUMBER_PATTERN.test(text);
+}
+
+/**
+ * The one message every ad-text phone-number rejection uses, across the brief
+ * schema and the fixes-plan validators. Names the supported alternative, because
+ * "no phone numbers" alone reads as "you cannot surface a phone number at all" —
+ * `reference/create.md` actively encourages a call CTA for phone-intent themes.
+ */
+export const PHONE_NUMBER_MESSAGE =
+  "ad text may not contain a phone number (Google rejects it as PHONE_NUMBER_IN_AD_TEXT) — " +
+  "use a call extension / call asset to surface a number instead";
+
 export const HeadlineSchema = z.preprocess(
   dropLegacyPin,
-  z.object({ text: z.string().min(1).max(30) }).strict(),
+  z
+    .object({
+      text: z.string().min(1).max(30).refine((t) => !hasPhoneNumber(t), { message: PHONE_NUMBER_MESSAGE }),
+    })
+    .strict(),
 );
 export type Headline = z.infer<typeof HeadlineSchema>;
 
 export const DescriptionSchema = z.preprocess(
   dropLegacyPin,
-  z.object({ text: z.string().min(1).max(90) }).strict(),
+  z
+    .object({
+      text: z.string().min(1).max(90).refine((t) => !hasPhoneNumber(t), { message: PHONE_NUMBER_MESSAGE }),
+    })
+    .strict(),
 );
 export type Description = z.infer<typeof DescriptionSchema>;
 

@@ -53,6 +53,18 @@ describe("rewrites", () => {
     expect(errs.some((e) => e.includes("headline >30"))).toBe(true);
   });
 
+  it("phone number in a rewritten headline flagged (not left to fail mid-apply)", () => {
+    const hs = [...h(14), "Call 443-534-9686"];
+    const errs = validate({ rewrites: [{ adId: 1, headlines: hs, descriptions: d(4) }] }, {}, {});
+    expect(errs.some((e) => e.includes("PHONE_NUMBER_IN_AD_TEXT"))).toBe(true);
+  });
+
+  it("phone number in a rewritten description flagged", () => {
+    const ds = [...d(3), "Reach our team at (443) 534-9686 any weekday."];
+    const errs = validate({ rewrites: [{ adId: 1, headlines: h(15), descriptions: ds }] }, {}, {});
+    expect(errs.some((e) => e.includes("PHONE_NUMBER_IN_AD_TEXT"))).toBe(true);
+  });
+
   it("finalUrl-only repoint passes (no 15/4 required)", () => {
     const plan = { rewrites: [{ adId: 1, finalUrl: "https://www.example.com/ideas/x" }] };
     expect(validate(plan, {}, {})).toEqual([]);
@@ -134,6 +146,20 @@ describe("appendHeadlines", () => {
     const plan = { appendHeadlines: [{ adId: 9, add: ["headline 0"] }] };
     const errs = validate(plan, { 9: h(14) }, {});
     expect(errs.some((e) => e.includes("14H"))).toBe(true);
+  });
+
+  it("flags a phone number in an ADDED headline", () => {
+    const plan = { appendHeadlines: [{ adId: 9, add: ["Call 443-534-9686"] }] };
+    const errs = validate(plan, { 9: h(14) }, {});
+    expect(errs.some((e) => e.includes("PHONE_NUMBER_IN_AD_TEXT"))).toBe(true);
+  });
+
+  it("does not flag a phone number already live on the ad (only the append is ours to reject)", () => {
+    // Failing the append over pre-existing copy would strand the ad at 14 headlines
+    // for a violation this plan did not introduce and cannot fix.
+    const plan = { appendHeadlines: [{ adId: 9, add: ["new one"] }] };
+    const live = { 9: [...h(13), "Call 443-534-9686"] };
+    expect(validate(plan, live, {})).toEqual([]);
   });
 });
 
