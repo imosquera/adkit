@@ -10,12 +10,15 @@ import {
   buildLanguageOps,
   createAdGroup,
   createCallouts,
+  createKeywords,
   createNegativeKeywords,
   createPriceAsset,
   createResponsiveSearchAd,
   createSearchCampaign,
   createSitelinks,
   createStructuredSnippet,
+  findMissingKeywords,
+  findMissingResponsiveSearchAds,
   setCampaignStatus,
   targetDevices,
   targetUsCanada,
@@ -364,6 +367,114 @@ describe("createStructuredSnippet", () => {
     expect(asset.header).toBe("Service catalog");
     expect(asset.values).toEqual(["SOW generator", "Guardrail page", "Closeout"]);
     expect(rns).toHaveLength(1);
+  });
+});
+
+/** A fake AdsClient whose `search` returns canned rows, ignoring the query. */
+function makeFakeWithSearchRows(rows: unknown[]): { client: AdsClient; calls: Array<{ customerId: string; ops: AdsMutateOperation[] }> } {
+  const calls: Array<{ customerId: string; ops: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    search: async <Row = unknown>() => rows as Row[],
+    searchStructured: async () => [],
+    mutate: async (customerId, ops): Promise<MutateResult> => {
+      calls.push({ customerId, ops });
+      return { results: ops.map((_, i) => ({ resource_name: `rn/${i}` })) };
+    },
+  };
+  return { client, calls };
+}
+
+const AD_GROUP_RN = "customers/123/adGroups/5";
+
+describe("createKeywords", () => {
+  it("creates the given keywords (enabled) on the ad group", async () => {
+    const { client, calls } = makeFake();
+    const kws: Keyword[] = [{ text: "widget", matchType: "PHRASE" }];
+    const rns = await createKeywords(client, "123", kws, AD_GROUP_RN);
+    expect(rns).toHaveLength(1);
+    expect(calls[0]!.ops[0]!.resource["ad_group"]).toBe(AD_GROUP_RN);
+    expect(calls[0]!.ops[0]!.resource["status"]).toBe(enums.AdGroupCriterionStatus.ENABLED);
+  });
+
+  it("no-ops (no mutate call) when given no keywords — e.g. everything was already live", async () => {
+    const { client, calls } = makeFake();
+    expect(await createKeywords(client, "123", [], AD_GROUP_RN)).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("findMissingResponsiveSearchAds (bug 2: idempotent RSA creation)", () => {
+  const briefRsas = briefFixture({}).adGroups[0]!.responsiveSearchAds;
+
+  it("treats every brief RSA as missing when the ad group has none live", async () => {
+    const { client } = makeFakeWithSearchRows([]);
+    const missing = await findMissingResponsiveSearchAds(client, "123", AD_GROUP_RN, briefRsas);
+    expect(missing).toEqual(briefRsas);
+  });
+
+  it("excludes a brief RSA whose exact headline/description content is already live", async () => {
+    const live = briefRsas[0]!;
+    const { client } = makeFakeWithSearchRows([
+      {
+        ad_group_ad: {
+          ad: {
+            responsive_search_ad: {
+              headlines: live.headlines.map((h) => ({ text: h.text })),
+              descriptions: live.descriptions.map((d) => ({ text: d.text })),
+            },
+          },
+        },
+      },
+    ]);
+    const missing = await findMissingResponsiveSearchAds(client, "123", AD_GROUP_RN, briefRsas);
+    expect(missing).toEqual([briefRsas[1]]);
+  });
+
+  it("ignores headline/description ORDER when matching content (order-independent identity)", async () => {
+    const live = briefRsas[0]!;
+    const { client } = makeFakeWithSearchRows([
+      {
+        ad_group_ad: {
+          ad: {
+            responsive_search_ad: {
+              headlines: [...live.headlines].reverse().map((h) => ({ text: h.text })),
+              descriptions: [...live.descriptions].reverse().map((d) => ({ text: d.text })),
+            },
+          },
+        },
+      },
+    ]);
+    const missing = await findMissingResponsiveSearchAds(client, "123", AD_GROUP_RN, briefRsas);
+    expect(missing).toEqual([briefRsas[1]]);
+  });
+});
+
+describe("findMissingKeywords (bug 3: keyword creation on a reused ad group)", () => {
+  const briefKeywords: Keyword[] = [
+    { text: "widget", matchType: "PHRASE" },
+    { text: "gadget", matchType: "EXACT" },
+  ];
+
+  it("treats every brief keyword as missing when the ad group has none live", async () => {
+    const { client } = makeFakeWithSearchRows([]);
+    const missing = await findMissingKeywords(client, "123", AD_GROUP_RN, briefKeywords);
+    expect(missing).toEqual(briefKeywords);
+  });
+
+  it("excludes a brief keyword already live by text + match type, case-insensitively", async () => {
+    const { client } = makeFakeWithSearchRows([
+      { ad_group_criterion: { keyword: { text: "Widget", match_type: "PHRASE" } } },
+    ]);
+    const missing = await findMissingKeywords(client, "123", AD_GROUP_RN, briefKeywords);
+    expect(missing).toEqual([briefKeywords[1]]);
+  });
+
+  it("does not treat the same text under a different match type as already live", async () => {
+    const { client } = makeFakeWithSearchRows([
+      { ad_group_criterion: { keyword: { text: "widget", match_type: "EXACT" } } },
+    ]);
+    const missing = await findMissingKeywords(client, "123", AD_GROUP_RN, briefKeywords);
+    expect(missing).toEqual(briefKeywords); // "widget"/PHRASE still missing
   });
 });
 

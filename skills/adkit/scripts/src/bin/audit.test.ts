@@ -12,9 +12,12 @@
  * finding is produced (the Python baked in a single-advertiser constant).
  */
 
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
+import { KEEP_YAML_MCC, type AdsClient, type AdsMutateOperation, type MutateResult } from "../lib/auth.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import { parseDifferentiationProfile } from "../lib/brand.js";
 import { MIN_KEYWORDS, requireDigits } from "../audit/scoring.js";
@@ -32,6 +35,7 @@ import {
   resolveAuditCustomer,
   resolveCampaign,
   resolvePsiKey,
+  runAudit,
   searchTerms,
   withAuctionInsightFindings,
 } from "./audit.js";
@@ -99,6 +103,102 @@ describe("isManagerMetricsError (bug 4)", () => {
 
   it("ignores unrelated errors", () => {
     expect(isManagerMetricsError(new Error("some other failure"))).toBe(false);
+  });
+});
+
+describe("runAudit mccCustomerId resolution (bug 4: --mcc-customer-id doesn't fall back to .adkit.yaml)", () => {
+  let dir: string;
+  let cwd: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "audit-mcc-"));
+    cwd = process.cwd();
+    process.chdir(dir);
+  });
+
+  afterEach(() => {
+    process.chdir(cwd);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeCredentials(yaml: string): void {
+    writeFileSync(join(dir, ".adkit.yaml"), yaml);
+  }
+
+  /** An empty-campaigns fake — lets `runAudit` reach the client-construction seam and return cleanly. */
+  function emptyClient(): AdsClient {
+    return {
+      async search<Row = unknown>(): Promise<Row[]> {
+        return [] as Row[];
+      },
+      async searchStructured<Row = unknown>(): Promise<Row[]> {
+        return [] as Row[];
+      },
+      async mutate(): Promise<MutateResult> {
+        throw new Error("audit must be read-only — no mutate calls");
+      },
+    };
+  }
+
+  /** Run `runAudit` capturing the mccCustomerId seam value, with stdout/stderr silenced. */
+  async function runCapturingLogin(
+    argv: string[],
+    env: Record<string, string | undefined>,
+  ): Promise<{ code: number; seen: Array<string | null | typeof KEEP_YAML_MCC> }> {
+    const seen: Array<string | null | typeof KEEP_YAML_MCC> = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      const code = await runAudit(
+        argv,
+        (login) => {
+          seen.push(login);
+          return emptyClient();
+        },
+        env,
+      );
+      return { code, seen };
+    } finally {
+      process.stdout.write = origOut;
+      process.stderr.write = origErr;
+    }
+  }
+
+  it("uses --mcc-customer-id when given, even with a yaml value present", async () => {
+    writeCredentials("developer_token: t\nmcc_customer_id: 1111111111\n");
+    const { code, seen } = await runCapturingLogin(
+      ["--customer", "2222222222", "--mcc-customer-id", "3333333333"],
+      {},
+    );
+    expect(code).toBe(0);
+    expect(seen).toEqual(["3333333333"]);
+  });
+
+  it("falls back to GOOGLE_ADS_LOGIN_CUSTOMER_ID when the flag is omitted", async () => {
+    writeCredentials("developer_token: t\nmcc_customer_id: 1111111111\n");
+    const { seen } = await runCapturingLogin(
+      ["--customer", "2222222222"],
+      { GOOGLE_ADS_LOGIN_CUSTOMER_ID: "4444444444" },
+    );
+    expect(seen).toEqual(["4444444444"]);
+  });
+
+  it("falls back to .adkit.yaml's mcc_customer_id when neither the flag nor the env is set (the reported bug)", async () => {
+    // Before the fix: `mccCustomerId: values["mcc-customer-id"] ?? null` sent `null`
+    // (clearing the login header) instead of reading .adkit.yaml, so an MCC-managed
+    // account failed with "User doesn't have permission to access customer" even
+    // though the exact same yaml resolves fine for create/preflight.
+    writeCredentials("developer_token: t\nmcc_customer_id: 9999999999\n");
+    const { seen } = await runCapturingLogin(["--customer", "2222222222"], {});
+    expect(seen).toEqual(["9999999999"]);
+  });
+
+  it("sends no login header when neither the flag, env, nor yaml carries an mcc_customer_id", async () => {
+    writeCredentials("developer_token: t\n");
+    const { seen } = await runCapturingLogin(["--customer", "2222222222"], {});
+    expect(seen).toEqual([null]);
   });
 });
 

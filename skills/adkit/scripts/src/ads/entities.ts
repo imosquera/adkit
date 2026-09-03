@@ -619,6 +619,71 @@ export async function createAdGroup(
 }
 
 /**
+ * Order-independent identity for one RSA's copy: its headline and description text,
+ * sorted so word order in the brief doesn't matter. Two RSAs sharing an identity are
+ * the same ad. Used by {@link findMissingResponsiveSearchAds} to tell a brief RSA
+ * that's already live from one that still needs creating.
+ */
+function rsaContentKey(headlines: readonly string[], descriptions: readonly string[]): string {
+  return JSON.stringify([[...headlines].sort(), [...descriptions].sort()]);
+}
+
+/** One `ad_group_ad` row's RSA text, as returned by the {@link findMissingResponsiveSearchAds} query. */
+interface ExistingRsaRow {
+  ad_group_ad: {
+    ad: {
+      responsive_search_ad: {
+        headlines: Array<{ text: string }>;
+        descriptions: Array<{ text: string }>;
+      };
+    };
+  };
+}
+
+/**
+ * The subset of `briefRsas` that is NOT already live (by content — see
+ * {@link rsaContentKey}) on `adGroupRn`, in brief order.
+ *
+ * A freshly-created ad group has no live RSAs, so this is a no-op filter (every
+ * brief RSA is "missing", matching the old always-create-both behavior). A reused
+ * ad group left mid-populated by a prior failed run — e.g. a
+ * `CONCURRENT_MODIFICATION` rejection on one of two concurrent creates — gets only
+ * the RSA(s) it's still short of, instead of a duplicate stacked on top of the
+ * orphan that already landed.
+ */
+export async function findMissingResponsiveSearchAds(
+  client: AdsClient,
+  customerId: string,
+  adGroupRn: string,
+  briefRsas: readonly ResponsiveSearchAd[],
+): Promise<ResponsiveSearchAd[]> {
+  const query =
+    "SELECT ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.ad.responsive_search_ad.descriptions " +
+    "FROM ad_group_ad " +
+    `WHERE ad_group_ad.ad_group = '${gaqlStringLiteral(adGroupRn)}' ` +
+    "AND ad_group_ad.status != 'REMOVED'";
+  const rows = await client.search<ExistingRsaRow>(customerId, query);
+  const existingKeys = new Set(
+    rows.map((r) => {
+      const rsa = r.ad_group_ad.ad.responsive_search_ad;
+      return rsaContentKey(
+        rsa.headlines.map((h) => h.text),
+        rsa.descriptions.map((d) => d.text),
+      );
+    }),
+  );
+  return briefRsas.filter(
+    (rsa) =>
+      !existingKeys.has(
+        rsaContentKey(
+          rsa.headlines.map((h) => h.text),
+          rsa.descriptions.map((d) => d.text),
+        ),
+      ),
+  );
+}
+
+/**
  * Create one paused Responsive Search Ad on the ad group. No headline/description is
  * ever pinned (pinning is disabled skill-wide) so Google can test every combination.
  * Returns the AdGroupAd resource name. Called once per RSA in an ad group's
@@ -659,14 +724,17 @@ export async function createResponsiveSearchAd(
   return result.results[0]!.resource_name;
 }
 
-/** Create the ad group's positive keywords (enabled). Returns their criterion resource names. */
+/** Create the given positive keywords (enabled) on an ad group. Returns their criterion resource names. */
 export async function createKeywords(
   client: AdsClient,
   customerId: string,
-  adGroup: AdGroup,
+  keywords: readonly Keyword[],
   adGroupRn: string,
 ): Promise<string[]> {
-  const ops: AdsMutateOperation[] = adGroup.keywords.map((kw) => ({
+  if (keywords.length === 0) {
+    return [];
+  }
+  const ops: AdsMutateOperation[] = keywords.map((kw) => ({
     entity: "ad_group_criterion",
     operation: "create",
     resource: {
@@ -676,6 +744,46 @@ export async function createKeywords(
     },
   }));
   return (await client.mutate(customerId, ops)).results.map((r) => r.resource_name);
+}
+
+/** Order-independent identity for one live/brief keyword: its text (case-folded) and match type. */
+function keywordKey(text: string, matchType: string): string {
+  return `${text.trim().toLowerCase()}::${matchType}`;
+}
+
+/** One `ad_group_criterion` row's keyword, as returned by the {@link findMissingKeywords} query. */
+interface ExistingKeywordRow {
+  ad_group_criterion: { keyword: { text: string; match_type: string } };
+}
+
+/**
+ * The subset of `keywords` that is NOT already a live (non-removed) keyword
+ * criterion on `adGroupRn`, in brief order.
+ *
+ * A freshly-created ad group has no live keywords, so this is a no-op filter
+ * (every brief keyword is "missing", matching the old always-create behavior). A
+ * reused ad group that survived a prior run which died before reaching keyword
+ * creation — e.g. an earlier RSA-creation failure — gets the keywords it's still
+ * missing instead of being skipped forever just because the ad group already
+ * existed.
+ */
+export async function findMissingKeywords(
+  client: AdsClient,
+  customerId: string,
+  adGroupRn: string,
+  keywords: readonly Keyword[],
+): Promise<Keyword[]> {
+  const query =
+    "SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type " +
+    "FROM ad_group_criterion " +
+    `WHERE ad_group_criterion.ad_group = '${gaqlStringLiteral(adGroupRn)}' ` +
+    "AND ad_group_criterion.type = 'KEYWORD' " +
+    "AND ad_group_criterion.status != 'REMOVED'";
+  const rows = await client.search<ExistingKeywordRow>(customerId, query);
+  const existingKeys = new Set(
+    rows.map((r) => keywordKey(r.ad_group_criterion.keyword.text, r.ad_group_criterion.keyword.match_type)),
+  );
+  return keywords.filter((kw) => !existingKeys.has(keywordKey(kw.text, kw.matchType)));
 }
 
 /**

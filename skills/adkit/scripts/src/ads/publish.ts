@@ -29,6 +29,8 @@ import {
   createStructuredSnippet,
   findExistingAdGroup,
   findExistingCampaign,
+  findMissingKeywords,
+  findMissingResponsiveSearchAds,
   targetDevices,
   targetUsCanada,
 } from "./entities.js";
@@ -40,8 +42,9 @@ import type { Brief, Failure } from "../lib/schema.js";
 export interface ExecAdGroup {
   name: string;
   adGroupId: string | null;
-  // One id per created RSA (RSAS_PER_AD_GROUP on a freshly-created ad group,
-  // empty for a reused ad group that got no freshly-created RSA).
+  // One id per RSA created THIS run — RSAS_PER_AD_GROUP on a freshly-created ad
+  // group; on a reused ad group, only the ones it was still missing (possibly
+  // none, if every brief RSA was already live — see findMissingResponsiveSearchAds).
   responsiveSearchAdIds: readonly string[];
   keywordResourceNames: readonly string[];
 }
@@ -101,7 +104,11 @@ export function makeRunOutcome(
  * search campaign, its targeting + campaign-level assets, then each ad group with
  * its RSA and keywords. An existing campaign of the same name is reused (unless
  * `archiveExisting`, which archives same-named campaigns first and always creates
- * fresh). Newly-created ad groups get keywords; reused ones do not.
+ * fresh). RSA and keyword creation are both idempotent by content (see
+ * {@link findMissingResponsiveSearchAds} / {@link findMissingKeywords}): a reused
+ * ad group only gets the RSAs/keywords it doesn't already have live, so a rerun
+ * after a partial failure (mid-brief or mid-ad-group) fills the gap instead of
+ * duplicating what already landed or skipping what never got created.
  *
  * The `client` is injected (the Python `publish_v1` called `load_client()`
  * internally) so this is unit-testable with a fake `AdsClient`; the bin/create
@@ -165,47 +172,52 @@ export async function publishV1(
         () => findExistingAdGroup(client, customerId, briefAg, results.campaignId!),
         briefAg.name,
       );
-      let shouldCreateKeywords: boolean;
       if (existingAdGroup) {
         slot.adGroupId = existingAdGroup;
-        shouldCreateKeywords = false;
       } else {
         slot.adGroupId = await step(
           "create-ad-group",
           () => createAdGroup(client, customerId, briefAg, results.campaignId!),
           briefAg.name,
         );
-        shouldCreateKeywords = true;
       }
-      // allSettled (not Promise.all): if one RSA create fails after the other
-      // already succeeded live in Ads, record the id that DID land before
-      // surfacing the failure. Promise.all would discard that id on rejection —
-      // since a rerun always re-creates RSAs (no findExisting for them, unlike
-      // the ad group), a silently-dropped id would mean the next run creates yet
-      // another RSA on top of the orphan, drifting past RSAS_PER_AD_GROUP.
+      // Sequential, not concurrent: two mutateResources calls creating RSAs on the
+      // same brand-new ad group at once get rejected by the API with
+      // CONCURRENT_MODIFICATION ("Multiple requests were attempting to modify the
+      // same resource at once"). `ids` is assigned into `slot` up front and pushed
+      // into in place, so a failure partway through still leaves every id that DID
+      // land recorded — findMissingResponsiveSearchAds finds those same RSAs again
+      // on a rerun (by content) instead of creating a duplicate on top of them.
       slot.responsiveSearchAdIds = await step(
         "create-responsive-search-ad",
         async () => {
-          const outcomes = await Promise.allSettled(
-            briefAg.responsiveSearchAds.map((rsa) => createResponsiveSearchAd(client, customerId, rsa, slot.adGroupId!)),
+          const missing = await findMissingResponsiveSearchAds(
+            client,
+            customerId,
+            slot.adGroupId!,
+            briefAg.responsiveSearchAds,
           );
-          const ids = outcomes.flatMap((o) => (o.status === "fulfilled" ? [o.value] : []));
+          const ids: string[] = [];
           slot.responsiveSearchAdIds = ids;
-          const failed = outcomes.find((o): o is PromiseRejectedResult => o.status === "rejected");
-          if (failed) {
-            throw failed.reason;
+          for (const rsa of missing) {
+            ids.push(await createResponsiveSearchAd(client, customerId, rsa, slot.adGroupId!));
           }
           return ids;
         },
         briefAg.name,
       );
-      if (shouldCreateKeywords) {
-        slot.keywordResourceNames = await step(
-          "create-keywords",
-          () => createKeywords(client, customerId, briefAg, slot.adGroupId!),
-          briefAg.name,
-        );
-      }
+      // Idempotent by content (findMissingKeywords), and run for every ad group —
+      // new or reused — not just newly-created ones: an ad group that survived an
+      // earlier run which died before reaching this step (e.g. the RSA step above,
+      // which runs first) would otherwise be permanently skipped on every retry.
+      slot.keywordResourceNames = await step(
+        "create-keywords",
+        async () => {
+          const missing = await findMissingKeywords(client, customerId, slot.adGroupId!, briefAg.keywords);
+          return createKeywords(client, customerId, missing, slot.adGroupId!);
+        },
+        briefAg.name,
+      );
     }
   } catch (exc) {
     if (exc instanceof StepError) {

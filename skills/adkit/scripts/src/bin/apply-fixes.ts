@@ -1398,7 +1398,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       if (failedRsa) {
         throw failedRsa.reason;
       }
-      const kwRns = await createKeywords(client, customer, g.adGroup, agRn);
+      const kwRns = await createKeywords(client, customer, g.adGroup.keywords, agRn);
       console.log(
         `  + ad group ${pyRepr(g.name)} -> campaign ${pyStr(g.campaignId)}: ` +
           `${g.adGroup.responsiveSearchAds.length}x RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,

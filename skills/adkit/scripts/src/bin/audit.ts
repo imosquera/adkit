@@ -68,6 +68,7 @@ import {
 } from "../gaql/builders.js";
 import type { AdsClient } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
+import { MCC_CUSTOMER_ID_ENV } from "../cli/args.js";
 import type { SearchArgs } from "../gaql/search-args.js";
 import {
   EMPTY_PROFILE,
@@ -1187,9 +1188,13 @@ export function managerMetricsHint(): string {
  * mistake) surfaces as {@link managerMetricsHint} instead of the raw error 59.
  * Other errors propagate to the run guard's generic formatter.
  */
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  clientFactory: typeof loadReadClient = loadReadClient,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
   try {
-    return await runAudit(argv);
+    return await runAudit(argv, clientFactory, env);
   } catch (err) {
     if (isManagerMetricsError(err)) {
       emitJson(errorEnvelope(managerMetricsHint()));
@@ -1199,7 +1204,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 }
 
-export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<number> {
+export async function runAudit(
+  argv: string[] = process.argv.slice(2),
+  clientFactory: typeof loadReadClient = loadReadClient,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
   const args = parseAudarArgs(argv);
   // Required to operate: resolves, or asks once on a TTY, or fails loudly. Never guesses.
   let customer: string;
@@ -1209,8 +1218,19 @@ export async function runAudit(argv: string[] = process.argv.slice(2)): Promise<
     emitJson(customerIdErrorEnvelope(exc));
     return 2;
   }
-  requireDigits("--mcc-customer-id", args.mccCustomerId);
-  const client = loadReadClient(args.mccCustomerId);
+  // Same flag -> env -> yaml precedence as every other command (conventions.md):
+  // a flag-only read left `ads.sh audit` unable to reach an MCC-managed account
+  // via .adkit.yaml the way `create`/`preflight` already can.
+  //
+  // Coerce to string before resolveTier: an unquoted all-digits value (the
+  // documented format) parses as a YAML number, and resolveTier's blank check
+  // calls `.trim()`, which a number doesn't have.
+  const yamlMcc = loadConfig().mcc_customer_id;
+  const mccCustomerId =
+    resolveTier(args.mccCustomerId, env[MCC_CUSTOMER_ID_ENV], yamlMcc !== undefined ? String(yamlMcc) : undefined) ??
+    null;
+  requireDigits("--mcc-customer-id", mccCustomerId);
+  const client = clientFactory(mccCustomerId);
 
   // --campaign accepts an id (digits) or a name substring; resolve the name to an id once.
   let campaignId = args.campaign;
