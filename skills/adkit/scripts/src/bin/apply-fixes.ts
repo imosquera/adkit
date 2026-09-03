@@ -101,6 +101,8 @@ import { emitJson, errorEnvelope, ok } from "../cli/output.js";
 import { pyRepr, pyStr } from "../cli/py-format.js";
 import {
   addAdGroupsPlan,
+  assetKey,
+  assetRemoveTexts,
   adGroupStatusPlan,
   adStatusPlan,
   biddingPlan,
@@ -119,6 +121,7 @@ import {
 } from "../fixes/plan.js";
 import {
   applyAdGroupNamesQuery,
+  applyCampaignAssetsQuery,
   applyAdGroupStatusesQuery,
   applyAdStatusesQuery,
   applyBiddingGuardQuery,
@@ -423,6 +426,47 @@ export async function livePositiveKeywords(
       r.ad_group_criterion.resource_name,
     );
     acc.set(r.ad_group.id, inner);
+    return acc;
+  }, new Map<number, Map<string, string>>());
+}
+
+/** One live campaign_asset row: the link to remove plus the asset text that names it. */
+interface CampaignAssetRow {
+  campaign: { id: number };
+  campaign_asset: { resource_name: string };
+  asset?: {
+    callout_asset?: { callout_text?: string };
+    sitelink_asset?: { link_text?: string };
+  };
+}
+
+/**
+ * campaignId -> {assetKey(text) -> campaignAsset resource name} for one extension
+ * field type, so a `callouts`/`sitelinks` block can resolve a remove-by-text to the
+ * link it must unlink — the same read/resolve shape `livePositiveKeywords` gives
+ * the keywords section.
+ */
+export async function liveCampaignAssets(
+  client: AdsClient,
+  customerId: string,
+  campaignIds: ReadonlyArray<string | number>,
+  fieldType: "CALLOUT" | "SITELINK",
+): Promise<Map<number, Map<string, string>>> {
+  if (campaignIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.searchStructured<CampaignAssetRow>(
+    customerId,
+    applyCampaignAssetsQuery(campaignIds, fieldType),
+  );
+  return rows.reduce((acc, r) => {
+    const text = r.asset?.callout_asset?.callout_text ?? r.asset?.sitelink_asset?.link_text;
+    if (!text) {
+      return acc;
+    }
+    const perCampaign = acc.get(r.campaign.id) ?? new Map<string, string>();
+    perCampaign.set(assetKey(text), r.campaign_asset.resource_name);
+    acc.set(r.campaign.id, perCampaign);
     return acc;
   }, new Map<number, Map<string, string>>());
 }
@@ -740,6 +784,51 @@ async function fillAdGroupRsasAndKeywords(
 }
 
 /**
+ * Unlink every asset a `callouts`/`sitelinks` block lists under `remove`, resolving
+ * each text against the live map. One mutate for the whole block.
+ *
+ * Removes the CAMPAIGN_ASSET link, never the underlying Asset: assets are
+ * account-level and shareable, so deleting one would reach beyond the campaign the
+ * plan names, and Google refuses to delete an asset still in use. Unlinking is what
+ * "retract this claim from this campaign" actually means.
+ *
+ * Validation has already rejected a remove naming something not live, so an
+ * unresolved text here would be a bug rather than operator error — it is skipped
+ * rather than sent as an undefined resource name.
+ */
+async function removeCampaignAssets(
+  client: AdsClient,
+  customer: string,
+  block: Record<string, unknown>,
+  live: ReadonlyMap<number, ReadonlyMap<string, string>>,
+  label: string,
+): Promise<void> {
+  const texts = assetRemoveTexts(block);
+  if (texts.length === 0) {
+    return;
+  }
+  const perCampaign = live.get(asId(block.campaignId)) ?? new Map<string, string>();
+  const resolved = texts.flatMap((t) => {
+    const rn = perCampaign.get(assetKey(t));
+    return rn === undefined ? [] : [{ text: t, rn }];
+  });
+  if (resolved.length === 0) {
+    return;
+  }
+  await client.mutate(
+    customer,
+    resolved.map(({ rn }) => ({
+      entity: "campaign_asset",
+      operation: "remove" as const,
+      resource: { resource_name: rn },
+    })),
+  );
+  for (const { text } of resolved) {
+    console.log(`  - ${label} ${pyRepr(text)} removed from campaign ${pyStr(block.campaignId)}`);
+  }
+}
+
+/**
  * Apply a fixes plan. Dry-run by default; `--apply` mutates. Returns a process exit
  * code: 0 on success (incl. dry-run), 1 on validation failure, 2 on bad args.
  */
@@ -888,6 +977,16 @@ export async function main(
     customer,
     section(plan, "languages").map((l) => l.campaignId as string | number),
   );
+  // Live campaign assets, fetched only for the sections that actually carry a
+  // remove — an add-only plan keeps its previous query count.
+  const calloutRemoveCampaigns = section(plan, "callouts")
+    .filter((c) => assetRemoveTexts(c).length > 0)
+    .map((c) => c.campaignId as string | number);
+  const sitelinkRemoveCampaigns = section(plan, "sitelinks")
+    .filter((sl) => assetRemoveTexts(sl).length > 0)
+    .map((sl) => sl.campaignId as string | number);
+  const liveCallouts = await liveCampaignAssets(client, customer, calloutRemoveCampaigns, "CALLOUT");
+  const liveSitelinks = await liveCampaignAssets(client, customer, sitelinkRemoveCampaigns, "SITELINK");
   // Split into the two plain boolean maps the pure plan.ts functions expect:
   // current target_search_network (searchPartnersPlan's no-op-skip check) and
   // current target_google_search (searchPartnersPreconditionErrors' ENABLE guard).
@@ -901,7 +1000,18 @@ export async function main(
   // statusSkips split below, just computed earlier since validate() needs it.
   const [biddingChanges, biddingSkips] = biddingPlan(section(plan, "bidding"), bidding);
 
-  const errs = validate(plan, live, budgets, livePos, liveSpGoogleSearch, liveAdSt.adGroup, bidding, biddingChanges);
+  const errs = validate(
+    plan,
+    live,
+    budgets,
+    livePos,
+    liveSpGoogleSearch,
+    liveAdSt.adGroup,
+    bidding,
+    biddingChanges,
+    liveCallouts,
+    liveSitelinks,
+  );
   if (errs.length > 0) {
     console.log("VALIDATION FAILED:");
     for (const e of errs) {
@@ -1038,8 +1148,14 @@ export async function main(
       const add = Array.isArray(a.add) ? (a.add as string[]) : [];
       return `append ${add.filter((h) => !cur.includes(h)).length} headlines to ad ${pyStr(a.adId)}`;
     }),
-    ...section(plan, "sitelinks").map((s) => `+${lenOf(s.add)} sitelinks on campaign ${pyStr(s.campaignId)}`),
-    ...section(plan, "callouts").map((c) => `+${lenOf(c.add)} callouts on campaign ${pyStr(c.campaignId)}`),
+    ...section(plan, "sitelinks").map(
+      (s) =>
+        `+${lenOf(s.add)} sitelinks, -${assetRemoveTexts(s).length} removed on campaign ${pyStr(s.campaignId)}`,
+    ),
+    ...section(plan, "callouts").map(
+      (c) =>
+        `+${lenOf(c.add)} callouts, -${assetRemoveTexts(c).length} removed on campaign ${pyStr(c.campaignId)}`,
+    ),
     ...section(plan, "negatives").map((n) => {
       const fresh = newNegatives(n, liveNeg).length;
       return (
@@ -1249,6 +1365,7 @@ export async function main(
         await client.mutate(customer, [linkOp]);
         console.log(`  sitelink ${pyRepr(s.text)} -> campaign ${pyStr(sl.campaignId)}`);
       }
+      await removeCampaignAssets(client, customer, sl, liveSitelinks, "sitelink");
     } catch (exc) {
       recordFailure(`sitelinks (campaign ${pyStr(sl.campaignId)})`, exc, slugsForIds([sl.campaignId], stateIndex.byCampaignId));
     }
@@ -1277,6 +1394,7 @@ export async function main(
         await client.mutate(customer, [linkOp]);
         console.log(`  callout ${pyRepr(text)} -> campaign ${pyStr(co.campaignId)}`);
       }
+      await removeCampaignAssets(client, customer, co, liveCallouts, "callout");
     } catch (exc) {
       recordFailure(`callouts (campaign ${pyStr(co.campaignId)})`, exc, slugsForIds([co.campaignId], stateIndex.byCampaignId));
     }

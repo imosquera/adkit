@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parse as yamlParseForTest } from "yaml";
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
-import type { SearchArgs } from "../gaql/search-args.js";
+import { toGaql, type SearchArgs } from "../gaql/search-args.js";
 import { parseBrief } from "../lib/schema.js";
 
 // The shell resolves its client via loadClient; the test swaps in a fake (mirrors the
@@ -143,6 +143,145 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   failWriteForCampaignName = null;
+});
+
+// ---------------------------------------------------------------------------
+// callouts/sitelinks remove (bug 8). The sections were add-only, so a published
+// callout that became a FALSE CLAIM (the source idea dropped the thing it
+// promises) could not be retracted through a plan at all — only by hand-writing a
+// campaign_asset remove mutation.
+// ---------------------------------------------------------------------------
+
+describe("callouts/sitelinks remove (bug 8)", () => {
+  const CALLOUT_RN = "customers/1111111111/campaignAssets/100~55~CALLOUT";
+  const SITELINK_RN = "customers/1111111111/campaignAssets/100~66~SITELINK";
+
+  /** A client serving live campaign_asset rows for the remove-resolution query. */
+  function assetClient(): { client: AdsClient; mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> } {
+    const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+    const client: AdsClient = {
+      async search<Row = unknown>(): Promise<Row[]> {
+        return [] as Row[];
+      },
+      async searchStructured<Row = unknown>(_c: string, args: SearchArgs): Promise<Row[]> {
+        const gaql = toGaql(args);
+        if (!gaql.includes("FROM campaign_asset")) {
+          return [] as Row[];
+        }
+        return (
+          gaql.includes("'CALLOUT'")
+            ? [
+                {
+                  campaign: { id: 100 },
+                  campaign_asset: { resource_name: CALLOUT_RN },
+                  asset: { callout_asset: { callout_text: "Payment Plans Available" } },
+                },
+              ]
+            : [
+                {
+                  campaign: { id: 100 },
+                  campaign_asset: { resource_name: SITELINK_RN },
+                  asset: { sitelink_asset: { link_text: "Pricing" } },
+                },
+              ]
+        ) as Row[];
+      },
+      async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+        mutations.push({ customerId, operations });
+        return { results: operations.map((_, i) => ({ resource_name: `customers/1/x/${i}` })) };
+      },
+    };
+    return { client, mutations };
+  }
+
+  function writeAssetPlan(section: string, blocks: Array<Record<string, unknown>>): string {
+    const p = join(dir, "plan.json");
+    writeFileSync(p, JSON.stringify({ customerId: "1111111111", [section]: blocks }));
+    return p;
+  }
+
+  it("unlinks the campaign_asset (not the shared Asset) for a callout remove", async () => {
+    const { client, mutations } = assetClient();
+    currentClient = client;
+    const plan = writeAssetPlan("callouts", [{ campaignId: "100", remove: ["Payment Plans Available"] }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"], {})).toBe(0);
+    const out = cap.text();
+
+    expect(mutations).toHaveLength(1);
+    const op = mutations[0]!.operations[0]!;
+    // campaign_asset, not asset: assets are account-level and shareable, and
+    // Google refuses to delete one still in use.
+    expect(op.entity).toBe("campaign_asset");
+    expect(op.operation).toBe("remove");
+    expect(op.resource.resource_name).toBe(CALLOUT_RN);
+    expect(out).toContain("callout 'Payment Plans Available' removed from campaign 100");
+  });
+
+  it("resolves a sitelink remove given as an object", async () => {
+    const { client, mutations } = assetClient();
+    currentClient = client;
+    const plan = writeAssetPlan("sitelinks", [{ campaignId: "100", remove: [{ text: "Pricing" }] }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"], {})).toBe(0);
+    cap.text();
+
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]!.operations[0]!.resource.resource_name).toBe(SITELINK_RN);
+  });
+
+  it("fails validation and mutates nothing when the remove names an unpublished claim", async () => {
+    const { client, mutations } = assetClient();
+    currentClient = client;
+    const plan = writeAssetPlan("callouts", [{ campaignId: "100", remove: ["Never Published"] }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"], {})).toBe(1);
+    const out = cap.text();
+
+    expect(out).toContain("VALIDATION FAILED");
+    expect(out).toContain("cannot remove");
+    expect(mutations).toEqual([]);
+  });
+
+  it("dry-run narrates the removal and mutates nothing", async () => {
+    const { client, mutations } = assetClient();
+    currentClient = client;
+    const plan = writeAssetPlan("callouts", [{ campaignId: "100", remove: ["Payment Plans Available"] }]);
+
+    const cap = captureStdout();
+    expect(await main([plan], {})).toBe(0); // no --apply
+    const out = cap.text();
+
+    expect(out).toContain("-1 removed on campaign 100");
+    expect(mutations).toEqual([]);
+  });
+
+  it("does not query live assets for an add-only plan (no extra round-trip)", async () => {
+    let assetQueries = 0;
+    const client: AdsClient = {
+      async search<Row = unknown>(): Promise<Row[]> {
+        return [] as Row[];
+      },
+      async searchStructured<Row = unknown>(_c: string, args: SearchArgs): Promise<Row[]> {
+        if (toGaql(args).includes("FROM campaign_asset")) assetQueries += 1;
+        return [] as Row[];
+      },
+      async mutate(_c: string, ops: AdsMutateOperation[]): Promise<MutateResult> {
+        return { results: ops.map((_, i) => ({ resource_name: `rn/${i}` })) };
+      },
+    };
+    currentClient = client;
+    const plan = writeAssetPlan("callouts", [{ campaignId: "100", add: ["Free Delivery"] }]);
+
+    const cap = captureStdout();
+    expect(await main([plan, "--apply"], {})).toBe(0);
+    cap.text();
+
+    expect(assetQueries).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

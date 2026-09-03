@@ -667,6 +667,41 @@ export function applyAdStatusesQuery(
 }
 
 /**
+ * Live (non-removed) campaign assets of one extension field type, carrying the
+ * CampaignAsset resource name plus the asset's own text — everything a
+ * `callouts`/`sitelinks` remove needs to match a plan entry by text and then
+ * unlink it. Ids guarded digits-only.
+ *
+ * Selects both `callout_text` and `link_text`: which one is populated follows
+ * from `fieldType`, and asking for both keeps a single builder serving both
+ * sections rather than duplicating it per asset kind. The unused one comes back
+ * absent, which the caller already handles.
+ *
+ * A remove targets the CAMPAIGN_ASSET link, never the underlying Asset. Assets
+ * are account-level and shareable across campaigns, so deleting one would reach
+ * beyond the campaign the plan names — and Google refuses to delete an asset
+ * still in use anyway. Unlinking is the operation that means "retract this claim
+ * from this campaign".
+ */
+export function applyCampaignAssetsQuery(
+  campaignIds: ReadonlyArray<string | number>,
+  fieldType: string,
+): SearchArgs {
+  return inListQuery(
+    "campaign_asset",
+    [
+      "campaign.id",
+      "campaign_asset.resource_name",
+      "asset.callout_asset.callout_text",
+      "asset.sitelink_asset.link_text",
+    ],
+    "campaign.id",
+    campaignIds,
+    [`campaign_asset.field_type = '${fieldType}'`, "campaign_asset.status != 'REMOVED'"],
+  );
+}
+
+/**
  * Live (non-removed) ad-group names per campaign, so an `adGroups` (add-ad-group)
  * fixes block can skip a name that already exists in the target campaign (the
  * add is idempotent — re-running never creates a duplicate ad group). Ids guarded.

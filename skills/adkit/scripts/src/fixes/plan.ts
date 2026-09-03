@@ -484,7 +484,69 @@ function appendHeadlinesErrors(
   return appends.flatMap(one);
 }
 
-function sitelinksErrors(sitelinkBlocks: Array<Record<string, unknown>>): string[] {
+/**
+ * Live campaign-asset texts per campaign: {campaignId -> {text -> campaignAsset
+ * resource name}}. The value is what a remove mutates; the key is what a plan
+ * entry names.
+ */
+export type LiveAssetMap = ReadonlyMap<number, ReadonlyMap<string, string>> | Record<number, Record<string, string>>;
+
+/** Case-insensitive identity for one asset text, so a plan need not match Google's casing. */
+export function assetKey(text: string): string {
+  return text.trim().toLowerCase();
+}
+
+/** Read one campaign's live asset texts from a Map/record of either supported shape. */
+function liveAssetKeysFor(map: LiveAssetMap | null | undefined, id: number | null): Set<string> {
+  if (map === null || map === undefined || id === null) {
+    return new Set<string>();
+  }
+  const raw = map instanceof Map ? map.get(id) : (map as Record<number, Record<string, string>>)[id];
+  if (raw === undefined || raw === null) {
+    return new Set<string>();
+  }
+  return new Set(raw instanceof Map ? [...raw.keys()] : Object.keys(raw));
+}
+
+/**
+ * Shared shape check for a `callouts`/`sitelinks` block: it must name a numeric
+ * campaign and do something. `remove` entries must already be live — the same
+ * contract `keywords` uses, so a plan that names a claim which is not actually
+ * published fails loudly instead of silently doing nothing.
+ */
+function assetBlockErrors(
+  label: string,
+  block: Record<string, unknown>,
+  removeTexts: string[],
+  liveAssets: LiveAssetMap | null | undefined,
+  hasAdds: boolean,
+): string[] {
+  const cid = block.campaignId;
+  const liveKeys = liveAssetKeysFor(liveAssets, asInt(cid));
+  return [
+    ...(cid === undefined || cid === null ? [`${label}: entry missing campaignId`] : []),
+    ...(cid !== undefined && cid !== null && !isDigitString(cid)
+      ? [`${label} campaign ${pyRepr(cid)}: campaignId must be numeric`]
+      : []),
+    ...(!hasAdds && removeTexts.length === 0
+      ? [`${label} campaign ${pyStr(cid)}: empty operation lists (add/remove)`]
+      : []),
+    // Only enforced when live state was supplied; callers that don't fetch it
+    // (tests, other call sites) keep validating everything else.
+    ...(liveAssets === undefined || liveAssets === null
+      ? []
+      : removeTexts.flatMap((t) =>
+          liveKeys.has(assetKey(t))
+            ? []
+            : [`${label} campaign ${pyStr(cid)}: cannot remove ${pyRepr(t)} — not live on the campaign`],
+        )),
+  ];
+}
+
+function sitelinksErrors(
+  sitelinkBlocks: Array<Record<string, unknown>>,
+  liveAssets?: LiveAssetMap | null,
+): string[] {
   const one = (s: Record<string, unknown>): string[] => {
     const text = s.text as string;
     const d1 = s.description1;
@@ -499,15 +561,41 @@ function sitelinksErrors(sitelinkBlocks: Array<Record<string, unknown>>): string
   };
   return sitelinkBlocks.flatMap((sl) => {
     const add = Array.isArray(sl.add) ? (sl.add as Array<Record<string, unknown>>) : [];
-    return add.flatMap(one);
+    const remove = assetRemoveTexts(sl);
+    return [
+      ...add.flatMap(one),
+      ...assetBlockErrors("sitelinks", sl, remove, liveAssets, add.length > 0),
+    ];
   });
 }
 
-function calloutsErrors(calloutBlocks: Array<Record<string, unknown>>): string[] {
+function calloutsErrors(
+  calloutBlocks: Array<Record<string, unknown>>,
+  liveAssets?: LiveAssetMap | null,
+): string[] {
   return calloutBlocks.flatMap((co) => {
     const add = Array.isArray(co.add) ? (co.add as string[]) : [];
-    return add.filter((c) => c.length > CALLOUT_MAX).map((c) => `callout >${CALLOUT_MAX} (${c.length}): ${pyRepr(c)}`);
+    const remove = assetRemoveTexts(co);
+    return [
+      ...add.filter((c) => c.length > CALLOUT_MAX).map((c) => `callout >${CALLOUT_MAX} (${c.length}): ${pyRepr(c)}`),
+      ...assetBlockErrors("callouts", co, remove, liveAssets, add.length > 0),
+    ];
   });
+}
+
+/**
+ * A block's `remove` list as plain texts. Accepts either a bare string
+ * (`remove: ["Payment Plans Available"]`) or a `{ text }` object, mirroring how
+ * `add` differs between callouts (strings) and sitelinks (objects) — so one
+ * remove spelling works for both sections.
+ */
+export function assetRemoveTexts(block: Record<string, unknown>): string[] {
+  const raw = Array.isArray(block.remove) ? block.remove : [];
+  return raw
+    .map((item) =>
+      typeof item === "string" ? item : typeof (item as { text?: unknown })?.text === "string" ? String((item as { text: string }).text) : "",
+    )
+    .filter((t) => t !== "");
 }
 
 function budgetsErrors(
@@ -998,6 +1086,11 @@ export function validate(
   // FR-002) — defaults to the raw plan section so existing callers that don't compute
   // the skip partition (tests, other call sites) keep validating every bidding block.
   biddingBlocks: Array<Record<string, unknown>> | undefined = undefined,
+  // Live campaign assets per field type, so a callouts/sitelinks `remove` can be
+  // checked against what is actually published. Optional: callers that don't
+  // fetch it keep validating every other rule.
+  liveCallouts: LiveAssetMap | null | undefined = undefined,
+  liveSitelinks: LiveAssetMap | null | undefined = undefined,
 ): string[] {
   const arr = (key: string): Array<Record<string, unknown>> =>
     Array.isArray(plan[key]) ? (plan[key] as Array<Record<string, unknown>>) : [];
@@ -1005,8 +1098,8 @@ export function validate(
     ...negativesErrors(arr("negatives")),
     ...rewritesErrors(arr("rewrites")),
     ...appendHeadlinesErrors(arr("appendHeadlines"), liveHeadlines),
-    ...sitelinksErrors(arr("sitelinks")),
-    ...calloutsErrors(arr("callouts")),
+    ...sitelinksErrors(arr("sitelinks"), liveSitelinks),
+    ...calloutsErrors(arr("callouts"), liveCallouts),
     ...budgetsErrors(arr("budgets"), budgets),
     ...biddingErrors(biddingBlocks ?? arr("bidding"), biddingState ?? new Map()),
     ...keywordsErrors(arr("keywords"), livePositive),

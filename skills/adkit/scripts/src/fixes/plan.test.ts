@@ -189,6 +189,59 @@ describe("sitelinks and callouts", () => {
   });
 });
 
+// ---------- callouts/sitelinks remove (bug 8) ----------
+
+describe("callouts and sitelinks remove", () => {
+  // A published callout can become a FALSE CLAIM when the source idea changes
+  // ("Payment Plans Available" after payment plans were dropped). The honest-use
+  // gate is binding, so retracting it has to be a first-class plan operation
+  // rather than a raw campaign_asset mutation.
+  const liveCallouts = { 1: { "payment plans available": "customers/9/campaignAssets/1~11~CALLOUT" } };
+  const liveSitelinks = { 1: { pricing: "customers/9/campaignAssets/1~22~SITELINK" } };
+  const v = (plan: Record<string, unknown>) =>
+    validate(plan, {}, {}, undefined, undefined, undefined, undefined, undefined, liveCallouts, liveSitelinks);
+
+  it("accepts removing a callout that is live", () => {
+    expect(v({ callouts: [{ campaignId: 1, remove: ["Payment Plans Available"] }] })).toEqual([]);
+  });
+
+  it("matches the live text case-insensitively", () => {
+    expect(v({ callouts: [{ campaignId: 1, remove: ["PAYMENT plans AVAILABLE"] }] })).toEqual([]);
+  });
+
+  it("rejects removing a callout that is not live, naming it", () => {
+    const errs = v({ callouts: [{ campaignId: 1, remove: ["Never Published"] }] });
+    expect(errs.some((e) => e.includes("cannot remove") && e.includes("Never Published"))).toBe(true);
+  });
+
+  it("accepts a sitelink remove given as an object, not just a bare string", () => {
+    expect(v({ sitelinks: [{ campaignId: 1, remove: [{ text: "Pricing" }] }] })).toEqual([]);
+  });
+
+  it("allows add and remove in the same block", () => {
+    const errs = v({
+      callouts: [{ campaignId: 1, add: ["Free Delivery"], remove: ["Payment Plans Available"] }],
+    });
+    expect(errs).toEqual([]);
+  });
+
+  it("flags a block with neither add nor remove", () => {
+    const errs = v({ callouts: [{ campaignId: 1 }] });
+    expect(errs.some((e) => e.includes("empty operation lists"))).toBe(true);
+  });
+
+  it("flags a non-numeric campaignId", () => {
+    const errs = v({ callouts: [{ campaignId: "abc", add: ["ok"] }] });
+    expect(errs.some((e) => e.includes("campaignId must be numeric"))).toBe(true);
+  });
+
+  it("skips the liveness check when no live state was supplied (other rules still run)", () => {
+    // Callers that don't fetch live assets — an add-only plan, other call sites —
+    // must not start failing every remove.
+    expect(validate({ callouts: [{ campaignId: 1, remove: ["anything"] }] }, {}, {})).toEqual([]);
+  });
+});
+
 // ---------- coercion ----------
 
 describe("coercion", () => {
