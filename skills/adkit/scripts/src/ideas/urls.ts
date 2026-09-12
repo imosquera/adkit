@@ -9,13 +9,16 @@
  * No stdout, no sys.exit — bin/create formats and dies on the failure list.
  */
 
-import type { Brief } from "../lib/schema.js";
+import { isDisplayBrief, type AnyBrief } from "../lib/schema.js";
 
 /**
  * Every destination URL the brief publishes: one per RSA (RSAS_PER_AD_GROUP per ad
- * group) + one per sitelink. Deduped, order-preserving.
+ * group) + one per sitelink, or one per display ad. Deduped, order-preserving.
  */
-export function finalUrls(brief: Brief): string[] {
+export function finalUrls(brief: AnyBrief): string[] {
+  if (isDisplayBrief(brief)) {
+    return [...new Set(brief.adGroups.flatMap((ag) => ag.responsiveDisplayAds.map((ad) => ad.finalUrl)))];
+  }
   const rsaUrls = brief.adGroups.flatMap((ag) => ag.responsiveSearchAds.map((rsa) => String(rsa.finalUrl)));
   const sitelinkUrls = brief.campaign.sitelinks.map((sl) => String(sl.finalUrl));
   return [...new Set([...rsaUrls, ...sitelinkUrls])];
@@ -52,7 +55,7 @@ export async function urlUnreachableReason(url: string): Promise<string | null> 
  * Empty when every URL is reachable. Catches the classic /ideas/ prefix slip
  * and leftover TODO slugs before any Google Ads mutation runs.
  */
-export async function unreachableUrls(brief: Brief): Promise<Array<[string, string]>> {
+export async function unreachableUrls(brief: AnyBrief): Promise<Array<[string, string]>> {
   const probed = await Promise.all(
     finalUrls(brief).map(async (url): Promise<[string, string | null]> => [url, await urlUnreachableReason(url)]),
   );

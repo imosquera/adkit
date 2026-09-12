@@ -24,7 +24,10 @@ export {
   KeywordSchema,
   MATCH_TYPES,
   MAX_AD_GROUPS,
+  parseAnyBrief,
   parseBrief,
+  DisplayBriefSchema,
+  ResponsiveDisplayAdSchema,
   PriceAssetSchema,
   ResponsiveSearchAdSchema,
   SitelinkSchema,
@@ -32,6 +35,10 @@ export {
 } from "./lib/schema.js";
 export type {
   AdGroup,
+  AnyBrief,
+  DisplayAdGroup,
+  DisplayBrief,
+  ResponsiveDisplayAd,
   AdGroupStatusChange,
   BidStrategy,
   Brief,
@@ -85,8 +92,8 @@ export { createMcpReadClient, loadReadClient, McpNotConfiguredError, toMcpSearch
 export type { McpAdsClient, McpSearchParams } from "./lib/mcp-client.js";
 
 // --- Publish path ---
-export { makeExecResults, makeRunOutcome, publishV1 } from "./ads/publish.js";
-export type { ExecAdGroup, ExecResults, RunOutcome } from "./ads/publish.js";
+export { makeExecResults, makeRunOutcome, publishDisplay, publishV1 } from "./ads/publish.js";
+export type { DisplayExecResults, ExecAdGroup, ExecResults, RunOutcome } from "./ads/publish.js";
 export { formatGoogleAdsError, sdkVersion, StepError, step } from "./ads/errors.js";
 
 // --- Differentiation profile (dynamic me-too-copy reference) ---

@@ -8,7 +8,7 @@
  */
 
 import { serializeBrief } from "./store.js";
-import type { Brief } from "../lib/schema.js";
+import type { AnyBrief } from "../lib/schema.js";
 
 /**
  * The result of comparing two briefs. `changed` is the single fact both commands
@@ -71,7 +71,7 @@ function diffOps(a: readonly string[], b: readonly string[]): DiffOp[] {
  * changed lines and a little surrounding context are rendered, so a small edit shows
  * a small, scoped diff (FR-009).
  */
-export function diffBriefs(current: Brief | null, proposed: Brief): BriefDiff {
+export function diffBriefs(current: AnyBrief | null, proposed: AnyBrief): BriefDiff {
   const currentLines = current === null ? [] : serializeBrief(current).split("\n");
   const proposedLines = serializeBrief(proposed).split("\n");
   const ops = diffOps(currentLines, proposedLines);

@@ -612,6 +612,9 @@ function loadBriefAtSlug(root: string, slug: string, dir: string = ADBRIEFS_DIR)
     }
     throw exc;
   }
+  if ((data as { type?: unknown } | null)?.type === "display") {
+    throw new AdbriefsError(`${path} is a display brief; update supports search campaigns only`);
+  }
   try {
     return parseBrief(data);
   } catch (exc) {

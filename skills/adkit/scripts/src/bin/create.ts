@@ -25,7 +25,8 @@ import { dirname, join } from "node:path";
 import { parse as yamlParse, stringify as yamlStringify, YAMLParseError } from "yaml";
 import { z } from "zod";
 
-import { publishV1 } from "../ads/publish.js";
+import { publishDisplay, publishV1 } from "../ads/publish.js";
+import { loadDisplayImages, type ImageLibrary } from "../ads/images.js";
 import {
   AdbriefsError,
   BRIEF_YAML_STRINGIFY_OPTS,
@@ -48,7 +49,7 @@ import {
 } from "../ideas/parse.js";
 import { unreachableUrls } from "../ideas/urls.js";
 import { loadClient } from "../lib/auth.js";
-import { parseBrief, type Brief } from "../lib/schema.js";
+import { isDisplayBrief, parseAnyBrief, type AnyBrief, type DisplayBrief } from "../lib/schema.js";
 
 /**
  * Repo root — bare idea slugs resolve under `<root>/ideas/processed/`. Read at
@@ -295,10 +296,10 @@ function resolveBriefPath(input: string, topN: number): string {
 // ---------- core orchestration ----------
 
 /**
- * Read + parse a brief YAML into a typed {@link Brief}. On a zod validation error,
+ * Read + parse a brief YAML (search or display) into a typed {@link AnyBrief}. On a zod validation error,
  * print the issue list (mirroring the Python `ValidationError` listing) and die.
  */
-export function readBrief(path: string): Brief {
+export function readBrief(path: string): AnyBrief {
   if (!existsSync(path)) {
     die(`brief not found: ${path}`);
   }
@@ -320,7 +321,7 @@ export function readBrief(path: string): Brief {
     throw exc;
   }
   try {
-    return parseBrief(data);
+    return parseAnyBrief(data);
   } catch (exc) {
     if (exc instanceof z.ZodError) {
       const lines = exc.errors.map((e) => `  - ${e.path.map((p) => String(p)).join(".")}: ${e.message}`);
@@ -334,7 +335,7 @@ export function readBrief(path: string): Brief {
  * Fail before any Google Ads mutation if a destination URL 404s (or is otherwise
  * unreachable). Catches the classic /ideas/ prefix slip and leftover TODO slugs.
  */
-async function assertFinalUrlsReachable(brief: Brief): Promise<void> {
+async function assertFinalUrlsReachable(brief: AnyBrief): Promise<void> {
   const failures = await unreachableUrls(brief);
   if (failures.length > 0) {
     const lines = failures.map(([url, reason]) => `  - ${url} → ${reason}`);
@@ -351,8 +352,50 @@ async function assertFinalUrlsReachable(brief: Brief): Promise<void> {
  * that persists the answer (see `cli/customer-id.ts`). Never guesses; off a TTY it
  * throws rather than proceeding against an account nobody named.
  */
-export async function customerIdFor(brief: Brief): Promise<string> {
+export async function customerIdFor(brief: AnyBrief): Promise<string> {
   return resolveTargetCustomerId(brief.customerId);
+}
+
+/** Download the display brief's images; die listing every fetch or slot-spec failure. */
+async function loadImagesOrDie(brief: DisplayBrief): Promise<ImageLibrary> {
+  let loaded: Awaited<ReturnType<typeof loadDisplayImages>>;
+  try {
+    loaded = await loadDisplayImages(brief);
+  } catch (exc) {
+    die(`image download failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+  }
+  if (loaded.issues.length > 0) {
+    die("images don't fit their slots:\n" + loaded.issues.map((i) => `  - ${i}`).join("\n"));
+  }
+  return loaded.images;
+}
+
+/** Pure: the search-specific dry-run fields. */
+function searchDryRunSummary(brief: Exclude<AnyBrief, DisplayBrief>): Record<string, unknown> {
+  const keywordCount = brief.adGroups.reduce((n, ag) => n + ag.keywords.length, 0);
+  return {
+    keywordCount,
+    keywordWarning: keywordCountWarning(keywordCount),
+    sitelinkCount: brief.campaign.sitelinks.length,
+    calloutCount: brief.campaign.callouts.length,
+    willPublish:
+      `budget → campaign(PAUSED) → ${brief.campaign.sitelinks.length} sitelinks → ` +
+      `${brief.campaign.callouts.length} callouts → ${brief.adGroups.length}x ` +
+      `(ad-group → 2x RSA(PAUSED) → keywords). Existing campaign of the same name is reused.`,
+  };
+}
+
+/** Pure: the display-specific dry-run fields. */
+function displayDryRunSummary(brief: DisplayBrief, images: ImageLibrary): Record<string, unknown> {
+  const adCount = brief.adGroups.reduce((n, ag) => n + ag.responsiveDisplayAds.length, 0);
+  return {
+    imageCount: images.size,
+    displayAdCount: adCount,
+    willPublish:
+      `budget → display campaign(PAUSED) → ${images.size} image assets → ${brief.adGroups.length}x ` +
+      `(ad-group → audiences → responsive display ads(PAUSED)); ${adCount} ads total. ` +
+      "Existing campaign of the same name is reused.",
+  };
 }
 
 /**
@@ -401,10 +444,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       await assertFinalUrlsReachable(brief);
     }
 
+    // Download + spec-check every image before anything else touches the account (dry-run too).
+    const images = isDisplayBrief(brief) ? await loadImagesOrDie(brief) : null;
+
     const customerId = await customerIdFor(brief);
     const agNames = brief.adGroups.map((ag) => ag.name);
-
-    const keywordCount = brief.adGroups.reduce((n, ag) => n + ag.keywords.length, 0);
 
     // Stage the brief against its adbriefs/ source of truth and surface the diff
     // BEFORE any publish — the review-the-change gate (dry-run shows it, --apply
@@ -443,20 +487,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         customerIdUsed: customerId,
         adGroupCount: brief.adGroups.length,
         adGroups: agNames,
-        keywordCount,
-        keywordWarning: keywordCountWarning(keywordCount),
-        sitelinkCount: brief.campaign.sitelinks.length,
-        calloutCount: brief.campaign.callouts.length,
+        ...(isDisplayBrief(brief) ? displayDryRunSummary(brief, images!) : searchDryRunSummary(brief)),
         briefPath: adbriefsPath,
         briefDiff: { changed: briefDiff.changed, added: briefDiff.added, removed: briefDiff.removed },
         willWriteBrief: adbriefsPath,
         // The state file (name ↔ live ids) is written after a successful publish, once
         // Google has assigned the ids — so a dry-run only announces the intent.
         willWriteState: statePath,
-        willPublish:
-          `budget → campaign(PAUSED) → ${brief.campaign.sitelinks.length} sitelinks → ` +
-          `${brief.campaign.callouts.length} callouts → ${agNames.length}x ` +
-          `(ad-group → 2x RSA(PAUSED) → keywords). Existing campaign of the same name is reused.`,
       });
       return 0;
     }
@@ -474,7 +511,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
 
     const client = loadClient();
-    const outcome = await publishV1(client, customerId, brief, archiveExisting);
+    const outcome = isDisplayBrief(brief)
+      ? await publishDisplay(client, customerId, brief, images!, archiveExisting)
+      : await publishV1(client, customerId, brief, archiveExisting);
 
     // On a successful publish, persist the live-id state file (name ↔ campaignId/
     // adGroupId/adId) beside the intent brief. This is what lets `/adkit update` later
@@ -498,7 +537,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       // failure the envelope's `failure` is the brief↔live divergence signal (FR-010).
       briefSynced: outcome.failure === null,
       stateSynced,
-      note: `Campaign + RSAs created PAUSED. Brief persisted at ${adbriefsPath} (local source of truth; manage live via the Ads UI / /adkit audit).`,
+      note: `Campaign + ${isDisplayBrief(brief) ? "display ads" : "RSAs"} created PAUSED. Brief persisted at ${adbriefsPath} (local source of truth; manage live via the Ads UI / /adkit audit).`,
     });
     return outcome.failure === null ? 0 : 1;
   } catch (exc) {

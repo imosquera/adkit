@@ -438,6 +438,9 @@ export type AdGroup = z.infer<typeof AdGroupSchema>;
 
 export const BriefSchema = z
   .object({
+    // Absent on every pre-display brief; "search" is the implied kind. Left
+    // un-defaulted so existing briefs round-trip byte-identically (diffBriefs).
+    type: z.literal("search").optional(),
     name: z.string().regex(AD_NAME_PATTERN, {
       message: "must be kebab-case, 2–64 chars, starting with a letter",
     }),
@@ -470,6 +473,121 @@ export function parseBrief(data: unknown): Brief {
 // ---- fixes-plan models (apply path; see bin/apply-fixes.ts) ----
 // coerce_numbers_to_str: plan JSON may carry the id as a number; coerce so the
 // digits-only string pattern validates it.
+// ---------- Display briefs (type: "display") ----------
+
+/**
+ * An image in the shared GCS bucket, as `gs://bucket/path` or its public
+ * `https://storage.googleapis.com/bucket/path` form. Parsed to the https form —
+ * the bucket is publicly readable, so a plain fetch downloads it.
+ */
+export const ImageRefSchema = z
+  .string()
+  .transform((v) => (v.startsWith("gs://") ? `https://storage.googleapis.com/${v.slice("gs://".length)}` : v))
+  .pipe(httpsUrl);
+
+export const MAX_RDA_IMAGES = 15;
+export const MAX_RDA_LOGOS = 5;
+export const MAX_RDA_TEXTS = 5;
+
+export const ResponsiveDisplayAdSchema = z
+  .object({
+    marketingImages: z.array(ImageRefSchema).min(1).max(MAX_RDA_IMAGES), // landscape 1.91:1
+    squareMarketingImages: z.array(ImageRefSchema).min(1).max(MAX_RDA_IMAGES), // 1:1
+    logoImages: z.array(ImageRefSchema).max(MAX_RDA_LOGOS).default([]), // 4:1
+    squareLogoImages: z.array(ImageRefSchema).max(MAX_RDA_LOGOS).default([]), // 1:1
+    headlines: z.array(HeadlineSchema).min(1).max(MAX_RDA_TEXTS),
+    longHeadline: DescriptionSchema,
+    descriptions: z.array(DescriptionSchema).min(1).max(MAX_RDA_TEXTS),
+    businessName: z.string().min(1).max(25),
+    finalUrl: httpsUrl,
+  })
+  .strict();
+export type ResponsiveDisplayAd = z.infer<typeof ResponsiveDisplayAdSchema>;
+
+/** A numeric Google Ads id (the trailing segment of a resource name). */
+const adsId = z.string().regex(/^[0-9]+$/, { message: "must be a numeric Google Ads id" });
+
+/**
+ * Audiences an ad group targets, by id (look them up in Tools > Audience manager or
+ * via GAQL `user_interest` / `user_list` / `custom_audience`). `mode: "observation"`
+ * reports on them without restricting reach.
+ */
+export const DisplayAudiencesSchema = z
+  .object({
+    mode: z.enum(["targeting", "observation"]).default("targeting"),
+    customAudiences: z.array(adsId).default([]),
+    userInterests: z.array(adsId).default([]), // affinity + in-market segments
+    userLists: z.array(adsId).default([]), // remarketing / customer match
+  })
+  .strict();
+export type DisplayAudiences = z.infer<typeof DisplayAudiencesSchema>;
+
+export const DisplayAdGroupSchema = z
+  .object({
+    name: z.string().min(1),
+    defaultBidMicros: z.number().int().gt(0).max(15_000_000),
+    audiences: DisplayAudiencesSchema.default({}),
+    // Google's audience expansion beyond the listed audiences.
+    optimizedTargeting: z.boolean().default(false),
+    responsiveDisplayAds: z.array(ResponsiveDisplayAdSchema).min(1),
+  })
+  .strict()
+  .superRefine((ag, ctx) => {
+    const a = ag.audiences;
+    if (a.customAudiences.length + a.userInterests.length + a.userLists.length === 0 && !ag.optimizedTargeting) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "list at least one audience, or set optimizedTargeting: true (otherwise the ad group targets everyone)",
+        path: ["audiences"],
+      });
+    }
+  });
+export type DisplayAdGroup = z.infer<typeof DisplayAdGroupSchema>;
+
+export const DisplayCampaignSchema = z
+  .object({
+    name: z.string().min(1),
+    budgetMicros: z.number().int().gt(0),
+    bidStrategy: z.enum(["maximize-clicks", "maximize-conversions"]).default("maximize-clicks"),
+    cpcBidCeilingMicros: z.number().int().gt(0).optional(),
+    devices: z.array(z.enum(DEVICES)).min(1).optional(),
+  })
+  .strict()
+  .refine((c) => c.cpcBidCeilingMicros === undefined || c.bidStrategy === "maximize-clicks", {
+    message: "cpcBidCeilingMicros only valid when bidStrategy='maximize-clicks'",
+    path: ["cpcBidCeilingMicros"],
+  });
+export type DisplayCampaign = z.infer<typeof DisplayCampaignSchema>;
+
+export const DisplayBriefSchema = z
+  .object({
+    type: z.literal("display"),
+    name: z.string().regex(AD_NAME_PATTERN, { message: "must be kebab-case, 2–64 chars, starting with a letter" }),
+    version: z.number().int().gte(1),
+    customerId: z.string().regex(CUSTOMER_ID_PATTERN, { message: "must be 10 digits" }).optional(),
+    campaign: DisplayCampaignSchema,
+    adGroups: z.array(DisplayAdGroupSchema).min(1).max(MAX_AD_GROUPS),
+  })
+  .strict()
+  .refine((b) => new Set(b.adGroups.map((ag) => ag.name)).size === b.adGroups.length, {
+    message: "adGroups[].name must be unique within a brief",
+    path: ["adGroups"],
+  });
+export type DisplayBrief = z.infer<typeof DisplayBriefSchema>;
+
+export type AnyBrief = Brief | DisplayBrief;
+
+/** True when `brief` is a display brief — the one discriminator every consumer branches on. */
+export function isDisplayBrief(brief: AnyBrief): brief is DisplayBrief {
+  return brief.type === "display";
+}
+
+/** Parse either brief kind, dispatching on `type` (absent = search). Throws `ZodError`. */
+export function parseAnyBrief(data: unknown): AnyBrief {
+  const type = data !== null && typeof data === "object" ? (data as { type?: unknown }).type : undefined;
+  return type === "display" ? DisplayBriefSchema.parse(data) : BriefSchema.parse(data);
+}
+
 export const CampaignStatusChangeSchema = z
   .object({
     campaignId: z.coerce.string().regex(/^[0-9]+$/),
@@ -525,6 +643,10 @@ export const FAILURE_STEPS = [
   "create-ad-group",
   "create-responsive-search-ad",
   "create-keywords",
+  "create-display-campaign",
+  "create-image-assets",
+  "create-audiences",
+  "create-responsive-display-ad",
 ] as const;
 export type FailureStep = (typeof FAILURE_STEPS)[number];
 
