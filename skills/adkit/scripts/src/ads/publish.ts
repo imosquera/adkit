@@ -38,7 +38,10 @@ import {
   findMissingKeywords,
   findMissingResponsiveSearchAds,
   targetDevices,
-  targetUsCanada,
+  effectiveLocations,
+  resolveLocations,
+  targetRadius,
+  targetLocations,
   ALL_DEVICES,
 } from "./entities.js";
 import type { ImageLibrary } from "./images.js";
@@ -131,6 +134,9 @@ export async function publishV1(
   const executorVersion = sdkVersion();
   const results = makeExecResults(brief);
   try {
+    const geoTargets = await step("resolve-locations", () =>
+      resolveLocations(client, customerId, effectiveLocations(brief.campaign)),
+    );
     if (archiveExisting) {
       await step("archive-existing-campaign", () =>
         archiveCampaignsByName(client, customerId, brief.campaign.name),
@@ -138,7 +144,7 @@ export async function publishV1(
     }
     const existingCampaign = archiveExisting
       ? null
-      : await step("find-existing-campaign", () => findExistingCampaign(client, customerId, brief));
+      : await step("find-existing-campaign", () => findExistingCampaign(client, customerId, brief, "SEARCH"));
     if (existingCampaign) {
       results.campaignId = existingCampaign[0];
       results.budgetId = existingCampaign[1];
@@ -149,10 +155,17 @@ export async function publishV1(
       results.campaignId = await step("create-search-campaign", () =>
         createSearchCampaign(client, customerId, brief, results.budgetId!),
       );
-      await step("target-location", () => targetUsCanada(client, customerId, results.campaignId!));
-      await step("target-devices", () =>
-        targetDevices(client, customerId, results.campaignId!, brief.campaign.devices),
-      );
+    }
+    // Targeting is reconciled on reused campaigns too: a prior run that died after
+    // creating the campaign but before targeting must not leave it serving worldwide.
+    await step("target-location", () => targetLocations(client, customerId, results.campaignId!, geoTargets));
+    await step("target-radius", () =>
+      targetRadius(client, customerId, results.campaignId!, brief.campaign.radiusTargets ?? []),
+    );
+    await step("target-devices", () =>
+      targetDevices(client, customerId, results.campaignId!, brief.campaign.devices),
+    );
+    if (!existingCampaign) {
       await step("create-negative-keywords", () =>
         createNegativeKeywords(client, customerId, results.campaignId!, brief.campaign.negativeKeywords),
       );
@@ -283,6 +296,9 @@ export async function publishDisplay(
     })),
   };
   try {
+    const geoTargets = await step("resolve-locations", () =>
+      resolveLocations(client, customerId, effectiveLocations(brief.campaign)),
+    );
     if (archiveExisting) {
       await step("archive-existing-campaign", () =>
         archiveCampaignsByName(client, customerId, brief.campaign.name),
@@ -290,7 +306,7 @@ export async function publishDisplay(
     }
     const existingCampaign = archiveExisting
       ? null
-      : await step("find-existing-campaign", () => findExistingCampaign(client, customerId, brief));
+      : await step("find-existing-campaign", () => findExistingCampaign(client, customerId, brief, "DISPLAY"));
     if (existingCampaign) {
       results.campaignId = existingCampaign[0];
       results.budgetId = existingCampaign[1];
@@ -299,12 +315,16 @@ export async function publishDisplay(
       results.campaignId = await step("create-display-campaign", () =>
         createDisplayCampaign(client, customerId, brief, results.budgetId!),
       );
-      await step("target-location", () => targetUsCanada(client, customerId, results.campaignId!));
-      // Display defaults to every device (unlike search's mobile exclusion) — most display inventory is mobile.
-      await step("target-devices", () =>
-        targetDevices(client, customerId, results.campaignId!, brief.campaign.devices ?? [...ALL_DEVICES]),
-      );
     }
+    // Reconciled on reused campaigns too (see publishV1).
+    await step("target-location", () => targetLocations(client, customerId, results.campaignId!, geoTargets));
+    await step("target-radius", () =>
+      targetRadius(client, customerId, results.campaignId!, brief.campaign.radiusTargets ?? []),
+    );
+    // Display defaults to every device (unlike search's mobile exclusion) — most display inventory is mobile.
+    await step("target-devices", () =>
+      targetDevices(client, customerId, results.campaignId!, brief.campaign.devices ?? [...ALL_DEVICES]),
+    );
     const assets = await step("create-image-assets", () => createImageAssets(client, customerId, images));
     results.imageAssetResourceNames = [...assets.values()];
     for (const [idx, briefAg] of brief.adGroups.entries()) {
@@ -334,6 +354,7 @@ export async function publishDisplay(
             customerId,
             slot.adGroupId!,
             briefAg.responsiveDisplayAds,
+            assets,
           );
           const ids: string[] = [];
           slot.responsiveDisplayAdIds = ids;

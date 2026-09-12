@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { enums } from "google-ads-api";
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
-import { parseBrief, type Keyword } from "../lib/schema.js";
+import { RadiusTargetSchema, parseBrief, type Keyword } from "../lib/schema.js";
 import {
   ALL_DEVICES,
   ENGLISH_LANGUAGE_CONSTANT,
@@ -17,11 +17,16 @@ import {
   createSearchCampaign,
   createSitelinks,
   createStructuredSnippet,
+  findExistingCampaign,
   findMissingKeywords,
   findMissingResponsiveSearchAds,
   setCampaignStatus,
+  effectiveLocations,
+  proximityInfo,
+  resolveLocations,
+  targetRadius,
   targetDevices,
-  targetUsCanada,
+  targetLocations,
 } from "./entities.js";
 
 /** A recording fake: captures every mutate batch, returns synthetic resource names. */
@@ -131,10 +136,81 @@ describe("createResponsiveSearchAd", () => {
   });
 });
 
-describe("targetUsCanada", () => {
-  it("sets both geos on the campaign", async () => {
+/** A fake whose `search` answers by query substring; mutates are recorded. */
+function makeSearchFake(answer: (query: string) => unknown[]): ReturnType<typeof makeFake> {
+  const fake = makeFake();
+  return { ...fake, client: { ...fake.client, search: async <Row>(_c: string, q: string) => answer(q) as Row[] } };
+}
+
+describe("resolveLocations", () => {
+  it("defaults to US + Canada without querying", async () => {
+    const { client } = makeSearchFake(() => {
+      throw new Error("should not query");
+    });
+    expect(await resolveLocations(client, "123", undefined)).toEqual([...GEO_TARGETS]);
+  });
+
+  it("resolves ids and canonical city names to resource names, in brief order", async () => {
+    const queries: string[] = [];
+    const { client } = makeSearchFake((q) => {
+      queries.push(q);
+      return q.includes("canonical_name IN")
+        ? [{ geo_target_constant: { resource_name: "geoTargetConstants/1014221", id: 1014221, canonical_name: "Chicago,Illinois,United States" } }]
+        : [{ geo_target_constant: { resource_name: "geoTargetConstants/9061285", id: "9061285", canonical_name: "Toronto,Ontario,Canada" } }];
+    });
+    expect(await resolveLocations(client, "123", ["Chicago,Illinois,United States", "9061285"])).toEqual([
+      "geoTargetConstants/1014221",
+      "geoTargetConstants/9061285",
+    ]);
+    expect(queries).toHaveLength(2);
+  });
+
+  it("fails naming every unknown location", async () => {
+    const { client } = makeSearchFake(() => []);
+    await expect(resolveLocations(client, "123", ["Chicgo,Illinois,United States"])).rejects.toThrow(/Chicgo/);
+  });
+});
+
+describe("findExistingCampaign", () => {
+  it("refuses to reuse a same-named campaign from another channel", async () => {
+    const { client } = makeSearchFake(() => [
+      { campaign: { resource_name: CAMPAIGN_RN, advertising_channel_type: enums.AdvertisingChannelType.SEARCH } },
+    ]);
+    await expect(findExistingCampaign(client, "123", { campaign: { name: "x" } }, "DISPLAY")).rejects.toThrow(
+      /already exists as a SEARCH campaign/,
+    );
+    expect(await findExistingCampaign(client, "123", { campaign: { name: "x" } }, "SEARCH")).toEqual([CAMPAIGN_RN, null]);
+  });
+});
+
+describe("targetLocations", () => {
+  it("creates missing geos and removes live ones the brief dropped (country narrowed to a city)", async () => {
+    const { client, calls } = makeSearchFake(() => [
+      { campaign_criterion: { resource_name: "cc/us", location: { geo_target_constant: "geoTargetConstants/2840" } } },
+      { campaign_criterion: { resource_name: "cc/dev", device: { type: 2 }, bid_modifier: 0 } },
+    ]);
+    await targetLocations(client, "123", CAMPAIGN_RN, ["geoTargetConstants/1014221"]);
+    expect(calls[0]!.ops).toEqual([
+      {
+        entity: "campaign_criterion",
+        operation: "create",
+        resource: { campaign: CAMPAIGN_RN, location: { geo_target_constant: "geoTargetConstants/1014221" } },
+      },
+      { entity: "campaign_criterion", operation: "remove", resource: { resource_name: "cc/us" } },
+    ]);
+  });
+
+  it("no-ops on a reused campaign already targeting exactly the brief's geos", async () => {
+    const { client, calls } = makeSearchFake(() =>
+      GEO_TARGETS.map((geo) => ({ campaign_criterion: { resource_name: geo, location: { geo_target_constant: geo } } })),
+    );
+    await targetLocations(client, "123", CAMPAIGN_RN, [...GEO_TARGETS]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("sets both default geos on a fresh campaign", async () => {
     const { client, calls } = makeFake();
-    await targetUsCanada(client, "123", CAMPAIGN_RN);
+    await targetLocations(client, "123", CAMPAIGN_RN, [...GEO_TARGETS]);
 
     expect(calls[0]!.customerId).toBe("123");
     const ops = calls[0]!.ops;
@@ -296,6 +372,17 @@ describe("targetDevices", () => {
     const excludedTypes = new Set(ops.map((op) => (op.resource["device"] as { type: number }).type));
     expect(excludedTypes).toEqual(new Set([enums.Device.MOBILE]));
     expect(ops.every((op) => op.resource["bid_modifier"] === 0.0)).toBe(true);
+  });
+
+  it("on a reused campaign, skips excluded devices and updates a live non-zero modifier", async () => {
+    const { client, calls } = makeSearchFake(() => [
+      { campaign_criterion: { resource_name: "cc/mobile", device: { type: "MOBILE" }, bid_modifier: 0 } },
+      { campaign_criterion: { resource_name: "cc/tablet", device: { type: enums.Device.TABLET }, bid_modifier: 1.2 } },
+    ]);
+    await targetDevices(client, "123", CAMPAIGN_RN, ["computer", "tv"]);
+    expect(calls[0]!.ops).toEqual([
+      { entity: "campaign_criterion", operation: "update", resource: { resource_name: "cc/tablet", bid_modifier: 0 } },
+    ]);
   });
 
   it("no-ops when every device is listed", async () => {
@@ -556,5 +643,68 @@ describe("setCampaignStatus", () => {
     const { client, calls } = makeFake();
     await setCampaignStatus(client, "123", "9", "PAUSED");
     expect(calls[0]!.ops[0]!.resource["status"]).toBe(enums.CampaignStatus.PAUSED);
+  });
+});
+
+describe("radius targeting", () => {
+  const chicago = RadiusTargetSchema.parse({
+    address: { streetAddress: "233 S Wacker Dr", cityName: "Chicago", provinceCode: "IL", countryCode: "US" },
+    radius: 10,
+    units: "miles",
+  });
+  const point = RadiusTargetSchema.parse({ latitude: 41.8789, longitude: -87.6359, radius: 15, units: "kilometers" });
+
+  it("parses exactly one of address or lat/long, within Google's radius caps", () => {
+    expect(() => RadiusTargetSchema.parse({ radius: 5, units: "miles" })).toThrow(/exactly one/);
+    expect(() => RadiusTargetSchema.parse({ latitude: 1, radius: 5, units: "miles" })).toThrow(/go together/);
+    expect(() => RadiusTargetSchema.parse({ ...point, radius: 900 })).toThrow(/max is 800/);
+    expect(() =>
+      RadiusTargetSchema.parse({ address: { streetAddress: "1 Main", countryCode: "US" }, radius: 5, units: "miles" }),
+    ).toThrow(/cityName or postalCode/);
+  });
+
+  it("drops the US + Canada default when only radius targets are given", () => {
+    expect(effectiveLocations({})).toBeUndefined();
+    expect(effectiveLocations({ radiusTargets: [chicago] })).toEqual([]);
+    expect(effectiveLocations({ locations: ["1014221"], radiusTargets: [chicago] })).toEqual(["1014221"]);
+  });
+
+  it("builds address and micro-degree geo point proximity infos", () => {
+    expect(proximityInfo(chicago)).toEqual({
+      radius: 10,
+      radius_units: enums.ProximityRadiusUnits.MILES,
+      address: { street_address: "233 S Wacker Dr", city_name: "Chicago", province_code: "IL", country_code: "US" },
+    });
+    expect(proximityInfo(point)).toEqual({
+      radius: 15,
+      radius_units: enums.ProximityRadiusUnits.KILOMETERS,
+      geo_point: { latitude_in_micro_degrees: 41878900, longitude_in_micro_degrees: -87635900 },
+    });
+  });
+
+  it("no-ops when the live radius targets already match (Google's added geo point ignored)", async () => {
+    const { client, calls } = makeSearchFake(() => [
+      {
+        campaign_criterion: {
+          resource_name: "cc/p1",
+          proximity: {
+            ...proximityInfo(chicago),
+            radius_units: "MILES",
+            geo_point: { latitude_in_micro_degrees: 41878000, longitude_in_micro_degrees: -87636000 },
+          },
+        },
+      },
+    ]);
+    await targetRadius(client, "123", CAMPAIGN_RN, [chicago]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("replaces live radius targets that differ from the brief", async () => {
+    const { client, calls } = makeSearchFake(() => [
+      { campaign_criterion: { resource_name: "cc/old", proximity: { ...proximityInfo(chicago), radius: 25 } } },
+    ]);
+    await targetRadius(client, "123", CAMPAIGN_RN, [chicago, point]);
+    expect(calls[0]!.ops.map((op) => op.operation)).toEqual(["remove", "create", "create"]);
+    expect(calls[0]!.ops[0]!.resource).toEqual({ resource_name: "cc/old" });
   });
 });

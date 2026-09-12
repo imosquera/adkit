@@ -210,6 +210,77 @@ export const StructuredSnippetAssetSchema = z
   });
 export type StructuredSnippetAsset = z.infer<typeof StructuredSnippetAssetSchema>;
 
+
+/**
+ * A location to target: a numeric geo target constant id (`"1014221"`) or its exact
+ * canonical name (`"Chicago,Illinois,United States"`) — any level Google supports:
+ * country, state, metro, city, postal code. Canonical names are unambiguous where a
+ * bare city name ("Springfield") is not. Resolved against Google's geo database before
+ * any mutation (see `resolveLocations`).
+ */
+export const LocationSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((v) => /^[0-9]+$/.test(v) || v.includes(","), {
+    message: 'use a geo target id ("1014221") or a canonical name ("Chicago,Illinois,United States")',
+  });
+
+/** Campaign `locations`: omit for the default US + Canada; otherwise 1+ unique locations. */
+const locationsField = z
+  .array(LocationSchema)
+  .min(1)
+  .refine((ls) => new Set(ls).size === ls.length, { message: "locations: no duplicates" })
+  .optional();
+
+/** Google's radius caps: 500 miles / 800 km. */
+const RADIUS_MAX = { miles: 500, kilometers: 800 } as const;
+
+/**
+ * A radius ("proximity") target: everyone within `radius` `units` of a street address
+ * (geocoded by Google) or of an exact latitude/longitude.
+ */
+export const RadiusTargetSchema = z
+  .object({
+    address: z
+      .object({
+        streetAddress: z.string().min(1).optional(),
+        cityName: z.string().min(1).optional(),
+        provinceCode: z.string().min(1).optional(), // e.g. "IL"
+        postalCode: z.string().min(1).optional(),
+        countryCode: z.string().regex(/^[A-Z]{2}$/, { message: "countryCode: 2-letter ISO code, e.g. US" }),
+      })
+      .strict()
+      .refine((a) => a.cityName !== undefined || a.postalCode !== undefined, {
+        message: "address needs a cityName or postalCode",
+      })
+      .optional(),
+    latitude: z.number().gte(-90).lte(90).optional(),
+    longitude: z.number().gte(-180).lte(180).optional(),
+    radius: z.number().gt(0),
+    units: z.enum(["miles", "kilometers"]),
+  })
+  .strict()
+  .superRefine((r, ctx) => {
+    const hasPoint = r.latitude !== undefined && r.longitude !== undefined;
+    if ((r.latitude === undefined) !== (r.longitude === undefined)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "latitude and longitude go together" });
+    } else if ((r.address !== undefined) === hasPoint) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "give exactly one of address or latitude/longitude" });
+    }
+    if (r.radius > RADIUS_MAX[r.units]) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `radius max is ${RADIUS_MAX[r.units]} ${r.units}`,
+        path: ["radius"],
+      });
+    }
+  });
+export type RadiusTarget = z.infer<typeof RadiusTargetSchema>;
+
+/** Campaign `radiusTargets`: omit for none. With radius targets and no `locations`, there is no US + Canada default. */
+const radiusTargetsField = z.array(RadiusTargetSchema).min(1).optional();
+
 export const NETWORK_SETTINGS = ["search-only", "search-partners-display"] as const;
 export const DEVICES = ["computer", "mobile", "tablet", "tv"] as const;
 
@@ -232,6 +303,9 @@ export const CampaignSchema = z
     aiMax: z.boolean().default(true),
     // Device targeting. Undefined => default brief: mobile excluded at -100%.
     devices: z.array(z.enum(DEVICES)).optional(),
+    // Geo targeting. Undefined => US + Canada, unless radiusTargets are given (then none).
+    locations: locationsField,
+    radiusTargets: radiusTargetsField,
     // Campaign-level negative keywords — shared across all ad groups.
     negativeKeywords: z.array(KeywordSchema).default([]),
     targetCpaMicros: z.number().int().gt(0).optional(),
@@ -551,6 +625,8 @@ export const DisplayCampaignSchema = z
     bidStrategy: z.enum(["maximize-clicks", "maximize-conversions"]).default("maximize-clicks"),
     cpcBidCeilingMicros: z.number().int().gt(0).optional(),
     devices: z.array(z.enum(DEVICES)).min(1).optional(),
+    locations: locationsField, // undefined => US + Canada, unless radiusTargets are given
+    radiusTargets: radiusTargetsField,
   })
   .strict()
   .refine((c) => c.cpcBidCeilingMicros === undefined || c.bidStrategy === "maximize-clicks", {
@@ -643,6 +719,8 @@ export const FAILURE_STEPS = [
   "create-ad-group",
   "create-responsive-search-ad",
   "create-keywords",
+  "resolve-locations",
+  "target-radius",
   "create-display-campaign",
   "create-image-assets",
   "create-audiences",

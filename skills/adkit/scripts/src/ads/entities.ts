@@ -24,6 +24,7 @@ import type {
   DisplayAdGroup,
   DisplayBrief,
   Keyword,
+  RadiusTarget,
   ResponsiveDisplayAd,
   ResponsiveSearchAd,
 } from "../lib/schema.js";
@@ -118,16 +119,16 @@ export async function findExistingCampaign(
   client: AdsClient,
   customerId: string,
   brief: { campaign: Pick<Campaign, "name"> },
+  channel: "SEARCH" | "DISPLAY",
 ): Promise<[string, string | null] | null> {
   const query =
-    "SELECT campaign.resource_name, campaign.campaign_budget " +
+    "SELECT campaign.resource_name, campaign.campaign_budget, campaign.advertising_channel_type " +
     "FROM campaign " +
     `WHERE campaign.name = '${gaqlStringLiteral(brief.campaign.name)}' ` +
     "AND campaign.status != 'REMOVED'";
-  const rows = await client.search<{ campaign: { resource_name: string; campaign_budget?: string } }>(
-    customerId,
-    query,
-  );
+  const rows = await client.search<{
+    campaign: { resource_name: string; campaign_budget?: string; advertising_channel_type?: string | number };
+  }>(customerId, query);
   if (rows.length === 0) {
     return null;
   }
@@ -139,6 +140,19 @@ export async function findExistingCampaign(
     );
   }
   const campaign = rows[0]!.campaign;
+  // Enums arrive numeric or pre-decoded depending on the field; the enum map is bidirectional.
+  const liveChannel =
+    typeof campaign.advertising_channel_type === "number"
+      ? enums.AdvertisingChannelType[campaign.advertising_channel_type]
+      : campaign.advertising_channel_type;
+  if (liveChannel !== undefined && liveChannel !== channel) {
+    throw new StepError(
+      "find-existing-campaign",
+      `campaign ${JSON.stringify(brief.campaign.name)} already exists as a ${liveChannel} campaign; ` +
+        `a ${channel} brief cannot reuse it — rename the brief's campaign or pass --archive-existing`,
+      null,
+    );
+  }
   return [campaign.resource_name, campaign.campaign_budget || null];
 }
 
@@ -421,11 +435,54 @@ async function linkAssetsToCampaign(
   return (await client.mutate(customerId, linkOps)).results.map((r) => r.resource_name);
 }
 
+/** One live campaign_criterion row, as returned by {@link liveCampaignCriteria}. */
+interface CampaignCriterionRow {
+  campaign_criterion?: {
+    resource_name: string;
+    bid_modifier?: number;
+    device?: { type?: string | number };
+    location?: { geo_target_constant?: string };
+    proximity?: {
+      radius?: number;
+      radius_units?: string | number;
+      geo_point?: { latitude_in_micro_degrees?: number; longitude_in_micro_degrees?: number };
+      address?: Record<string, string | undefined>;
+    };
+  };
+}
+
+/** The campaign's live device + location criteria — what the targeting reconcilers diff against. */
+async function liveCampaignCriteria(
+  client: AdsClient,
+  customerId: string,
+  campaignRn: string,
+): Promise<NonNullable<CampaignCriterionRow["campaign_criterion"]>[]> {
+  const query =
+    "SELECT campaign_criterion.resource_name, campaign_criterion.bid_modifier, " +
+    "campaign_criterion.device.type, campaign_criterion.location.geo_target_constant, " +
+    "campaign_criterion.proximity.radius, campaign_criterion.proximity.radius_units, " +
+    "campaign_criterion.proximity.geo_point.latitude_in_micro_degrees, " +
+    "campaign_criterion.proximity.geo_point.longitude_in_micro_degrees, " +
+    "campaign_criterion.proximity.address.street_address, campaign_criterion.proximity.address.city_name, " +
+    "campaign_criterion.proximity.address.province_code, campaign_criterion.proximity.address.postal_code, " +
+    "campaign_criterion.proximity.address.country_code " +
+    "FROM campaign_criterion " +
+    `WHERE campaign_criterion.campaign = '${gaqlStringLiteral(campaignRn)}' ` +
+    "AND campaign_criterion.type IN ('DEVICE', 'LOCATION', 'PROXIMITY') AND campaign_criterion.negative = FALSE";
+  const rows = await client.search<CampaignCriterionRow>(customerId, query);
+  return rows.flatMap((r) => (r.campaign_criterion ? [r.campaign_criterion] : []));
+}
+
 /**
  * Restrict serving to `devices` by setting a -100% (bid_modifier=0) criterion on
  * every device NOT listed. `undefined` (field omitted) => default brief, which
  * excludes mobile at -100% (computer/tablet/tv serve). List every device to serve
  * everywhere. Exclusion via bid_modifier=0 is honored even under Smart Bidding.
+ *
+ * Reconciles against the live campaign, so it is safe on a reused campaign (a rerun
+ * after a partial publish): a device already excluded is skipped, a live device
+ * criterion with a non-zero modifier is updated to 0, and only absent ones are created.
+ * It only ever adds exclusions — it never re-enables a device.
  */
 export async function targetDevices(
   client: AdsClient,
@@ -438,16 +495,30 @@ export async function targetDevices(
   if (excluded.length === 0) {
     return;
   }
-  const ops: AdsMutateOperation[] = excluded.map((d) => ({
-    entity: "campaign_criterion",
-    operation: "create",
-    resource: {
-      campaign: campaignRn,
-      device: { type: DEVICE_ENUM[d] },
-      bid_modifier: 0.0, // -100% = device excluded
-    },
-  }));
-  await client.mutate(customerId, ops);
+  const live = await liveCampaignCriteria(client, customerId, campaignRn);
+  const liveDevice = (d: (typeof ALL_DEVICES)[number]) =>
+    live.find((c) => {
+      const t = c.device?.type;
+      return t !== undefined && (typeof t === "number" ? t : enums.Device[t as keyof typeof enums.Device]) === DEVICE_ENUM[d];
+    });
+  const ops: AdsMutateOperation[] = excluded.flatMap((d): AdsMutateOperation[] => {
+    const existing = liveDevice(d);
+    if (existing === undefined) {
+      return [
+        {
+          entity: "campaign_criterion",
+          operation: "create",
+          resource: { campaign: campaignRn, device: { type: DEVICE_ENUM[d] }, bid_modifier: 0.0 }, // -100% = excluded
+        },
+      ];
+    }
+    return existing.bid_modifier === 0
+      ? []
+      : [{ entity: "campaign_criterion", operation: "update", resource: { resource_name: existing.resource_name, bid_modifier: 0.0 } }];
+  });
+  if (ops.length > 0) {
+    await client.mutate(customerId, ops);
+  }
 }
 
 /**
@@ -551,18 +622,174 @@ export function buildLanguageOps(
   return [...addOps, ...removeOps];
 }
 
-/** Target the US + Canada geo constants on the campaign. */
-export async function targetUsCanada(
+/**
+ * Pure: the `locations` to resolve for a campaign. Omitted locations default to US +
+ * Canada (`undefined`) — except alongside radius targets, where a country default would
+ * swamp the radius, so it becomes "no location criteria" (`[]`).
+ */
+export function effectiveLocations(campaign: {
+  locations?: readonly string[];
+  radiusTargets?: readonly RadiusTarget[];
+}): readonly string[] | undefined {
+  return campaign.locations ?? (campaign.radiusTargets !== undefined ? [] : undefined);
+}
+
+/**
+ * Resolve brief `locations` (ids or canonical names) to geo target constant resource
+ * names, in brief order. `undefined` => {@link GEO_TARGETS} (US + Canada). Read-only —
+ * run before any mutation so a typo fails the publish before anything is created.
+ * Throws a {@link StepError} naming every location Google doesn't know.
+ */
+export async function resolveLocations(
+  client: AdsClient,
+  customerId: string,
+  locations: readonly string[] | undefined,
+): Promise<string[]> {
+  if (locations === undefined) {
+    return [...GEO_TARGETS];
+  }
+  if (locations.length === 0) {
+    return [];
+  }
+  const ids = locations.filter((l) => /^[0-9]+$/.test(l));
+  const names = locations.filter((l) => !/^[0-9]+$/.test(l));
+  const select =
+    "SELECT geo_target_constant.resource_name, geo_target_constant.id, geo_target_constant.canonical_name " +
+    "FROM geo_target_constant WHERE geo_target_constant.status = 'ENABLED' AND ";
+  type Row = { geo_target_constant: { resource_name: string; id: string | number; canonical_name: string } };
+  const rows = [
+    ...(ids.length > 0 ? await client.search<Row>(customerId, `${select}geo_target_constant.id IN (${ids.join(", ")})`) : []),
+    ...(names.length > 0
+      ? await client.search<Row>(
+          customerId,
+          `${select}geo_target_constant.canonical_name IN (${names.map((n) => `'${gaqlStringLiteral(n)}'`).join(", ")})`,
+        )
+      : []),
+  ];
+  const byKey = new Map(
+    rows.flatMap((r) => [
+      [String(r.geo_target_constant.id), r.geo_target_constant.resource_name],
+      [r.geo_target_constant.canonical_name, r.geo_target_constant.resource_name],
+    ]),
+  );
+  const unknown = locations.filter((l) => !byKey.has(l));
+  if (unknown.length > 0) {
+    throw new StepError(
+      "resolve-locations",
+      `unknown location(s): ${unknown.map((l) => JSON.stringify(l)).join(", ")} — use a geo target id or the exact ` +
+        "canonical name from https://developers.google.com/google-ads/api/data/geotargets",
+      null,
+    );
+  }
+  return locations.map((l) => byKey.get(l)!);
+}
+
+/** Pure: a radius target's ProximityInfo resource fragment. */
+export function proximityInfo(target: RadiusTarget): Record<string, unknown> {
+  const a = target.address;
+  return {
+    radius: target.radius,
+    radius_units: target.units === "miles" ? enums.ProximityRadiusUnits.MILES : enums.ProximityRadiusUnits.KILOMETERS,
+    ...(a === undefined
+      ? {
+          geo_point: {
+            latitude_in_micro_degrees: Math.round(target.latitude! * 1e6),
+            longitude_in_micro_degrees: Math.round(target.longitude! * 1e6),
+          },
+        }
+      : {
+          address: Object.fromEntries(
+            Object.entries({
+              street_address: a.streetAddress,
+              city_name: a.cityName,
+              province_code: a.provinceCode,
+              postal_code: a.postalCode,
+              country_code: a.countryCode,
+            }).filter(([, v]) => v !== undefined),
+          ),
+        }),
+  };
+}
+
+/**
+ * Pure: comparable identity for a ProximityInfo (brief-built or live row). Address-based
+ * targets compare by address — Google also fills in the geocoded point on those, which the
+ * brief never has.
+ */
+function proximityKey(p: NonNullable<NonNullable<CampaignCriterionRow["campaign_criterion"]>["proximity"]>): string {
+  const units = typeof p.radius_units === "number" ? enums.ProximityRadiusUnits[p.radius_units] : p.radius_units;
+  const where =
+    p.address?.city_name !== undefined || p.address?.postal_code !== undefined
+      ? ["street_address", "city_name", "province_code", "postal_code", "country_code"].map((k) =>
+          (p.address?.[k] ?? "").toLowerCase(),
+        )
+      : [p.geo_point?.latitude_in_micro_degrees, p.geo_point?.longitude_in_micro_degrees];
+  return JSON.stringify([Number(p.radius), units, where]);
+}
+
+/**
+ * Make the campaign's radius targeting exactly `targets`. When the live set already
+ * matches, nothing changes; otherwise every live radius target is replaced — a
+ * wholesale swap is simpler than a per-target diff and converges the same way.
+ */
+export async function targetRadius(
   client: AdsClient,
   customerId: string,
   campaignRn: string,
+  targets: readonly RadiusTarget[],
 ): Promise<void> {
-  const ops: AdsMutateOperation[] = GEO_TARGETS.map((geo) => ({
-    entity: "campaign_criterion",
-    operation: "create",
-    resource: { campaign: campaignRn, location: { geo_target_constant: geo } },
-  }));
+  const live = (await liveCampaignCriteria(client, customerId, campaignRn)).filter((c) => c.proximity?.radius !== undefined);
+  const wanted = targets.map((t) => proximityInfo(t) as Parameters<typeof proximityKey>[0]);
+  const sortedKeys = (ps: Array<Parameters<typeof proximityKey>[0]>) => JSON.stringify(ps.map(proximityKey).sort());
+  if (sortedKeys(live.map((c) => c.proximity!)) === sortedKeys(wanted)) {
+    return;
+  }
+  const ops: AdsMutateOperation[] = [
+    ...live.map((c): AdsMutateOperation => ({
+      entity: "campaign_criterion",
+      operation: "remove",
+      resource: { resource_name: c.resource_name },
+    })),
+    ...targets.map((t): AdsMutateOperation => ({
+      entity: "campaign_criterion",
+      operation: "create",
+      resource: { campaign: campaignRn, proximity: proximityInfo(t) },
+    })),
+  ];
   await client.mutate(customerId, ops);
+}
+
+/**
+ * Make the campaign's positive location targeting exactly `geoTargets` (resource
+ * names from {@link resolveLocations}): create the missing ones, remove live ones the
+ * brief no longer lists. Safe on a reused campaign — a rerun after a partial publish,
+ * or a brief narrowed from a country to a city, converges instead of leaving the old
+ * wider targeting in place.
+ */
+export async function targetLocations(
+  client: AdsClient,
+  customerId: string,
+  campaignRn: string,
+  geoTargets: readonly string[],
+): Promise<void> {
+  const live = (await liveCampaignCriteria(client, customerId, campaignRn)).filter(
+    (c) => c.location?.geo_target_constant !== undefined,
+  );
+  const liveGeos = new Set(live.map((c) => c.location!.geo_target_constant));
+  const creates: AdsMutateOperation[] = geoTargets
+    .filter((geo) => !liveGeos.has(geo))
+    .map((geo) => ({
+      entity: "campaign_criterion",
+      operation: "create",
+      resource: { campaign: campaignRn, location: { geo_target_constant: geo } },
+    }));
+  const removes: AdsMutateOperation[] = live
+    .filter((c) => !geoTargets.includes(c.location!.geo_target_constant!))
+    .map((c) => ({ entity: "campaign_criterion", operation: "remove", resource: { resource_name: c.resource_name } }));
+  const ops = [...creates, ...removes];
+  if (ops.length > 0) {
+    await client.mutate(customerId, ops);
+  }
 }
 
 /**
@@ -948,47 +1175,117 @@ export async function createMissingAudiences(
   return ops.length === 0 ? [] : (await client.mutate(customerId, ops)).results.map((r) => r.resource_name);
 }
 
-/** Order-independent identity for one responsive display ad's copy. */
-function rdaContentKey(headlines: readonly string[], longHeadline: string, descriptions: readonly string[]): string {
-  return JSON.stringify([[...headlines].sort(), longHeadline, [...descriptions].sort()]);
+/** Every serving field of a responsive display ad, with images as asset resource names. */
+interface RdaIdentity {
+  marketingImages: readonly string[];
+  squareMarketingImages: readonly string[];
+  logoImages: readonly string[];
+  squareLogoImages: readonly string[];
+  headlines: readonly string[];
+  longHeadline: string;
+  descriptions: readonly string[];
+  businessName: string;
+  finalUrl: string;
 }
 
-/** The brief ads NOT already live (by copy) on `adGroupRn`, in brief order. Mirrors {@link findMissingResponsiveSearchAds}. */
+/**
+ * Order-independent identity over every serving field — images, copy, business name
+ * and destination — so changing any of them in the brief makes the ad "missing" and a
+ * rerun creates the new version instead of silently keeping the old creative.
+ */
+function rdaContentKey(ad: RdaIdentity): string {
+  const sorted = (xs: readonly string[]) => [...xs].sort();
+  return JSON.stringify([
+    sorted(ad.marketingImages),
+    sorted(ad.squareMarketingImages),
+    sorted(ad.logoImages),
+    sorted(ad.squareLogoImages),
+    sorted(ad.headlines),
+    ad.longHeadline,
+    sorted(ad.descriptions),
+    ad.businessName,
+    ad.finalUrl,
+  ]);
+}
+
+/**
+ * The brief ads NOT already live (by every serving field — see {@link rdaContentKey})
+ * on `adGroupRn`, in brief order. `assets` maps image url → asset resource name (image
+ * assets dedupe by content, so a re-uploaded image resolves to the live ad's asset).
+ * Mirrors {@link findMissingResponsiveSearchAds}.
+ */
 export async function findMissingResponsiveDisplayAds(
   client: AdsClient,
   customerId: string,
   adGroupRn: string,
   briefAds: readonly ResponsiveDisplayAd[],
+  assets: ReadonlyMap<string, string>,
 ): Promise<ResponsiveDisplayAd[]> {
   const query =
-    "SELECT ad_group_ad.ad.responsive_display_ad.headlines, ad_group_ad.ad.responsive_display_ad.long_headline, " +
+    "SELECT ad_group_ad.ad.final_urls, ad_group_ad.ad.responsive_display_ad.marketing_images, " +
+    "ad_group_ad.ad.responsive_display_ad.square_marketing_images, ad_group_ad.ad.responsive_display_ad.logo_images, " +
+    "ad_group_ad.ad.responsive_display_ad.square_logo_images, ad_group_ad.ad.responsive_display_ad.business_name, " +
+    "ad_group_ad.ad.responsive_display_ad.headlines, ad_group_ad.ad.responsive_display_ad.long_headline, " +
     "ad_group_ad.ad.responsive_display_ad.descriptions " +
     "FROM ad_group_ad " +
     `WHERE ad_group_ad.ad_group = '${gaqlStringLiteral(adGroupRn)}' ` +
     "AND ad_group_ad.status != 'REMOVED'";
+  type AssetRefs = Array<{ asset: string }> | undefined;
   type Row = {
     ad_group_ad: {
       ad: {
+        final_urls?: string[];
         responsive_display_ad?: {
-          headlines: Array<{ text: string }>;
-          long_headline: { text: string };
-          descriptions: Array<{ text: string }>;
+          marketing_images?: AssetRefs;
+          square_marketing_images?: AssetRefs;
+          logo_images?: AssetRefs;
+          square_logo_images?: AssetRefs;
+          headlines?: Array<{ text: string }>;
+          long_headline?: { text: string };
+          descriptions?: Array<{ text: string }>;
+          business_name?: string;
         };
       };
     };
   };
   const rows = await client.search<Row>(customerId, query);
+  const refs = (xs: AssetRefs) => (xs ?? []).map((x) => x.asset);
   const live = new Set(
     rows.flatMap((r) => {
       const rda = r.ad_group_ad.ad.responsive_display_ad;
       return rda
-        ? [rdaContentKey(rda.headlines.map((h) => h.text), rda.long_headline.text, rda.descriptions.map((d) => d.text))]
+        ? [
+            rdaContentKey({
+              marketingImages: refs(rda.marketing_images),
+              squareMarketingImages: refs(rda.square_marketing_images),
+              logoImages: refs(rda.logo_images),
+              squareLogoImages: refs(rda.square_logo_images),
+              headlines: (rda.headlines ?? []).map((h) => h.text),
+              longHeadline: rda.long_headline?.text ?? "",
+              descriptions: (rda.descriptions ?? []).map((d) => d.text),
+              businessName: rda.business_name ?? "",
+              finalUrl: r.ad_group_ad.ad.final_urls?.[0] ?? "",
+            }),
+          ]
         : [];
     }),
   );
+  const assetRns = (urls: readonly string[]) => urls.map((u) => assets.get(u)!);
   return briefAds.filter(
     (ad) =>
-      !live.has(rdaContentKey(ad.headlines.map((h) => h.text), ad.longHeadline.text, ad.descriptions.map((d) => d.text))),
+      !live.has(
+        rdaContentKey({
+          marketingImages: assetRns(ad.marketingImages),
+          squareMarketingImages: assetRns(ad.squareMarketingImages),
+          logoImages: assetRns(ad.logoImages),
+          squareLogoImages: assetRns(ad.squareLogoImages),
+          headlines: ad.headlines.map((h) => h.text),
+          longHeadline: ad.longHeadline.text,
+          descriptions: ad.descriptions.map((d) => d.text),
+          businessName: ad.businessName,
+          finalUrl: ad.finalUrl,
+        }),
+      ),
   );
 }
 

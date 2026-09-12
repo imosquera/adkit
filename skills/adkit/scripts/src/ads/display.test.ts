@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 import { DisplayBriefSchema, parseAnyBrief, type DisplayBrief } from "../lib/schema.js";
 import { briefImageIssues, imageDimensions, type LoadedImage } from "./images.js";
+import { findMissingResponsiveDisplayAds } from "./entities.js";
 import { publishDisplay } from "./publish.js";
 
 const IMG = "gs://adkit-images/ads/wide.png";
@@ -116,5 +117,49 @@ describe("publishDisplay", () => {
     const ad = calls[6]![0]!.resource as { ad: { responsive_display_ad: { marketing_images: unknown } } };
     expect(ad.ad.responsive_display_ad.marketing_images).toEqual([{ asset: "rn/4/0" }]);
     expect(outcome.results.adGroups[0]!.responsiveDisplayAdIds).toEqual(["rn/7/0"]);
+  });
+});
+
+describe("findMissingResponsiveDisplayAds", () => {
+  const WIDE = "https://storage.googleapis.com/adkit-images/ads/wide.png";
+  const assets = new Map([
+    [WIDE, "customers/1/assets/10"],
+    [SQ, "customers/1/assets/11"],
+  ]);
+  const liveRow = (overrides: Record<string, unknown> = {}) => ({
+    ad_group_ad: {
+      ad: {
+        final_urls: ["https://www.example.com/x"],
+        responsive_display_ad: {
+          marketing_images: [{ asset: "customers/1/assets/10" }],
+          square_marketing_images: [{ asset: "customers/1/assets/11" }],
+          headlines: [{ text: "Ship faster" }],
+          long_headline: { text: "Ship faster with fewer integrations" },
+          descriptions: [{ text: "Live in 30 days." }],
+          business_name: "Konnect",
+          ...overrides,
+        },
+      },
+    },
+  });
+  const clientWith = (rows: unknown[]): AdsClient => ({
+    search: async <Row>() => rows as Row[],
+    searchStructured: async <Row>() => [] as Row[],
+    mutate: async () => ({ results: [] }),
+  });
+  const ads = displayBrief().adGroups[0]!.responsiveDisplayAds;
+
+  it("treats an ad with identical images, copy, name and URL as live", async () => {
+    expect(await findMissingResponsiveDisplayAds(clientWith([liveRow()]), "1", "ag", ads, assets)).toEqual([]);
+  });
+
+  it("treats a changed image, business name or final URL as missing", async () => {
+    for (const row of [
+      liveRow({ marketing_images: [{ asset: "customers/1/assets/99" }] }),
+      liveRow({ business_name: "Old name" }),
+      { ad_group_ad: { ad: { ...liveRow().ad_group_ad.ad, final_urls: ["https://www.example.com/old"] } } },
+    ]) {
+      expect(await findMissingResponsiveDisplayAds(clientWith([row]), "1", "ag", ads, assets)).toHaveLength(1);
+    }
   });
 });
