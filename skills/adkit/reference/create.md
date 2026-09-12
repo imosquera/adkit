@@ -142,6 +142,8 @@ Every campaign ships **at least 4 callouts** — short benefit phrases (no link)
 | `campaign.aiMax` | **AI Max for Search.** Default `true` — Google AI expands beyond the theme's keywords (broad-match tech) and matches landing-page/asset content to more queries. Set `false` for a strictly keyword-matched campaign. Individual ad groups stay on strict matching unless they opt in via `adGroups[].aiMax`. Pairs with `negativeKeywords` to stay on-theme. See *STAG + Smart Bidding + AI Max* above. |
 | `campaign.negativeKeywords` | **Campaign-level negatives**, shared across all themes. Each: `text` (≤80 chars), `matchType` (`PHRASE` default / `EXACT` / `BROAD`). Auto-seeded by the scaffolder from the processed file's `#### Negative Keywords` section. The primary lever for keeping AI Max / close-variant expansion on-theme. |
 | `campaign.devices` | **Device targeting.** Omit (default) = **mobile excluded at −100%** (`bid_modifier=0`); computer/tablet/tv serve. A subset of `["computer","mobile","tablet","tv"]` keeps those and **excludes the rest at −100%** — e.g. `["computer"]` = desktop-only; list all four to serve everywhere. Empty list is rejected (would exclude everything). Under Smart Bidding only the −100% exclusions are honored; non-zero device adjustments are ignored. |
+| `campaign.locations` | **Geo targeting.** Omit (default) = **United States + Canada**. Otherwise a list of places at any level Google supports (country, state, metro, **city**, postal code), each either the numeric geo target id (`"1014221"`) or its exact canonical name (`"Chicago,Illinois,United States"`). Look them up in [Google's geotargets list](https://developers.google.com/google-ads/api/data/geotargets). Canonical names avoid ambiguity where a bare city name ("Springfield") doesn't. Every location is resolved before anything is created, so a typo fails the publish up front. Targeting is presence-only (people physically there). Rerunning `create` reconciles targeting to exactly this list, including removing a country the brief narrowed to a city. |
+| `campaign.radiusTargets` | **Radius targeting.** Everyone within a radius of a place, each `{ address: {streetAddress?, cityName?, provinceCode?, postalCode?, countryCode}, radius, units }` (Google geocodes the address; needs `cityName` or `postalCode`) or `{ latitude, longitude, radius, units }`. `units` is `miles` (max 500) or `kilometers` (max 800). **With radius targets and no `locations`, the US + Canada default is dropped**, so only the radii serve. Set `locations` too if you want both. Rerunning `create` makes the campaign's radius targets match this list exactly. |
 | `campaign.bidStrategy` | **Launch strategy. Default `maximize-clicks`** (cold-start warm-up). Set `maximize-conversions` to launch straight on Smart Bidding when conversion volume is assured. Other values fall back to Maximize Clicks. Graduate clicks→conversions later in the UI, not via a brief edit. |
 | `campaign.cpcBidCeilingMicros` | Optional max CPC ceiling (micros) for `maximize-clicks` — caps warm-up cost per click. Rejected with any other `bidStrategy`. |
 | `campaign.targetCpaMicros` / `campaign.targetRoas` | Ignored at publish (the supported launch strategies use neither). |
@@ -208,6 +210,12 @@ campaign:
   budgetMicros: 20000000          # $20/day
   bidStrategy: maximize-clicks    # or maximize-conversions
   # devices: [computer, mobile]   # omit = all devices
+  # locations: ["Chicago,Illinois,United States", "1014221"]   # omit = US + Canada; ids or canonical names, down to city/postal code
+  # radiusTargets:                # omit = none; with radiusTargets and no locations, only the radii serve
+  #   - address: { streetAddress: "233 S Wacker Dr", cityName: "Chicago", provinceCode: "IL", countryCode: "US" }
+  #     radius: 10
+  #     units: miles                # or kilometers
+  #   - { latitude: 41.8789, longitude: -87.6359, radius: 15, units: kilometers }
 adGroups:
   - name: remarketing
     defaultBidMicros: 1000000
