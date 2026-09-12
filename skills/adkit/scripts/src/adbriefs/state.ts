@@ -24,10 +24,10 @@ import { dirname, join } from "node:path";
 import { parse as yamlParse, stringify as yamlStringify, YAMLParseError } from "yaml";
 import { z } from "zod";
 
-import type { ExecResults } from "../ads/publish.js";
+import type { DisplayExecResults, ExecResults } from "../ads/publish.js";
 import { CUSTOMER_ID_PATTERN } from "../lib/schema.js";
 import { ADBRIEFS_DIR, AdbriefsError, BRIEF_YAML_STRINGIFY_OPTS, slugForCampaign } from "./store.js";
-import type { Brief } from "../lib/schema.js";
+import type { AnyBrief } from "../lib/schema.js";
 
 /** Suffix of a state file, e.g. `close-assistant.state.yaml`. */
 const STATE_SUFFIX = ".state.yaml";
@@ -105,7 +105,7 @@ export function parseState(data: unknown): CampaignState {
 }
 
 /** Pure: absolute-or-relative path to a campaign's state file under `root`/`dir`/. */
-export function statePathForCampaign(root: string, brief: Brief, dir: string = ADBRIEFS_DIR): string {
+export function statePathForCampaign(root: string, brief: AnyBrief, dir: string = ADBRIEFS_DIR): string {
   return join(root, dir, `${slugForCampaign(brief)}${STATE_SUFFIX}`);
 }
 
@@ -115,7 +115,7 @@ export function statePathForCampaign(root: string, brief: Brief, dir: string = A
  * only writes state on success); the field is typed permissively here and rejected by
  * {@link parseState} if a caller ever hands over an incomplete result.
  */
-export function buildState(brief: Brief, results: ExecResults): CampaignState {
+export function buildState(brief: AnyBrief, results: ExecResults | DisplayExecResults): CampaignState {
   return {
     ...(brief.customerId !== undefined ? { customerId: brief.customerId } : {}),
     campaign: {
@@ -126,7 +126,7 @@ export function buildState(brief: Brief, results: ExecResults): CampaignState {
     adGroups: results.adGroups.map((ag) => ({
       name: ag.name,
       adGroupId: String(ag.adGroupId),
-      adIds: ag.responsiveSearchAdIds.map(String),
+      adIds: ("responsiveSearchAdIds" in ag ? ag.responsiveSearchAdIds : ag.responsiveDisplayAdIds).map(String),
     })),
   };
 }
@@ -141,7 +141,7 @@ export function serializeState(state: CampaignState): string {
  * needed. Returns the path written. Paired with {@link writeBrief} — the intent brief and
  * its state file share a slug.
  */
-export function writeState(root: string, brief: Brief, state: CampaignState, dir: string = ADBRIEFS_DIR): string {
+export function writeState(root: string, brief: AnyBrief, state: CampaignState, dir: string = ADBRIEFS_DIR): string {
   const path = statePathForCampaign(root, brief, dir);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, serializeState(state));

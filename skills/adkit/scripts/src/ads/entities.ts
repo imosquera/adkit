@@ -17,7 +17,17 @@
 
 import { enums } from "google-ads-api";
 import type { AdsClient, AdsMutateOperation } from "../lib/auth.js";
-import type { AdGroup, Brief, Keyword, ResponsiveSearchAd } from "../lib/schema.js";
+import type {
+  AdGroup,
+  Brief,
+  Campaign,
+  DisplayAdGroup,
+  DisplayBrief,
+  Keyword,
+  ResponsiveDisplayAd,
+  ResponsiveSearchAd,
+} from "../lib/schema.js";
+import type { ImageLibrary } from "./images.js";
 import { StepError, gaqlStringLiteral } from "./errors.js";
 
 /**
@@ -66,7 +76,9 @@ export const SNIPPET_HEADERS: Record<string, string> = {
  * Only these two launch modes are supported; any other value falls back to Maximize
  * Clicks.
  */
-export function bidStrategyFields(brief: Brief): Record<string, unknown> {
+export function bidStrategyFields(brief: {
+  campaign: Pick<Campaign, "bidStrategy" | "cpcBidCeilingMicros">;
+}): Record<string, unknown> {
   if (brief.campaign.bidStrategy === "maximize-conversions") {
     return { maximize_conversions: { target_cpa_micros: 0 } };
   }
@@ -81,7 +93,7 @@ export function bidStrategyFields(brief: Brief): Record<string, unknown> {
 export async function createCampaignBudget(
   client: AdsClient,
   customerId: string,
-  brief: Brief,
+  brief: { campaign: Pick<Campaign, "name" | "budgetMicros"> },
 ): Promise<string> {
   const op: AdsMutateOperation = {
     entity: "campaign_budget",
@@ -105,7 +117,7 @@ export async function createCampaignBudget(
 export async function findExistingCampaign(
   client: AdsClient,
   customerId: string,
-  brief: Brief,
+  brief: { campaign: Pick<Campaign, "name"> },
 ): Promise<[string, string | null] | null> {
   const query =
     "SELECT campaign.resource_name, campaign.campaign_budget " +
@@ -560,7 +572,7 @@ export async function targetUsCanada(
 export async function findExistingAdGroup(
   client: AdsClient,
   customerId: string,
-  adGroup: AdGroup,
+  adGroup: Pick<AdGroup, "name">,
   campaignRn: string,
 ): Promise<string | null> {
   const query =
@@ -811,4 +823,204 @@ export async function archiveCampaignsByName(
   }));
   await client.mutate(customerId, ops);
   return resourceNames;
+}
+
+// ---------- Display (responsive display ads) ----------
+
+/** Create the paused Display campaign wired to `budgetRn`. Serves on the Display Network only. */
+export async function createDisplayCampaign(
+  client: AdsClient,
+  customerId: string,
+  brief: DisplayBrief,
+  budgetRn: string,
+): Promise<string> {
+  const op: AdsMutateOperation = {
+    entity: "campaign",
+    operation: "create",
+    resource: {
+      name: brief.campaign.name,
+      advertising_channel_type: enums.AdvertisingChannelType.DISPLAY,
+      status: enums.CampaignStatus.PAUSED,
+      ...bidStrategyFields(brief),
+      campaign_budget: budgetRn,
+      geo_target_type_setting: { positive_geo_target_type: enums.PositiveGeoTargetType.PRESENCE },
+      contains_eu_political_advertising:
+        enums.EuPoliticalAdvertisingStatus.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING,
+    },
+  };
+  return (await client.mutate(customerId, [op])).results[0]!.resource_name;
+}
+
+/**
+ * Upload each image as an IMAGE asset, returning url → asset resource name. Google
+ * dedupes image assets by content, so a rerun re-resolves the same assets.
+ */
+export async function createImageAssets(
+  client: AdsClient,
+  customerId: string,
+  images: ImageLibrary,
+): Promise<Map<string, string>> {
+  const library = [...images.values()];
+  if (library.length === 0) {
+    return new Map();
+  }
+  const ops: AdsMutateOperation[] = library.map((img) => ({
+    entity: "asset",
+    operation: "create",
+    resource: {
+      name: decodeURIComponent(new URL(img.url).pathname.split("/").pop()!),
+      type: enums.AssetType.IMAGE,
+      image_asset: { data: Buffer.from(img.bytes).toString("base64") },
+    },
+  }));
+  const rns = (await client.mutate(customerId, ops)).results.map((r) => r.resource_name);
+  return new Map(library.map((img, i) => [img.url, rns[i]!]));
+}
+
+/**
+ * Create the display ad group under `campaignRn`. Audience criteria restrict reach
+ * (`bid_only: false`) unless the brief puts them in observation mode.
+ */
+export async function createDisplayAdGroup(
+  client: AdsClient,
+  customerId: string,
+  adGroup: DisplayAdGroup,
+  campaignRn: string,
+): Promise<string> {
+  const op: AdsMutateOperation = {
+    entity: "ad_group",
+    operation: "create",
+    resource: {
+      name: adGroup.name,
+      campaign: campaignRn,
+      status: enums.AdGroupStatus.ENABLED,
+      type: enums.AdGroupType.DISPLAY_STANDARD,
+      cpc_bid_micros: adGroup.defaultBidMicros,
+      optimized_targeting_enabled: adGroup.optimizedTargeting,
+      targeting_setting: {
+        target_restrictions: [
+          {
+            targeting_dimension: enums.TargetingDimension.AUDIENCE,
+            bid_only: adGroup.audiences.mode === "observation",
+          },
+        ],
+      },
+    },
+  };
+  return (await client.mutate(customerId, [op])).results[0]!.resource_name;
+}
+
+/** Pure: the brief's audiences as [criterion field, nested field, resource name] triples. */
+export function audienceCriteria(customerId: string, adGroup: DisplayAdGroup): Array<[string, string, string]> {
+  const a = adGroup.audiences;
+  return [
+    ...a.customAudiences.map((id): [string, string, string] => ["custom_audience", "custom_audience", `customers/${customerId}/customAudiences/${id}`]),
+    ...a.userInterests.map((id): [string, string, string] => ["user_interest", "user_interest_category", `customers/${customerId}/userInterests/${id}`]),
+    ...a.userLists.map((id): [string, string, string] => ["user_list", "user_list", `customers/${customerId}/userLists/${id}`]),
+  ];
+}
+
+/** Attach the ad group's audiences it doesn't already have live. Returns the created criterion resource names. */
+export async function createMissingAudiences(
+  client: AdsClient,
+  customerId: string,
+  adGroup: DisplayAdGroup,
+  adGroupRn: string,
+): Promise<string[]> {
+  const query =
+    "SELECT ad_group_criterion.custom_audience.custom_audience, " +
+    "ad_group_criterion.user_interest.user_interest_category, ad_group_criterion.user_list.user_list " +
+    "FROM ad_group_criterion " +
+    `WHERE ad_group_criterion.ad_group = '${gaqlStringLiteral(adGroupRn)}' ` +
+    "AND ad_group_criterion.status != 'REMOVED'";
+  const rows = await client.search<{ ad_group_criterion: Record<string, Record<string, string> | undefined> }>(
+    customerId,
+    query,
+  );
+  const live = new Set(rows.flatMap((r) => Object.values(r.ad_group_criterion).flatMap((v) => Object.values(v ?? {}))));
+  const ops: AdsMutateOperation[] = audienceCriteria(customerId, adGroup)
+    .filter(([, , rn]) => !live.has(rn))
+    .map(([field, nested, rn]) => ({
+      entity: "ad_group_criterion",
+      operation: "create",
+      resource: { ad_group: adGroupRn, status: enums.AdGroupCriterionStatus.ENABLED, [field]: { [nested]: rn } },
+    }));
+  return ops.length === 0 ? [] : (await client.mutate(customerId, ops)).results.map((r) => r.resource_name);
+}
+
+/** Order-independent identity for one responsive display ad's copy. */
+function rdaContentKey(headlines: readonly string[], longHeadline: string, descriptions: readonly string[]): string {
+  return JSON.stringify([[...headlines].sort(), longHeadline, [...descriptions].sort()]);
+}
+
+/** The brief ads NOT already live (by copy) on `adGroupRn`, in brief order. Mirrors {@link findMissingResponsiveSearchAds}. */
+export async function findMissingResponsiveDisplayAds(
+  client: AdsClient,
+  customerId: string,
+  adGroupRn: string,
+  briefAds: readonly ResponsiveDisplayAd[],
+): Promise<ResponsiveDisplayAd[]> {
+  const query =
+    "SELECT ad_group_ad.ad.responsive_display_ad.headlines, ad_group_ad.ad.responsive_display_ad.long_headline, " +
+    "ad_group_ad.ad.responsive_display_ad.descriptions " +
+    "FROM ad_group_ad " +
+    `WHERE ad_group_ad.ad_group = '${gaqlStringLiteral(adGroupRn)}' ` +
+    "AND ad_group_ad.status != 'REMOVED'";
+  type Row = {
+    ad_group_ad: {
+      ad: {
+        responsive_display_ad?: {
+          headlines: Array<{ text: string }>;
+          long_headline: { text: string };
+          descriptions: Array<{ text: string }>;
+        };
+      };
+    };
+  };
+  const rows = await client.search<Row>(customerId, query);
+  const live = new Set(
+    rows.flatMap((r) => {
+      const rda = r.ad_group_ad.ad.responsive_display_ad;
+      return rda
+        ? [rdaContentKey(rda.headlines.map((h) => h.text), rda.long_headline.text, rda.descriptions.map((d) => d.text))]
+        : [];
+    }),
+  );
+  return briefAds.filter(
+    (ad) =>
+      !live.has(rdaContentKey(ad.headlines.map((h) => h.text), ad.longHeadline.text, ad.descriptions.map((d) => d.text))),
+  );
+}
+
+/** Create one paused responsive display ad; `assets` maps image url → asset resource name. */
+export async function createResponsiveDisplayAd(
+  client: AdsClient,
+  customerId: string,
+  ad: ResponsiveDisplayAd,
+  adGroupRn: string,
+  assets: ReadonlyMap<string, string>,
+): Promise<string> {
+  const refs = (urls: readonly string[]) => urls.map((url) => ({ asset: assets.get(url)! }));
+  const op: AdsMutateOperation = {
+    entity: "ad_group_ad",
+    operation: "create",
+    resource: {
+      ad_group: adGroupRn,
+      status: enums.AdGroupAdStatus.PAUSED,
+      ad: {
+        final_urls: [ad.finalUrl],
+        responsive_display_ad: {
+          marketing_images: refs(ad.marketingImages),
+          square_marketing_images: refs(ad.squareMarketingImages),
+          logo_images: refs(ad.logoImages),
+          square_logo_images: refs(ad.squareLogoImages),
+          headlines: ad.headlines.map((h) => ({ text: h.text })),
+          long_headline: { text: ad.longHeadline.text },
+          descriptions: ad.descriptions.map((d) => ({ text: d.text })),
+          business_name: ad.businessName,
+        },
+      },
+    },
+  };
+  return (await client.mutate(customerId, [op])).results[0]!.resource_name;
 }

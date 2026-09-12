@@ -10,7 +10,7 @@
  * the filesystem — the I/O edge. The store's directory arrives as a trailing
  * parameter rather than being read from config in here, so the path builders stay
  * pure; the command edge resolves it once via `resolveBriefsDir` and threads it. The on-disk YAML is parsed once through the shared
- * `parseBrief` (zod) boundary; callers receive a typed {@link Brief}.
+ * `parseAnyBrief` (zod) boundary; callers receive a typed {@link AnyBrief}.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -20,7 +20,7 @@ import { parse as yamlParse, stringify as yamlStringify, YAMLParseError, type To
 import { z } from "zod";
 
 import { DEFAULT_BRIEFS_DIR } from "../lib/config.js";
-import { parseBrief, type Brief } from "../lib/schema.js";
+import { parseAnyBrief, type AnyBrief } from "../lib/schema.js";
 
 /**
  * Default directory (relative to the repo root) holding one `<slug>.yaml` per
@@ -59,7 +59,7 @@ export class AdbriefsError extends Error {
  * same campaign always maps to the same slug (FR-008) — lower-cased, every run of
  * non-alphanumerics collapsed to a single `-`, and leading/trailing `-` trimmed.
  */
-export function slugForCampaign(brief: Brief): string {
+export function slugForCampaign(brief: AnyBrief): string {
   const slug = brief.campaign.name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -71,7 +71,7 @@ export function slugForCampaign(brief: Brief): string {
 }
 
 /** Pure: absolute-or-relative path to a campaign's brief file under `root`/`dir`/. */
-export function briefPathForCampaign(root: string, brief: Brief, dir: string = ADBRIEFS_DIR): string {
+export function briefPathForCampaign(root: string, brief: AnyBrief, dir: string = ADBRIEFS_DIR): string {
   return join(root, dir, `${slugForCampaign(brief)}.yaml`);
 }
 
@@ -81,15 +81,15 @@ export function briefPathForCampaign(root: string, brief: Brief, dir: string = A
  * folding, mirroring the scaffold writer — two equal briefs serialize byte-identically,
  * which is what makes {@link diffBriefs} clean.
  */
-export function serializeBrief(brief: Brief): string {
+export function serializeBrief(brief: AnyBrief): string {
   return yamlStringify(brief, BRIEF_YAML_STRINGIFY_OPTS);
 }
 
 /**
- * Read + parse the brief at `path` into a typed {@link Brief}. Throws
+ * Read + parse the brief at `path` into a typed {@link AnyBrief}. Throws
  * {@link AdbriefsError} on invalid YAML or a schema violation (surfaced by the caller).
  */
-function readBriefFile(path: string): Brief {
+function readBriefFile(path: string): AnyBrief {
   let data: unknown;
   try {
     data = yamlParse(readFileSync(path, "utf8"));
@@ -101,7 +101,7 @@ function readBriefFile(path: string): Brief {
     throw exc;
   }
   try {
-    return parseBrief(data);
+    return parseAnyBrief(data);
   } catch (exc) {
     if (exc instanceof z.ZodError) {
       const lines = exc.errors.map((e) => `  - ${e.path.map((p) => String(p)).join(".")}: ${e.message}`);
@@ -115,7 +115,7 @@ function readBriefFile(path: string): Brief {
  * Load the persisted brief for `brief`'s campaign, or `null` if none exists yet.
  * The returned value is the *current* on-disk state to diff a proposed change against.
  */
-export function loadBriefIfExists(root: string, brief: Brief, dir: string = ADBRIEFS_DIR): Brief | null {
+export function loadBriefIfExists(root: string, brief: AnyBrief, dir: string = ADBRIEFS_DIR): AnyBrief | null {
   const path = briefPathForCampaign(root, brief, dir);
   return existsSync(path) ? readBriefFile(path) : null;
 }
@@ -127,7 +127,7 @@ export function loadBriefIfExists(root: string, brief: Brief, dir: string = ADBR
  * catch, not just the real publish) and {@link writeBrief} (defense in depth) — a
  * slug collision must never silently clobber another campaign's source of truth (FR-008).
  */
-export function assertNoForeignBrief(root: string, brief: Brief, dir: string = ADBRIEFS_DIR): void {
+export function assertNoForeignBrief(root: string, brief: AnyBrief, dir: string = ADBRIEFS_DIR): void {
   const path = briefPathForCampaign(root, brief, dir);
   if (!existsSync(path)) {
     return;
@@ -146,7 +146,7 @@ export function assertNoForeignBrief(root: string, brief: Brief, dir: string = A
  * Refuses (via {@link assertNoForeignBrief}) to overwrite a *different* campaign's
  * brief at the same slug (FR-008). Returns the path written.
  */
-export function writeBrief(root: string, brief: Brief, dir: string = ADBRIEFS_DIR): string {
+export function writeBrief(root: string, brief: AnyBrief, dir: string = ADBRIEFS_DIR): string {
   assertNoForeignBrief(root, brief, dir);
   const path = briefPathForCampaign(root, brief, dir);
   mkdirSync(dirname(path), { recursive: true });

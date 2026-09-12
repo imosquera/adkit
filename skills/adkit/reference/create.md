@@ -184,6 +184,53 @@ Per brief:
 - [ ] `campaign.budgetMicros` and each `adGroups[].defaultBidMicros` (≤ $15.00) confirmed by operator.
 - [ ] New campaigns launch on `maximize-clicks` (cold-start warm-up); graduate to `maximize-conversions` in the UI after ~15–30 conversions/30d. Wire a live conversion action either way.
 
+## Display campaigns — responsive display ads (`type: display`)
+
+A brief with `type: display` publishes a **Display** campaign (Google Display Network) of responsive display ads instead of a search campaign. There is no scaffold from a processed idea — author the YAML by hand and pass its path to `ads.sh create`. Same flow otherwise: dry run, `adbriefs/` diff gate, PAUSED on publish, same-named campaign reused. `/adkit update` does not handle display briefs yet.
+
+Images live in the shared GCS bucket (upload with `/imager mj-generate --dest …`). Reference them as `gs://bucket/path` or `https://storage.googleapis.com/bucket/path`; the bucket must be publicly readable. Before any mutation, `create` downloads every image and checks it against its slot — a wrong ratio or undersized image fails the run up front (dry run included):
+
+| Field | Ratio | Min size | Count |
+| --- | --- | --- | --- |
+| `marketingImages` | 1.91:1 (e.g. 1200x628) | 600x314 | 1–15 |
+| `squareMarketingImages` | 1:1 (e.g. 1200x1200) | 300x300 | 1–15 |
+| `logoImages` | 4:1 (e.g. 1200x300) | 512x128 | 0–5 |
+| `squareLogoImages` | 1:1 | 128x128 | 0–5 |
+
+PNG, JPEG or GIF, ≤5 MB, 1% ratio tolerance.
+
+```yaml
+type: display
+name: konnect-display
+version: 1
+campaign:
+  name: konnect-display
+  budgetMicros: 20000000          # $20/day
+  bidStrategy: maximize-clicks    # or maximize-conversions
+  # devices: [computer, mobile]   # omit = all devices
+adGroups:
+  - name: remarketing
+    defaultBidMicros: 1000000
+    audiences:
+      mode: targeting             # or observation (report only, no reach restriction)
+      userLists: ["123456789"]      # remarketing / customer match
+      userInterests: ["80432"]      # affinity + in-market segments
+      customAudiences: ["987654"]   # custom audiences created in Audience manager
+    optimizedTargeting: false     # true lets Google expand beyond the listed audiences
+    responsiveDisplayAds:
+      - marketingImages: ["gs://my-images-bucket/ads/konnect-wide.png"]
+        squareMarketingImages: ["gs://my-images-bucket/ads/konnect-square.png"]
+        logoImages: []
+        squareLogoImages: ["gs://my-images-bucket/ads/konnect-logo.png"]
+        headlines: [{ text: "Ship faster" }]                  # 1–5, ≤30 chars
+        longHeadline: { text: "Ship faster with fewer integrations" }   # ≤90
+        descriptions: [{ text: "Live in 30 days. Book a demo." }]        # 1–5, ≤90
+        businessName: "Konnect"                               # ≤25
+        finalUrl: https://www.example.com/ideas/published-slug
+```
+
+Audience ids are the numeric ids from Tools → Audience manager, or GAQL: `SELECT user_interest.user_interest_id, user_interest.name FROM user_interest`, `SELECT user_list.id, user_list.name FROM user_list`, `SELECT custom_audience.id, custom_audience.name FROM custom_audience`. Each ad group needs at least one audience, or `optimizedTargeting: true`.
+
 ## Execution
 
 ### 0. Prepare the brief from the processed file

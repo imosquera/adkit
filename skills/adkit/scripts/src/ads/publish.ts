@@ -20,6 +20,11 @@ import {
   createAdGroup,
   createCallouts,
   createCampaignBudget,
+  createDisplayAdGroup,
+  createDisplayCampaign,
+  createImageAssets,
+  createMissingAudiences,
+  createResponsiveDisplayAd,
   createKeywords,
   createNegativeKeywords,
   createPriceAsset,
@@ -29,14 +34,17 @@ import {
   createStructuredSnippet,
   findExistingAdGroup,
   findExistingCampaign,
+  findMissingResponsiveDisplayAds,
   findMissingKeywords,
   findMissingResponsiveSearchAds,
   targetDevices,
   targetUsCanada,
+  ALL_DEVICES,
 } from "./entities.js";
+import type { ImageLibrary } from "./images.js";
 import { StepError, sdkVersion, step } from "./errors.js";
 import type { AdsClient } from "../lib/auth.js";
-import type { Brief, Failure } from "../lib/schema.js";
+import type { Brief, DisplayBrief, Failure } from "../lib/schema.js";
 
 /** Per-ad-group record of what {@link publishV1} created (or reused). */
 export interface ExecAdGroup {
@@ -64,8 +72,8 @@ export interface ExecResults {
 }
 
 /** The full outcome of a publish run: what was created, plus the failure if any. */
-export interface RunOutcome {
-  results: ExecResults;
+export interface RunOutcome<R = ExecResults> {
+  results: R;
   failure: Failure | null;
   executorVersion: string;
 }
@@ -89,11 +97,7 @@ export function makeExecResults(brief: Brief): ExecResults {
 }
 
 /** Assemble a {@link RunOutcome} from its parts. */
-export function makeRunOutcome(
-  results: ExecResults,
-  failure: Failure | null,
-  executorVersion: string,
-): RunOutcome {
+export function makeRunOutcome<R>(results: R, failure: Failure | null, executorVersion: string): RunOutcome<R> {
   return { results, failure, executorVersion };
 }
 
@@ -227,6 +231,123 @@ export async function publishV1(
         raw: exc.raw,
         adGroupName: exc.adGroupName,
       };
+      return makeRunOutcome(results, failure, executorVersion);
+    }
+    throw exc;
+  }
+  return makeRunOutcome(results, null, executorVersion);
+}
+
+// ---------- Display ----------
+
+/** Per-ad-group record of what {@link publishDisplay} created (or reused). */
+export interface DisplayExecAdGroup {
+  name: string;
+  adGroupId: string | null;
+  audienceResourceNames: readonly string[];
+  responsiveDisplayAdIds: readonly string[];
+}
+
+/** What {@link publishDisplay} created. */
+export interface DisplayExecResults {
+  budgetId: string | null;
+  campaignId: string | null;
+  imageAssetResourceNames: readonly string[];
+  adGroups: DisplayExecAdGroup[];
+}
+
+/**
+ * Publish a display brief: budget → Display campaign (PAUSED) → US/CA + devices →
+ * image assets → per ad group (ad group → audiences → responsive display ads, PAUSED).
+ * `images` must hold every image the brief references, already checked against the
+ * slot specs (see images.ts). Same reuse/idempotency contract and the same deliberate
+ * mutable-accumulator exception as {@link publishV1}.
+ */
+export async function publishDisplay(
+  client: AdsClient,
+  customerId: string,
+  brief: DisplayBrief,
+  images: ImageLibrary,
+  archiveExisting = false,
+): Promise<RunOutcome<DisplayExecResults>> {
+  const executorVersion = sdkVersion();
+  const results: DisplayExecResults = {
+    budgetId: null,
+    campaignId: null,
+    imageAssetResourceNames: [],
+    adGroups: brief.adGroups.map((ag) => ({
+      name: ag.name,
+      adGroupId: null,
+      audienceResourceNames: [],
+      responsiveDisplayAdIds: [],
+    })),
+  };
+  try {
+    if (archiveExisting) {
+      await step("archive-existing-campaign", () =>
+        archiveCampaignsByName(client, customerId, brief.campaign.name),
+      );
+    }
+    const existingCampaign = archiveExisting
+      ? null
+      : await step("find-existing-campaign", () => findExistingCampaign(client, customerId, brief));
+    if (existingCampaign) {
+      results.campaignId = existingCampaign[0];
+      results.budgetId = existingCampaign[1];
+    } else {
+      results.budgetId = await step("create-campaign-budget", () => createCampaignBudget(client, customerId, brief));
+      results.campaignId = await step("create-display-campaign", () =>
+        createDisplayCampaign(client, customerId, brief, results.budgetId!),
+      );
+      await step("target-location", () => targetUsCanada(client, customerId, results.campaignId!));
+      // Display defaults to every device (unlike search's mobile exclusion) — most display inventory is mobile.
+      await step("target-devices", () =>
+        targetDevices(client, customerId, results.campaignId!, brief.campaign.devices ?? [...ALL_DEVICES]),
+      );
+    }
+    const assets = await step("create-image-assets", () => createImageAssets(client, customerId, images));
+    results.imageAssetResourceNames = [...assets.values()];
+    for (const [idx, briefAg] of brief.adGroups.entries()) {
+      const slot = results.adGroups[idx]!;
+      slot.adGroupId =
+        (await step(
+          "find-existing-ad-group",
+          () => findExistingAdGroup(client, customerId, briefAg, results.campaignId!),
+          briefAg.name,
+        )) ??
+        (await step(
+          "create-ad-group",
+          () => createDisplayAdGroup(client, customerId, briefAg, results.campaignId!),
+          briefAg.name,
+        ));
+      slot.audienceResourceNames = await step(
+        "create-audiences",
+        () => createMissingAudiences(client, customerId, briefAg, slot.adGroupId!),
+        briefAg.name,
+      );
+      // Sequential for the same CONCURRENT_MODIFICATION reason as publishV1's RSAs.
+      slot.responsiveDisplayAdIds = await step(
+        "create-responsive-display-ad",
+        async () => {
+          const missing = await findMissingResponsiveDisplayAds(
+            client,
+            customerId,
+            slot.adGroupId!,
+            briefAg.responsiveDisplayAds,
+          );
+          const ids: string[] = [];
+          slot.responsiveDisplayAdIds = ids;
+          for (const ad of missing) {
+            ids.push(await createResponsiveDisplayAd(client, customerId, ad, slot.adGroupId!, assets));
+          }
+          return ids;
+        },
+        briefAg.name,
+      );
+    }
+  } catch (exc) {
+    if (exc instanceof StepError) {
+      const failure: Failure = { step: exc.step, message: exc.message, raw: exc.raw, adGroupName: exc.adGroupName };
       return makeRunOutcome(results, failure, executorVersion);
     }
     throw exc;
