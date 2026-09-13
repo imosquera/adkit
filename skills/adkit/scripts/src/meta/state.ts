@@ -9,7 +9,7 @@
  * The suffix `.meta-state.yaml` deliberately does not end in `.state.yaml`, so the
  * Google `loadStateIndex` never picks Meta state up.
  *
- * Style: `metaStatePath`, `emptyMetaState`, `serializeMetaState`, `parseMetaState`, and
+ * Style: `metaStatePath`, `emptyMetaState`, `withSwappedCreatives`, `serializeMetaState`, `parseMetaState`, and
  * `slugFromMetaStateFile` are pure. `readMetaState`, `writeMetaState`, and
  * `loadMetaStateIndex` are the I/O edge. On-disk state is parsed once through
  * {@link MetaStateSchema}; callers receive a typed {@link MetaState}.
@@ -34,6 +34,7 @@ import {
   MetaVideoIdSchema,
   ok,
   type MetaAdAccountId,
+  type MetaCreativeId,
   type Result,
 } from "./ids.js";
 
@@ -122,6 +123,27 @@ export function emptyMetaState(brief: MetaStateSkeleton, adAccountId: MetaAdAcco
       name: adSet.name,
       adSetId: null,
       ads: adSet.ads.map((ad) => ({ name: ad.name, creativeId: null, adId: null })),
+    })),
+  };
+}
+
+/** A successful creative swap: the ad now points at `creativeId`. */
+export type MetaCreativeSwap = { readonly adId: string; readonly creativeId: MetaCreativeId };
+
+/**
+ * Pure: `state` with the `creativeId` of every ad named by a swap (matched on `adId`)
+ * replaced by the swap's new creative id. Ads no swap names are returned unchanged.
+ */
+export function withSwappedCreatives(state: MetaState, swaps: readonly MetaCreativeSwap[]): MetaState {
+  const byAdId = new Map(swaps.map((s) => [s.adId, s.creativeId]));
+  return {
+    ...state,
+    adSets: state.adSets.map((adSet) => ({
+      ...adSet,
+      ads: adSet.ads.map((ad) => {
+        const creativeId = ad.adId === null ? undefined : byAdId.get(ad.adId);
+        return creativeId === undefined ? ad : { ...ad, creativeId };
+      }),
     })),
   };
 }

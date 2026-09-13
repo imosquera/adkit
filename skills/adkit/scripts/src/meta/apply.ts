@@ -50,7 +50,7 @@ import type {
   MetaStatusChange,
   MetaTextPoolChange,
 } from "./plan.js";
-import type { MetaStateIndex, MetaStateLocator } from "./state.js";
+import type { MetaCreativeSwap, MetaStateIndex, MetaStateLocator } from "./state.js";
 
 // ---------- Live reads ----------
 
@@ -351,7 +351,12 @@ export type MetaApplyContext = {
 
 export type MetaApplied = { readonly section: MetaPlanSection; readonly entityId: string };
 export type MetaApplyError = { readonly step: string; readonly entityId: string; readonly message: string };
-export type MetaApplyResult = { readonly applied: MetaApplied[]; readonly errors: MetaApplyError[] };
+export type MetaApplyResult = {
+  readonly applied: MetaApplied[];
+  readonly errors: MetaApplyError[];
+  /** The new creative of every successful creative swap, for rewriting `.meta-state.yaml`. */
+  readonly creativeSwaps: MetaCreativeSwap[];
+};
 
 const stepLabel = (s: MetaApplyStep): string =>
   s.kind === "pause-status" || s.kind === "enable-status" ? APPLY_STEPS.status : s.kind;
@@ -371,23 +376,26 @@ const stepSections = (s: MetaApplyStep): MetaPlanSection[] =>
 const missing = (step: string, what: string, id: string): MetaApiError =>
   new MetaApiError({ step, code: "schema", message: `${what} ${id} not found in live state` });
 
-/** Execute one step (throws on failure). */
-async function runStep(client: MetaClient, ctx: MetaApplyContext, s: MetaApplyStep): Promise<void> {
+/** Execute one step (throws on failure); a creative swap returns the swap it made, other steps `null`. */
+async function runStep(client: MetaClient, ctx: MetaApplyContext, s: MetaApplyStep): Promise<MetaCreativeSwap | null> {
   switch (s.kind) {
     case "pause-status":
     case "enable-status":
-      return applyStatus(client, s.change);
+      await applyStatus(client, s.change);
+      return null;
     case "budget":
-      return applyBudget(client, s.change, ctx.live.currency);
+      await applyBudget(client, s.change, ctx.live.currency);
+      return null;
     case "exclusions": {
       const adSet = ctx.live.adSets.get(s.change.adSetId);
       if (adSet === undefined) throw missing(APPLY_STEPS.exclusions, "ad set", s.change.adSetId);
-      return applyExclusions(client, s.change, adSet);
+      await applyExclusions(client, s.change, adSet);
+      return null;
     }
     case "creative-swap": {
       const ad = ctx.live.ads.get(s.adId);
       if (ad === undefined) throw missing(APPLY_STEPS.creativeSwap, "ad", s.adId);
-      await applyCreativeSwap(
+      const creativeId = await applyCreativeSwap(
         client,
         ctx.adAccountId,
         ad,
@@ -397,7 +405,7 @@ async function runStep(client: MetaClient, ctx: MetaApplyContext, s: MetaApplySt
         },
         ctx.now,
       );
-      return;
+      return { adId: s.adId, creativeId };
     }
   }
 }
@@ -405,6 +413,7 @@ async function runStep(client: MetaClient, ctx: MetaApplyContext, s: MetaApplySt
 /**
  * Apply `changes` in `order`, one step at a time. Each step is isolated: a failure is
  * recorded as `{ step, entityId, message }` and the fold moves on to the next step.
+ * Every successful creative swap is also reported as `{ adId, creativeId }`.
  */
 export async function runMetaApply(
   client: MetaClient,
@@ -416,12 +425,16 @@ export async function runMetaApply(
     const acc = await prev;
     const entityId = stepEntityId(s);
     try {
-      await runStep(client, ctx, s);
-      return { ...acc, applied: [...acc.applied, ...stepSections(s).map((section) => ({ section, entityId }))] };
+      const swap = await runStep(client, ctx, s);
+      return {
+        ...acc,
+        applied: [...acc.applied, ...stepSections(s).map((section) => ({ section, entityId }))],
+        creativeSwaps: swap === null ? acc.creativeSwaps : [...acc.creativeSwaps, swap],
+      };
     } catch (e) {
       return { ...acc, errors: [...acc.errors, { step: stepLabel(s), entityId, message: formatMetaError(e) }] };
     }
-  }, Promise.resolve({ applied: [], errors: [] }));
+  }, Promise.resolve({ applied: [], errors: [], creativeSwaps: [] }));
 }
 
 // ---------- Staging onto briefs ----------

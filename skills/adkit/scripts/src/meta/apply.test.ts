@@ -223,6 +223,7 @@ describe("runMetaApply", () => {
       { section: "textPools", entityId: "300" },
       { section: "status", entityId: "100" },
     ]);
+    expect(result.creativeSwaps).toEqual([{ adId: "300", creativeId: "777" }]);
     const writes = posts(client.calls);
     expect(writes.map((w) => w.path)).toEqual(["200", "200", "act_111/adcreatives", "300", "100"]);
     expect(writes[0]?.body).toEqual({ daily_budget: 6050 });
@@ -259,6 +260,7 @@ describe("runMetaApply", () => {
       }),
     );
     expect(result.applied).toEqual([{ section: "status", entityId: "300" }]);
+    expect(result.creativeSwaps).toEqual([]);
     expect(result.errors).toEqual([
       { step: "budget", entityId: "200", message: expect.stringContaining("budget changed too often") },
       { step: "creative-swap", entityId: "404", message: expect.stringContaining("not found in live state") },
@@ -269,6 +271,7 @@ describe("runMetaApply", () => {
     const client = fakeMetaClient({ failOn: (c) => (c.path.endsWith("/adcreatives") ? metaApiError(100, "invalid spec") : null) });
     const result = await runMetaApply(client, ctx, plan({ textPools: [{ adId: "300", headlines: ["h"] }] }));
     expect(result.errors).toHaveLength(1);
+    expect(result.creativeSwaps).toEqual([]);
     expect(posts(client.calls).map((w) => w.path)).toEqual(["act_111/adcreatives"]);
   });
 });

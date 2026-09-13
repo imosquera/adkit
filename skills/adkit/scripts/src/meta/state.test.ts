@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { loadStateIndex } from "../adbriefs/state.js";
 import { AdbriefsError } from "../adbriefs/store.js";
-import { MetaAdAccountIdSchema } from "./ids.js";
+import { MetaAdAccountIdSchema, MetaCreativeIdSchema } from "./ids.js";
 import {
   emptyMetaState,
   loadMetaStateIndex,
@@ -16,6 +16,7 @@ import {
   readMetaState,
   serializeMetaState,
   slugFromMetaStateFile,
+  withSwappedCreatives,
   writeMetaState,
   type MetaState,
 } from "./state.js";
@@ -125,6 +126,28 @@ describe("paths", () => {
     expect(slugFromMetaStateFile("x.meta-state.yaml")).toBe("x");
     expect(slugFromMetaStateFile("x.state.yaml")).toBeNull();
     expect(slugFromMetaStateFile("x.yaml")).toBeNull();
+  });
+});
+
+describe("withSwappedCreatives", () => {
+  it("replaces the creativeId of matching ads only, without mutating the input", () => {
+    const state = partialState();
+    const before = structuredClone(state);
+    const next = withSwappedCreatives(state, [
+      { adId: "400", creativeId: MetaCreativeIdSchema.parse("777") },
+      { adId: "999", creativeId: MetaCreativeIdSchema.parse("888") },
+    ]);
+    expect(next.adSets[0]?.ads).toEqual([
+      { name: "Ad A", creativeId: "777", adId: "400" },
+      { name: "Ad B", creativeId: "301", adId: null },
+    ]);
+    expect(next.adSets[1]).toEqual(state.adSets[1]);
+    expect({ ...next, adSets: state.adSets }).toEqual(state);
+    expect(state).toEqual(before);
+  });
+
+  it("returns an equal state for no swaps", () => {
+    expect(withSwappedCreatives(partialState(), [])).toEqual(partialState());
   });
 });
 

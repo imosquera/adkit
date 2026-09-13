@@ -16,16 +16,13 @@
  * 4. Narrate planned actions plus one `WARNING:` line per {@link metaWarnings} risk.
  * 5. Dry run (default): the envelope with `applied: false`; zero Graph writes and zero
  *    file writes.
- * 6. `--apply`: {@link runMetaApply} (every entry isolated), then write the staged
- *    briefs of slugs no failed entry touches. Any failure → the same keys on an
- *    `ok: false` envelope with `errors[]`, exit 1.
+ * 6. `--apply`: {@link runMetaApply} (every entry isolated), then — for slugs no
+ *    failed entry touches — write the staged briefs and record each swapped creative's
+ *    new id in `<slug>.meta-state.yaml` ({@link withSwappedCreatives}). Any failure →
+ *    the same keys on an `ok: false` envelope with `errors[]`, exit 1.
  *
  * Exit codes mirror apply-fixes: 0 success (incl. dry run), 1 validation / Graph /
  * apply failure, 2 bad arguments or an unreadable / invalid plan file.
- *
- * `.meta-state.yaml` is not rewritten here: an update changes no name ↔ id mapping the
- * index reads (a creative swap replaces the creative id, which `runMetaApply` does not
- * report back, and which no reader of the index uses).
  *
  * Usage: adkit-update <plan.yaml> [--apply] [--ad-account <act_id>]
  */
@@ -49,9 +46,9 @@ import {
   type MetaPlanGroup,
 } from "../apply.js";
 import { parseMetaBrief, type MetaBrief } from "../brief.js";
-import type { MetaClient } from "../client.js";
+import { metaClientFor, type MetaClient } from "../client.js";
 import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags } from "../config.js";
-import { MetaApiError, MetaConfigError, formatMetaError } from "../errors.js";
+import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
 import { err, ok, type Result } from "../ids.js";
 import { fromMinorUnits } from "../money.js";
 import {
@@ -64,8 +61,15 @@ import {
   type MetaPlan,
   type MetaPlanSections,
 } from "../plan.js";
-import { loadMetaStateIndex, type MetaStateIndex } from "../state.js";
-import { defaultClientFactory } from "./preflight.js";
+import {
+  loadMetaStateIndex,
+  META_STATE_SUFFIX,
+  readMetaState,
+  withSwappedCreatives,
+  writeMetaState,
+  type MetaCreativeSwap,
+  type MetaStateIndex,
+} from "../state.js";
 
 // ---------- Args ----------
 
@@ -147,6 +151,21 @@ export const slugsForEntity = (index: MetaStateIndex, entityId: string): string[
     }),
   ),
 ];
+
+/** Pure: successful creative swaps grouped by the brief slug their ad id maps to; unindexed ads are dropped. */
+export const swapsBySlug = (
+  index: MetaStateIndex,
+  swaps: readonly MetaCreativeSwap[],
+): [string, MetaCreativeSwap[]][] => {
+  const located = swaps.flatMap((swap) => {
+    const loc = index.byAdId.get(swap.adId);
+    return loc === undefined ? [] : [{ slug: loc.slug, swap }];
+  });
+  return [...new Set(located.map((l) => l.slug))].map((slug) => [
+    slug,
+    located.flatMap((l) => (l.slug === slug ? [l.swap] : [])),
+  ]);
+};
 
 // ---------- Brief staging (I/O edge: reads only) ----------
 
@@ -247,10 +266,7 @@ export interface UpdateDeps {
   readonly briefsDir: () => string;
 }
 
-interface StepFailure {
-  readonly step: string;
-  readonly message: string;
-}
+type StepFailure = EnvelopeFailure;
 
 type StepResult<T> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "err"; readonly failure: StepFailure };
 
@@ -259,13 +275,7 @@ const runStep = async <T>(step: string, effect: () => Promise<T> | T): Promise<S
   try {
     return { kind: "ok", value: await effect() };
   } catch (exc) {
-    return {
-      kind: "err",
-      failure: {
-        step: exc instanceof MetaApiError || exc instanceof MetaConfigError ? exc.step : step,
-        message: formatMetaError(exc),
-      },
-    };
+    return { kind: "err", failure: envelopeFailure(exc, step) };
   }
 };
 
@@ -305,7 +315,7 @@ export async function main(
   env: NodeJS.ProcessEnv = process.env,
   deps: Partial<UpdateDeps> = {},
 ): Promise<number> {
-  const clientFactory = deps.clientFactory ?? defaultClientFactory;
+  const clientFactory = deps.clientFactory ?? metaClientFor;
   const resolveContext = deps.resolveContext ?? ((flags: MetaContextFlags) => resolveMetaContextFromProcess(flags, env));
   const now = deps.now ?? (() => new Date());
   const cwd = deps.cwd ?? (() => process.cwd());
@@ -420,7 +430,20 @@ export async function main(
       };
     }
   });
-  const errors = [...applyErrors, ...written.flatMap((w) => (w.error === null ? [] : [w.error]))];
+  // Record swapped creative ids in `.meta-state.yaml`, again only for slugs no failure touched.
+  const stateErrors = swapsBySlug(index.value, result.creativeSwaps)
+    .filter(([slug]) => !failedSlugs.has(slug))
+    .flatMap(([slug, swaps]): SlugError[] => {
+      const path = join(root, briefsDir, `${slug}${META_STATE_SUFFIX}`);
+      try {
+        const state = readMetaState(path);
+        if (state !== null) writeMetaState(path, withSwappedCreatives(state, swaps));
+        return [];
+      } catch (exc) {
+        return [{ step: "write-state", entityId: slug, message: formatMetaError(exc), slugs: [slug] }];
+      }
+    });
+  const errors = [...applyErrors, ...written.flatMap((w) => (w.error === null ? [] : [w.error])), ...stateErrors];
   const briefs = written.map((w) => w.entry);
 
   if (errors.length === 0) {

@@ -209,6 +209,8 @@ describe("main", () => {
 
   const posts = (client: FakeMetaClient) => client.calls.filter((c) => c.method === "post");
   const readBrief = (slug: string): Obj => parseYaml(readFileSync(join(cwd, "adbriefs", `${slug}.yaml`), "utf8")) as Obj;
+  const readState = (slug: string): Obj =>
+    parseYaml(readFileSync(join(cwd, "adbriefs", `${slug}.meta-state.yaml`), "utf8")) as Obj;
   const briefText = (slug: string): string => readFileSync(join(cwd, "adbriefs", `${slug}.yaml`), "utf8");
 
   const shopPlan = {
@@ -280,6 +282,10 @@ describe("main", () => {
     expect(set["dailyBudget"]).toBe(60);
     expect((set["audience"] as Obj)["excludedCustomAudienceIds"]).toEqual(["900", "901"]);
     expect(((set["ads"] as Obj[])[0]!)["headlines"]).toEqual(["h1", "h2"]);
+    // The text-pool swap's new creative id is recorded in the state file; other ids are untouched.
+    const shopAd = ((readState("shop")["adSets"] as Obj[])[0]!["ads"] as Obj[])[0]!;
+    expect(shopAd).toEqual({ name: "ad-1", creativeId: "777", adId: "300" });
+    expect(readState("other")).toEqual(stateData("Other", "110", "210", "310"));
 
     const rerunClient = world.client();
     const briefAfterApply = briefText("shop");
@@ -370,6 +376,22 @@ describe("main", () => {
     expect(briefText("other")).toBe(otherBefore);
     expect(((readBrief("shop")["adSets"] as Obj[])[0]!)["dailyBudget"]).toBe(60);
     expect(out.some((l) => l.includes("NOT updated"))).toBe(true);
+  });
+
+  it("leaves the state file alone when another entry for the same slug fails", async () => {
+    const world = standardWorld();
+    const client = world.client((c) => (c.method === "post" && c.path === "200" ? metaApiError(613, "budget changed too often") : null));
+    const stateBefore = readState("shop");
+    const { code } = await run(
+      [
+        writePlan({ budgets: [{ level: "adset", id: "200", dailyBudget: 60 }], textPools: [{ adId: "300", headlines: ["h1"] }] }),
+        "--apply",
+      ],
+      client,
+    );
+    expect(code).toBe(1);
+    expect(posts(client).map((c) => c.path)).toContain("act_111/adcreatives");
+    expect(readState("shop")).toEqual(stateBefore);
   });
 
   it("VALIDATION FAILED on a budget raise above 50%, with zero writes", async () => {
