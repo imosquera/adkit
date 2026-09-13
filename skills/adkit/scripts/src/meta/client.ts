@@ -4,11 +4,12 @@
  * Pure core, exported and tested on its own:
  * - {@link encodeParams} — Graph param encoding (objects/arrays JSON, `fields` joined).
  * - {@link appsecretProof} — HMAC-SHA256 of the token keyed by the app secret.
- * - {@link classifyGraphError} — retry vs fatal for a non-2xx body.
+ * - {@link graphFailureKind} / {@link classifyGraphError} — throttle / ambiguous / fatal,
+ *   and retry vs fatal per HTTP method (POSTs never resend after an ambiguous failure).
  * - {@link retryDelayMs} — exponential backoff, stretched by Meta's usage headers.
  *
  * I/O shell: {@link createMetaClient} wraps an injected `fetch` with a small
- * recursive retry (max {@link MAX_ATTEMPTS}), parses every 2xx body through the
+ * recursive retry (max {@link MAX_ATTEMPTS}) and a per-attempt timeout, parses every 2xx body through the
  * caller's zod schema and every failure into {@link MetaApiError}. The access token
  * travels only as a request param; it is never logged and every error message is
  * passed through `redactMetaSecrets`.
@@ -36,6 +37,12 @@ export const MAX_DELAY_MS = 5 * 60 * 1000;
 export const MAX_VIDEO_BYTES = 1024 * 1024 * 1024;
 export const VIDEO_POLL_ATTEMPTS = 60;
 export const VIDEO_POLL_INTERVAL_MS = 5000;
+/** Per-attempt timeout for JSON Graph calls. */
+export const DEFAULT_TIMEOUT_MS = 60 * 1000;
+/** Per-attempt timeout for multipart media uploads (a 1 GB video on a slow uplink). */
+export const DEFAULT_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+/** Video statuses that never become `ready`. */
+const TERMINAL_VIDEO_STATUSES: ReadonlySet<string> = new Set(["error", "expired"]);
 /** 613 subcode "ad set budget changed too often" — does not clear with a short backoff. */
 export const BUDGET_CHANGE_QUOTA_SUBCODE = 1487632;
 
@@ -69,6 +76,10 @@ export interface MetaClientOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   /** Jitter source in [0, 1); injectable for deterministic tests. */
   readonly random?: () => number;
+  /** Per-attempt timeout for JSON calls, ms (default {@link DEFAULT_TIMEOUT_MS}). */
+  readonly timeoutMs?: number;
+  /** Per-attempt timeout for image/video uploads, ms (default {@link DEFAULT_UPLOAD_TIMEOUT_MS}). */
+  readonly uploadTimeoutMs?: number;
 }
 
 /** Minimal header accessor so `retryDelayMs` works on `Headers` or a plain stub. */
@@ -103,21 +114,42 @@ export const encodeParams = (params: Params): readonly (readonly [string, string
 export const appsecretProof = (token: string, appSecret: string): string =>
   createHmac("sha256", appSecret).update(token).digest("hex");
 
-const RETRY_CODES: ReadonlySet<number> = new Set([1, 2, 4, 17, 32, 613]);
+/** Throttling codes: Meta rejects the request before acting on it. */
+const THROTTLE_CODES: ReadonlySet<number> = new Set([4, 17, 32, 613]);
+/** Transient codes: Meta may have acted (e.g. created the object) before failing. */
+const TRANSIENT_CODES: ReadonlySet<number> = new Set([1, 2]);
 const isAdsThrottleCode = (code: number): boolean => code >= 80000 && code <= 80014;
 
+export type HttpMethod = "GET" | "POST";
+
 /**
- * `"retry"` for transient/throttling Graph errors (codes 1, 2, 4, 17, 32, 613,
- * 80000–80014, `is_transient`) and HTTP 5xx; `"fatal"` otherwise — including the
- * budget-change quota subcode 1487632, which a short backoff never clears. Pure.
+ * How a non-2xx failed: `"throttle"` — rejected before acting (codes 4, 17, 32, 613,
+ * 80000–80014), safe to resend; `"ambiguous"` — transient (codes 1, 2, `is_transient`,
+ * HTTP 5xx), so a write may already have taken effect; `"fatal"` — everything else,
+ * including budget-change quota subcode 1487632, which a short backoff never clears. Pure.
  */
-export const classifyGraphError = (body: unknown, status: number): "retry" | "fatal" => {
+export const graphFailureKind = (body: unknown, status: number): "throttle" | "ambiguous" | "fatal" => {
   const parsed = GraphErrorSchema.safeParse(body);
-  if (!parsed.success) return status >= 500 ? "retry" : "fatal";
+  if (!parsed.success) return status >= 500 ? "ambiguous" : "fatal";
   const { code, error_subcode, is_transient } = parsed.data.error;
   if (error_subcode === BUDGET_CHANGE_QUOTA_SUBCODE) return "fatal";
-  return RETRY_CODES.has(code) || isAdsThrottleCode(code) || is_transient === true || status >= 500 ? "retry" : "fatal";
+  if (THROTTLE_CODES.has(code) || isAdsThrottleCode(code)) return "throttle";
+  return TRANSIENT_CODES.has(code) || is_transient === true || status >= 500 ? "ambiguous" : "fatal";
 };
+
+/**
+ * `"retry"` or `"fatal"` for a non-2xx body. A GET (idempotent) retries throttle and
+ * ambiguous failures; a POST retries throttles only — resending after an ambiguous
+ * failure could create a duplicate object. Pure.
+ */
+export const classifyGraphError = (body: unknown, status: number, method: HttpMethod): "retry" | "fatal" => {
+  const kind = graphFailureKind(body, status);
+  return kind === "throttle" || (kind === "ambiguous" && method === "GET") ? "retry" : "fatal";
+};
+
+/** Appended to a POST failure whose outcome on Meta's side is unknown. */
+export const AMBIGUOUS_POST_HINT =
+  "the request may have taken effect before failing (an object may have been created); re-run to reconcile — creates are looked up by name first";
 
 const safeJson = (text: string): unknown => {
   try {
@@ -167,11 +199,12 @@ export const retryDelayMs = (attempt: number, headers: HeaderLookup, jitter = 0)
 };
 
 /** Map a non-2xx response body to a {@link MetaApiError}, redacting any echoed secrets. */
-export const toMetaApiError = (body: unknown, status: number, rawText: string, step: string): MetaApiError => {
+export const toMetaApiError = (body: unknown, status: number, rawText: string, step: string, hint?: string): MetaApiError => {
+  const withHint = (message: string): string => (hint === undefined ? message : `${message} (${hint})`);
   const parsed = GraphErrorSchema.safeParse(body);
   if (!parsed.success) {
     const snippet = redactMetaSecrets(rawText.slice(0, 300));
-    return new MetaApiError({ step, code: status, message: `HTTP ${status}${snippet === "" ? "" : `: ${snippet}`}` });
+    return new MetaApiError({ step, code: status, message: withHint(`HTTP ${status}${snippet === "" ? "" : `: ${snippet}`}`) });
   }
   const e = parsed.data.error;
   return new MetaApiError({
@@ -179,9 +212,11 @@ export const toMetaApiError = (body: unknown, status: number, rawText: string, s
     code: e.code,
     subcode: e.error_subcode,
     message: redactMetaSecrets(
-      e.error_subcode === BUDGET_CHANGE_QUOTA_SUBCODE
-        ? `${e.message} (Meta allows at most 4 budget changes per ad set per hour; try again later)`
-        : e.message,
+      withHint(
+        e.error_subcode === BUDGET_CHANGE_QUOTA_SUBCODE
+          ? `${e.message} (Meta allows at most 4 budget changes per ad set per hour; try again later)`
+          : e.message,
+      ),
     ),
     userTitle: e.error_user_title === undefined ? undefined : redactMetaSecrets(e.error_user_title),
     userMessage: e.error_user_msg === undefined ? undefined : redactMetaSecrets(e.error_user_msg),
@@ -201,10 +236,41 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
 /** Strip query string (it may carry the token) so a URL is safe to put in a message. */
 const describeUrl = (url: string): string => redactMetaSecrets(url.split("?")[0] ?? url);
 
+const NO_HEADERS: HeaderLookup = { get: () => null };
+
+const CauseDetailSchema = z.object({ code: z.string().optional(), message: z.string().optional() });
+
+/**
+ * A fetch rejection as text, including the underlying socket cause Node's `fetch`
+ * hides behind "fetch failed" (e.g. `ECONNRESET: socket hang up`). Pure.
+ */
+const describeCause = (cause: unknown): string => {
+  const outer = cause instanceof Error ? cause.message : String(cause);
+  const inner = cause instanceof Error ? CauseDetailSchema.safeParse(cause.cause) : undefined;
+  const detail = inner?.success === true ? [inner.data.code, inner.data.message].filter((s) => s !== undefined && s !== "").join(": ") : "";
+  return detail === "" ? outer : `${outer} (${detail})`;
+};
+
+type Exchange =
+  | { readonly kind: "response"; readonly res: Response; readonly text: string }
+  | { readonly kind: "timeout"; readonly cause: unknown }
+  | { readonly kind: "network"; readonly cause: unknown };
+
+interface SendRequest {
+  readonly url: string;
+  /** Rebuilt per attempt so a multipart retry resends the file. */
+  readonly init: () => RequestInit;
+  readonly step: string;
+  readonly method: HttpMethod;
+  readonly timeoutMs: number;
+}
+
 export function createMetaClient(opts: MetaClientOptions): MetaClient {
   const doFetch = opts.fetch ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
   const random = opts.random ?? Math.random;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const uploadTimeoutMs = opts.uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS;
   const base = `${GRAPH_BASE_URL}/${opts.version ?? GRAPH_API_VERSION}`;
   const authParams: Params = {
     access_token: opts.token,
@@ -221,19 +287,45 @@ export function createMetaClient(opts: MetaClientOptions): MetaClient {
     return missing.length === 0 ? absolute : `${absolute}${absolute.includes("?") ? "&" : "?"}${toSearchParams(missing).toString()}`;
   };
 
-  /** One HTTP exchange with recursive retry; resolves to the parsed JSON body of a 2xx. */
-  const send = async (url: string, init: () => RequestInit, step: string, attempt = 1): Promise<unknown> => {
-    const res = await doFetch(url, init()).catch((cause: unknown) => {
-      throw new Error(redactMetaSecrets(`network error at ${step} (${describeUrl(url)}): ${cause instanceof Error ? cause.message : String(cause)}`));
-    });
-    const text = await res.text();
+  /**
+   * One HTTP exchange (fetch + body read) under a per-attempt timeout signal.
+   * Never rejects: a timeout or network failure comes back as a tagged value.
+   */
+  const exchange = async (url: string, init: RequestInit, timeoutMs: number): Promise<Exchange> => {
+    const signal = AbortSignal.timeout(timeoutMs);
+    try {
+      const res = await doFetch(url, { ...init, signal });
+      return { kind: "response", res, text: await res.text() };
+    } catch (cause: unknown) {
+      return signal.aborted ? { kind: "timeout", cause } : { kind: "network", cause };
+    }
+  };
+
+  /** Recursive retry around {@link exchange}; resolves to the parsed JSON body of a 2xx. */
+  const send = async (req: SendRequest, attempt = 1): Promise<unknown> => {
+    const { url, init, step, method, timeoutMs } = req;
+    const where = `${step} (${method} ${describeUrl(url)})`;
+    const result = await exchange(url, init(), timeoutMs);
+    if (result.kind === "network") {
+      throw new Error(redactMetaSecrets(`network error at ${where}: ${describeCause(result.cause)}`), { cause: result.cause });
+    }
+    if (result.kind === "timeout") {
+      if (method === "GET" && attempt < MAX_ATTEMPTS) {
+        await sleep(retryDelayMs(attempt, NO_HEADERS, random()));
+        return send(req, attempt + 1);
+      }
+      const outcome = method === "POST" ? `; outcome unknown — ${AMBIGUOUS_POST_HINT}` : "";
+      throw new Error(redactMetaSecrets(`request timed out after ${timeoutMs}ms at ${where}${outcome}`), { cause: result.cause });
+    }
+    const { res, text } = result;
     const body = safeJson(text);
     if (res.ok) return body;
-    if (attempt < MAX_ATTEMPTS && classifyGraphError(body, res.status) === "retry") {
+    if (attempt < MAX_ATTEMPTS && classifyGraphError(body, res.status, method) === "retry") {
       await sleep(retryDelayMs(attempt, res.headers, random()));
-      return send(url, init, step, attempt + 1);
+      return send(req, attempt + 1);
     }
-    throw toMetaApiError(body, res.status, text, step);
+    const hint = method === "POST" && graphFailureKind(body, res.status) === "ambiguous" ? AMBIGUOUS_POST_HINT : undefined;
+    throw toMetaApiError(body, res.status, text, step, hint);
   };
 
   const parseWith = <T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, body: unknown, url: string, step: string): T => {
@@ -248,7 +340,7 @@ export function createMetaClient(opts: MetaClientOptions): MetaClient {
   };
 
   const getUrl = async <T>(url: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>, step: string): Promise<T> =>
-    parseWith(schema, await send(url, () => ({ method: "GET" }), step), url, step);
+    parseWith(schema, await send({ url, init: () => ({ method: "GET" }), step, method: "GET", timeoutMs }), url, step);
 
   const get = <T>(path: string, params: Params, schema: z.ZodType<T, z.ZodTypeDef, unknown>, o?: CallOptions): Promise<T> =>
     getUrl(`${urlFor(path)}?${query(params)}`, schema, o?.step ?? "graph-get");
@@ -273,7 +365,7 @@ export function createMetaClient(opts: MetaClientOptions): MetaClient {
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: query(body),
     });
-    return parseWith(schema, await send(url, init, step), url, step);
+    return parseWith(schema, await send({ url, init, step, method: "POST", timeoutMs }), url, step);
   };
 
   /** Multipart POST; the `FormData` is rebuilt per attempt so a retry resends the file. */
@@ -291,7 +383,7 @@ export function createMetaClient(opts: MetaClientOptions): MetaClient {
       form.append(file.field, new Blob([file.bytes]), file.name);
       return { method: "POST", body: form };
     };
-    return parseWith(schema, await send(url, init, step), url, step);
+    return parseWith(schema, await send({ url, init, step, method: "POST", timeoutMs: uploadTimeoutMs }), url, step);
   };
 
   const uploadImage = async (account: MetaAdAccountId, file: MediaFile, o?: CallOptions): Promise<ImageHash> => {
@@ -308,9 +400,10 @@ export function createMetaClient(opts: MetaClientOptions): MetaClient {
   const pollVideo = async (id: MetaVideoId, step: string, attempt = 1): Promise<MetaVideoId> => {
     const { status } = await get(id, { fields: "status" }, VideoStatusSchema, { step });
     if (status.video_status === "ready") return id;
-    if (status.video_status === "error") {
+    if (TERMINAL_VIDEO_STATUSES.has(status.video_status) || status.processing_phase?.status === "error") {
       const first = status.processing_phase?.errors?.[0];
-      throw new MetaApiError({ step, code: first?.code ?? 0, message: `video ${id} failed processing: ${first?.message ?? "unknown error"}` });
+      const reason = status.video_status === "expired" ? "upload expired before processing" : (first?.message ?? "unknown error");
+      throw new MetaApiError({ step, code: first?.code ?? 0, message: `video ${id} failed processing (status "${status.video_status}"): ${reason}` });
     }
     if (attempt >= VIDEO_POLL_ATTEMPTS) {
       throw new MetaApiError({

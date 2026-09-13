@@ -9,8 +9,11 @@ import {
   MAX_DELAY_MS,
   VIDEO_POLL_ATTEMPTS,
   appsecretProof,
+  AMBIGUOUS_POST_HINT,
+  DEFAULT_TIMEOUT_MS,
   classifyGraphError,
   createMetaClient,
+  graphFailureKind,
   encodeParams,
   metaClientFor,
   retryDelayMs,
@@ -35,6 +38,12 @@ const queueFetch = (responses: readonly Response[]) => {
   responses.forEach((r) => fn.mockResolvedValueOnce(r));
   return fn;
 };
+
+/** fetch stub that never answers: rejects with the abort reason once the signal fires. */
+const hangUntilAborted = (_url: string, init?: RequestInit): Promise<Response> =>
+  new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+  });
 
 const noSleep = () => vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
 
@@ -77,25 +86,45 @@ describe("appsecretProof", () => {
 });
 
 describe("classifyGraphError", () => {
-  it.each([1, 2, 4, 17, 32, 613, 80000, 80004, 80014])("retries code %i", (code) => {
-    expect(classifyGraphError(graphError(code), 400)).toBe("retry");
+  it.each([1, 2, 4, 17, 32, 613, 80000, 80004, 80014])("retries code %i on GET", (code) => {
+    expect(classifyGraphError(graphError(code), 400, "GET")).toBe("retry");
   });
 
-  it("retries is_transient and HTTP 5xx", () => {
-    expect(classifyGraphError(graphError(100, { is_transient: true }), 400)).toBe("retry");
-    expect(classifyGraphError(graphError(100), 503)).toBe("retry");
-    expect(classifyGraphError("not json", 502)).toBe("retry");
+  it.each([4, 17, 32, 613, 80000, 80014])("retries throttle code %i on POST", (code) => {
+    expect(classifyGraphError(graphError(code), 400, "POST")).toBe("retry");
+    expect(graphFailureKind(graphError(code), 400)).toBe("throttle");
+  });
+
+  it("retries is_transient and HTTP 5xx on GET", () => {
+    expect(classifyGraphError(graphError(100, { is_transient: true }), 400, "GET")).toBe("retry");
+    expect(classifyGraphError(graphError(100), 503, "GET")).toBe("retry");
+    expect(classifyGraphError("not json", 502, "GET")).toBe("retry");
+  });
+
+  it("never retries an ambiguous failure (codes 1/2, is_transient, 5xx) on POST", () => {
+    const ambiguous: readonly (readonly [unknown, number])[] = [
+      [graphError(1), 400],
+      [graphError(2), 500],
+      [graphError(100, { is_transient: true }), 400],
+      [graphError(100), 503],
+      ["not json", 502],
+    ];
+    ambiguous.forEach(([body, status]) => {
+      expect(graphFailureKind(body, status)).toBe("ambiguous");
+      expect(classifyGraphError(body, status, "POST")).toBe("fatal");
+    });
   });
 
   it("does not retry budget-change quota subcode 1487632 even under 613", () => {
-    expect(classifyGraphError(graphError(613, { error_subcode: 1487632 }), 400)).toBe("fatal");
+    expect(classifyGraphError(graphError(613, { error_subcode: 1487632 }), 400, "GET")).toBe("fatal");
+    expect(classifyGraphError(graphError(613, { error_subcode: 1487632 }), 400, "POST")).toBe("fatal");
   });
 
   it("treats other 4xx as fatal", () => {
-    expect(classifyGraphError(graphError(100), 400)).toBe("fatal");
-    expect(classifyGraphError(graphError(190), 401)).toBe("fatal");
-    expect(classifyGraphError(graphError(80015), 400)).toBe("fatal");
-    expect(classifyGraphError(undefined, 404)).toBe("fatal");
+    expect(classifyGraphError(graphError(100), 400, "GET")).toBe("fatal");
+    expect(classifyGraphError(graphError(190), 401, "GET")).toBe("fatal");
+    expect(classifyGraphError(graphError(80015), 400, "GET")).toBe("fatal");
+    expect(classifyGraphError(undefined, 404, "GET")).toBe("fatal");
   });
 });
 
@@ -220,6 +249,50 @@ describe("createMetaClient.get", () => {
     expect(formatMetaError(error)).toContain("access_token=[REDACTED]");
   });
 
+  it("retries a GET on HTTP 500", async () => {
+    const fetch = queueFetch([json(graphError(2), 500), json({ id: "1" })]);
+    const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep() });
+    await expect(client.get("me", {}, MeSchema)).resolves.toEqual({ id: "1" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes an abort signal and retries a GET that times out", async () => {
+    const fetch = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
+    fetch.mockImplementationOnce(hangUntilAborted);
+    fetch.mockResolvedValueOnce(json({ id: "1" }));
+    const sleep = noSleep();
+    const client = createMetaClient({ token: TOKEN, fetch, sleep, timeoutMs: 5 });
+    await expect(client.get("me", {}, MeSchema)).resolves.toEqual({ id: "1" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0]![1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("gives up on a GET that times out on every attempt", async () => {
+    const fetch = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>().mockImplementation(hangUntilAborted);
+    const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep(), timeoutMs: 5 });
+    const error = (await client.get("me", {}, MeSchema).catch((e: unknown) => e)) as Error;
+    expect(error.message).toMatch(/timed out after 5ms/);
+    expect(error.message).not.toContain(TOKEN);
+    expect(fetch).toHaveBeenCalledTimes(MAX_ATTEMPTS);
+  });
+
+  it("defaults the per-attempt timeout to DEFAULT_TIMEOUT_MS", () => {
+    expect(DEFAULT_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it("keeps the underlying network cause in the message and on the error", async () => {
+    const socket = Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+    const failure = new TypeError(`fetch failed for ?access_token=${TOKEN}`, { cause: socket });
+    const fetch = vi.fn<(url: string) => Promise<Response>>().mockRejectedValue(failure);
+    const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep() });
+    const error = (await client.get("me", {}, MeSchema, { step: "auth" }).catch((e: unknown) => e)) as Error;
+    expect(error.message).toContain("ECONNRESET: socket hang up");
+    expect(error.message).toContain("network error at auth");
+    expect(error.message).not.toContain(TOKEN);
+    expect(error.cause).toBe(failure);
+  });
+
   it("redacts the token from network failures", async () => {
     const fetch = vi.fn<(url: string) => Promise<Response>>().mockRejectedValue(new TypeError(`fetch failed for ?access_token=${TOKEN}`));
     const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep() });
@@ -276,6 +349,51 @@ describe("createMetaClient.post", () => {
     expect(body.get("access_token")).toBe(TOKEN);
   });
 
+  it("does not retry a POST on HTTP 500 and hints the object may exist", async () => {
+    const fetch = queueFetch([json(graphError(2), 500), json({ id: "777" })]);
+    const sleep = noSleep();
+    const client = createMetaClient({ token: TOKEN, fetch, sleep });
+    const error = (await client.post("act_42/campaigns", { name: "C" }, CreatedIdSchema).catch((e: unknown) => e)) as MetaApiError;
+    expect(error).toBeInstanceOf(MetaApiError);
+    expect(error.code).toBe(2);
+    expect(error.message).toContain(AMBIGUOUS_POST_HINT);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a POST with a non-Graph 502 body", async () => {
+    const fetch = queueFetch([new Response("bad gateway", { status: 502 })]);
+    const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep() });
+    const error = (await client.post("act_42/ads", {}, CreatedIdSchema).catch((e: unknown) => e)) as MetaApiError;
+    expect(error.message).toBe(`HTTP 502: bad gateway (${AMBIGUOUS_POST_HINT})`);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a POST rejected with throttle code 17", async () => {
+    const fetch = queueFetch([json(graphError(17), 400), json({ id: "777" })]);
+    const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep() });
+    await expect(client.post("act_42/adsets", { name: "A" }, CreatedIdSchema)).resolves.toEqual({ id: "777" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not add the ambiguity hint to a plain 4xx POST failure", async () => {
+    const client = createMetaClient({ token: TOKEN, fetch: queueFetch([json(graphError(100), 400)]), sleep: noSleep() });
+    await expect(client.post("act_42/ads", {}, CreatedIdSchema)).rejects.toMatchObject({ message: "boom 100" });
+  });
+
+  it("does not retry a POST that times out and says the outcome is unknown", async () => {
+    const fetch = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>().mockImplementation(hangUntilAborted);
+    const sleep = noSleep();
+    const client = createMetaClient({ token: TOKEN, fetch, sleep, timeoutMs: 5 });
+    const error = (await client.post("act_42/campaigns", { name: "C" }, CreatedIdSchema).catch((e: unknown) => e)) as Error;
+    expect(error.message).toMatch(/timed out after 5ms/);
+    expect(error.message).toContain("outcome unknown");
+    expect(error.message).toContain("re-run to reconcile");
+    expect(error.cause).toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it("defaults the step to graph-post", async () => {
     const client = createMetaClient({ token: TOKEN, fetch: queueFetch([json(graphError(100), 400)]), sleep: noSleep() });
     await expect(client.post("act_42/ads", {}, CreatedIdSchema)).rejects.toMatchObject({ step: "graph-post" });
@@ -283,6 +401,13 @@ describe("createMetaClient.post", () => {
 });
 
 describe("createMetaClient.uploadImage", () => {
+  it("does not retry an ambiguous upload failure", async () => {
+    const fetch = queueFetch([json(graphError(1), 500), json({ images: {} })]);
+    const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep() });
+    await expect(client.uploadImage(ACCOUNT, { name: "a.png", bytes: new Uint8Array([1]) })).rejects.toMatchObject({ code: 1 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("posts multipart to act_<id>/adimages and returns the hash", async () => {
     const fetch = queueFetch([json({ images: { "hero.png": { hash: "abc123hash", url: "https://x" } } })]);
     const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep() });
@@ -343,6 +468,29 @@ describe("createMetaClient.uploadVideo", () => {
       step: "upload-video",
       code: 1363,
     });
+  });
+
+  it("does not retry the upload POST on HTTP 500", async () => {
+    const fetch = queueFetch([json(graphError(2), 500), json({ id: "555" })]);
+    const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep() });
+    await expect(client.uploadVideo(ACCOUNT, { name: "v.mp4", bytes: new Uint8Array([1]) })).rejects.toMatchObject({ code: 2 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the upload timeout, not the JSON timeout, for the upload POST", async () => {
+    const fetch = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>().mockImplementation(hangUntilAborted);
+    const client = createMetaClient({ token: TOKEN, fetch, sleep: noSleep(), timeoutMs: 60_000, uploadTimeoutMs: 5 });
+    await expect(client.uploadVideo(ACCOUNT, { name: "v.mp4", bytes: new Uint8Array([1]) })).rejects.toThrow(/timed out after 5ms/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails fast when the video expires", async () => {
+    const fetch = queueFetch([json({ id: "555" }), status("expired")]);
+    const sleep = noSleep();
+    const client = createMetaClient({ token: TOKEN, fetch, sleep });
+    await expect(client.uploadVideo(ACCOUNT, { name: "v.mp4", bytes: new Uint8Array([1]) })).rejects.toThrow(/expired/);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it("stops polling after VIDEO_POLL_ATTEMPTS", async () => {
