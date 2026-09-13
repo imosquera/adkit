@@ -101,6 +101,14 @@ describe("redactMetaSecrets", () => {
     );
   });
 
+  it("redacts the PageSpeed Insights key= query parameter", () => {
+    const url = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=https%3A%2F%2Fx.com&strategy=mobile&key=AIzaSecret";
+    expect(redactMetaSecrets(`fetch failed for ${url}`)).toBe(
+      "fetch failed for https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=https%3A%2F%2Fx.com&strategy=mobile&key=[REDACTED]",
+    );
+    expect(redactMetaSecrets("?key=AIza1 monkey=business")).toBe("?key=[REDACTED] monkey=business");
+  });
+
   it("leaves text without secrets unchanged", () => {
     expect(redactMetaSecrets("nothing to see")).toBe("nothing to see");
   });

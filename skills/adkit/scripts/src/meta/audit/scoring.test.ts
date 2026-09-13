@@ -266,6 +266,131 @@ describe("advantageCreativeEnhancementsOn", () => {
   });
 });
 
+describe("thresholds fire at exactly the boundary (plan D6: ≥)", () => {
+  const hot = (frequency: number, linkCtr: number) =>
+    ad("400", { current: { spend: 50, impressions: 2000, frequency, linkCtr }, previous: { spend: 40, impressions: 1000, frequency: 2, linkCtr: 2 } });
+
+  it.each([
+    ["frequency exactly 3.5, CTR drop exactly 25%", 3.5, 1.5, 1],
+    ["frequency just under 3.5", 3.49, 1.5, 0],
+    ["CTR drop just under 25%", 3.5, 1.51, 0],
+  ])("creativeFatigue: %s", (_label, frequency, linkCtr, expected) => {
+    expect(creativeFatigue(input({ ads: [hot(frequency, linkCtr)] }))).toHaveLength(expected);
+  });
+
+  it.each([
+    ["exactly 3 active ad sets", ["200", "201", "202"], 1],
+    ["2 active ad sets", ["200", "201"], 0],
+  ])("fragmentedBudget: %s", (_label, ids, expected) => {
+    expect(fragmentedBudget(input({ adSets: ids.map((id) => adSet(id, { weeklyResultEvents: 10 })) }))).toHaveLength(expected);
+  });
+
+  it.each([
+    ["spend share exactly 0.2", 0.2, 1],
+    ["spend share just under 0.2", 0.19, 0],
+  ])("wastedBreakdownSpend: %s", (_label, spendShare, expected) => {
+    expect(wastedBreakdownSpend(input({ breakdowns: [breakdown({ spendShare, results: 0, costPerResult: null })] }))).toHaveLength(expected);
+  });
+
+  it.each([
+    ["cost per result exactly 2x", 20, 1],
+    ["cost per result just under 2x", 19.99, 0],
+  ])("wastedBreakdownSpend: %s", (_label, costPerResult, expected) => {
+    expect(wastedBreakdownSpend(input({ breakdowns: [breakdown({ costPerResult })] }))).toHaveLength(expected);
+  });
+
+  it.each([
+    ["exactly 50 weekly events", 50, 0],
+    ["49 weekly events", 49, 1],
+  ])("stillLearningLowVolume / weakConversionSignal: %s", (_label, weekly, expected) => {
+    expect(stillLearningLowVolume(input({ adSets: [adSet("200", { learningStatus: "LEARNING", weeklyResultEvents: weekly })] }))).toHaveLength(expected);
+    expect(
+      weakConversionSignal(input({ account: { spend: 1000, results: weekly * 2, weeklyResultEvents: weekly, costPerResult: 10 } })),
+    ).toHaveLength(expected);
+  });
+});
+
+describe("evidence", () => {
+  const fatigued = ad("400", {
+    current: { spend: 50, impressions: 2000, frequency: 4.2, linkCtr: 1 },
+    previous: { spend: 40, impressions: 1000, frequency: 2, linkCtr: 2 },
+  });
+
+  it.each<[string, () => MetaFinding[], readonly Record<string, number | string>[]]>([
+    [
+      "learning_limited",
+      () => learningLimited(input({ adSets: [adSet("200", { learningStatus: "FAIL", weeklyResultEvents: 12 })] })),
+      [{ learningStatus: "FAIL", weeklyResultEvents: 12, threshold: 50, spend: 500 }],
+    ],
+    [
+      "still_learning_low_volume",
+      () => stillLearningLowVolume(input({ adSets: [adSet("200", { learningStatus: "LEARNING", weeklyResultEvents: 21.456 })] })),
+      [{ learningStatus: "LEARNING", weeklyResultEvents: 21.46, threshold: 50, spend: 500 }],
+    ],
+    [
+      "fragmented_budget",
+      () => fragmentedBudget(input({ adSets: [10, 20, 90].map((w, i) => adSet(String(200 + i), { weeklyResultEvents: w })) })),
+      [{ activeAdSets: 3, medianWeeklyResultEvents: 20, threshold: 50 }],
+    ],
+    [
+      "creative_fatigue",
+      () => creativeFatigue(input({ ads: [fatigued] })),
+      [{ frequency: 4.2, linkCtr: 1, previousLinkCtr: 2, ctrDropPct: 50, spend: 50 }],
+    ],
+    [
+      "wasted_breakdown_spend",
+      () =>
+        wastedBreakdownSpend(
+          input({
+            breakdowns: [
+              breakdown({ segment: "audience_network / classic", spend: 250, results: 0, spendShare: 0.25, costPerResult: null }),
+              breakdown({ dimension: "demographic", segment: "65+ / male", spend: 300, results: 10, spendShare: 0.3, costPerResult: 30 }),
+            ],
+          }),
+        ),
+      [
+        { dimension: "placement", segment: "audience_network / classic", spend: 250, spendSharePct: 25, results: 0, costPerResult: "none", accountCostPerResult: 10 },
+        { dimension: "demographic", segment: "65+ / male", spend: 300, spendSharePct: 30, results: 10, costPerResult: 30, accountCostPerResult: 10 },
+      ],
+    ],
+    [
+      "missing_customer_exclusion",
+      () => missingCustomerExclusion(input({ adSets: [adSet("200", { excludedAudienceIds: [] })] })),
+      [{ includedAudiences: 0, excludedAudiences: 0, spend: 500 }],
+    ],
+    [
+      "weak_conversion_signal",
+      () =>
+        weakConversionSignal(
+          input({ adSets: [adSet("200", { pixelId: null })], account: { spend: 1000, results: 40, weeklyResultEvents: 20, costPerResult: 25 } }),
+        ),
+      [
+        { optimizationGoal: "OFFSITE_CONVERSIONS", pixelId: "missing", spend: 500 },
+        { resultAction: "lead", weeklyResultEvents: 20, conversionAdSets: 1, threshold: 50 },
+      ],
+    ],
+    [
+      "advantage_creative_enhancements_on",
+      () =>
+        advantageCreativeEnhancementsOn(
+          input({ ads: [ad("400", { enhancements: [{ feature: "text_optimizations", enrollStatus: "OPT_IN" }, { feature: "enhance_cta", enrollStatus: "OPT_IN" }] })] }),
+        ),
+      [{ optedIn: "text_optimizations,enhance_cta", count: 2 }],
+    ],
+  ])("%s", (issue, findings, expected) => {
+    const fs = findings();
+    expect(fs.map((f) => f.issue)).toEqual(expected.map(() => issue));
+    expect(fs.map((f) => f.evidence)).toEqual(expected);
+  });
+
+  it("words the account-wide weak_conversion_signal as an account-wide check", () => {
+    const [f] = weakConversionSignal(input({ account: { spend: 1000, results: 40, weeklyResultEvents: 20, costPerResult: 25 } }));
+    expect(f?.detail).toContain("account-wide");
+    expect(f?.detail).not.toContain("per ad set");
+    expect(f?.fix).toContain("whole account");
+  });
+});
+
 describe("scoreMetaAccount", () => {
   it("groups findings by campaign, high → low, with account findings apart", () => {
     const second = campaign({ id: MetaCampaignIdSchema.parse("101"), name: "Clean" });

@@ -322,14 +322,14 @@ export const weakConversionSignal = (input: AuditInput): MetaFinding[] => {
             entityName: "Ad account",
             issue: "weak_conversion_signal" as const,
             severity: "high" as const,
-            detail: `${num(round2(weekly))} ${input.resultAction} events/week account-wide across ${conversionSets.length} conversion-optimized ad sets (needs ~${LEARNING_EXIT_WEEKLY_EVENTS} per ad set)`,
+            detail: `${num(round2(weekly))} ${input.resultAction} events/week account-wide across ${conversionSets.length} conversion-optimized ad sets (below ${LEARNING_EXIT_WEEKLY_EVENTS}/week for the whole account — not even one ad set could exit learning)`,
             evidence: {
               resultAction: input.resultAction,
               weeklyResultEvents: round2(weekly),
               conversionAdSets: conversionSets.length,
               threshold: LEARNING_EXIT_WEEKLY_EVENTS,
             },
-            fix: `Optimize for a higher-volume event than ${input.resultAction} (e.g. Lead or CompleteRegistration), add Conversions API to recover lost events, and send hashed email to raise Event Match Quality.`,
+            fix: `The whole account produces under ${LEARNING_EXIT_WEEKLY_EVENTS} ${input.resultAction} events/week: optimize for a higher-volume event (e.g. Lead or CompleteRegistration), add Conversions API to recover lost events, and send hashed email to raise Event Match Quality.`,
             playbook: PLAYBOOK.conversionTracking,
           },
         ]

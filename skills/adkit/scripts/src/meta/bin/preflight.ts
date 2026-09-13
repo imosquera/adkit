@@ -6,7 +6,8 @@
  * delegation (plan D1) or run directly. Steps, in order, each a named `step` in the
  * `{ ok: false, message, step }` envelope when it fails:
  *
- * 1. `credentials` — token + ad account resolved ({@link resolveMetaContext}). A
+ * 0. `args` — a `--ad-account` given without a value ({@link parseAdAccountFlag}).
+ * 1. `credentials` — token + ad account resolved ({@link resolveMetaContextFromProcess}). A
  *    {@link MetaConfigError} keeps its own step (`credentials` for the token,
  *    `ad-account` for the account, `config` for a malformed page/pixel id), the
  *    same steps every other Meta command reports.
@@ -22,14 +23,14 @@
  * build theirs — preflight is their precondition, so it must check the same thing.
  */
 
-import { parseArgs } from "node:util";
-
 import { isMainModule } from "../../cli/entry.js";
 import { emitJson, errorEnvelope, ok } from "../../cli/output.js";
 import { metaClientFor, type MetaClient } from "../client.js";
 import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags } from "../config.js";
 import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
 import { AdAccountSchema, MeSchema, PermissionSchema, type AdAccount, type Permission } from "../graph.js";
+import type { Result } from "../ids.js";
+import { parseAdAccountFlag } from "./args.js";
 
 /** The permissions every Meta command needs; preflight names whichever are missing. */
 export const REQUIRED_PERMISSIONS = ["ads_read", "ads_management"] as const;
@@ -54,16 +55,10 @@ export interface PreflightDeps {
   readonly resolveContext: (flags: MetaContextFlags) => Promise<MetaContext>;
 }
 
-/** Parse preflight's one flag. Pure over its input array. */
-export function parsePreflightArgs(argv: readonly string[]): MetaContextFlags {
-  const { values } = parseArgs({
-    args: [...argv],
-    options: { "ad-account": { type: "string" } },
-    allowPositionals: true,
-    strict: false,
-  });
-  const raw = values["ad-account"];
-  return { adAccount: typeof raw === "string" ? raw : null };
+/** Parse preflight's one flag; a valueless `--ad-account` is an error. Pure over its input array. */
+export function parsePreflightArgs(argv: readonly string[]): Result<MetaContextFlags> {
+  const adAccount = parseAdAccountFlag(argv);
+  return adAccount.kind === "err" ? adAccount : { kind: "ok", value: { adAccount: adAccount.value } };
 }
 
 /** `ACTIVE (1)`-style label for an `account_status`, `status 42` when undocumented. Pure. */
@@ -114,7 +109,10 @@ export async function main(
   const clientFactory = deps.clientFactory ?? metaClientFor;
   const resolveContext = deps.resolveContext ?? ((flags: MetaContextFlags) => resolveMetaContextFromProcess(flags, env));
 
-  const ctx = await runStep("credentials", () => resolveContext(parsePreflightArgs(argv)));
+  const args = parsePreflightArgs(argv);
+  if (args.kind === "err") return fail({ step: "args", message: args.message });
+
+  const ctx = await runStep("credentials", () => resolveContext(args.value));
   if (ctx.kind === "err") return fail(ctx.failure);
   const { adAccountId } = ctx.value;
 

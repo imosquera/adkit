@@ -158,7 +158,7 @@ describe("main", () => {
     fake: FakeMetaClientOptions = { get: happyGet, readOnly: true },
     overrides: Partial<ReportDeps> = {},
   ): Promise<{ code: number; client: FakeMetaClient; out: string }> => {
-    const client = fakeMetaClient(fake);
+    const client = fakeMetaClient({ readOnly: true, ...fake });
     const code = await main(argv, {}, {
       clientFactory: () => client,
       resolveContext: async () => CTX,
@@ -212,12 +212,24 @@ describe("main", () => {
     });
   });
 
-  it("refuses 7d_view with ok:false before any call", async () => {
-    const { code, client, out } = await run(["--attribution", "7d_view"]);
+  it.each(["7d_view", "28d_view"])("refuses %s with ok:false before any call", async (window) => {
+    const { code, client, out } = await run(["--attribution", window]);
     expect(code).toBe(1);
     expect(JSON.parse(out)).toEqual({ ok: false, message: expect.stringMatching(/2026-01-12/), step: "args" });
     expect(client.calls).toEqual([]);
   });
+
+  it.each([[["--ad-account"]], [["--ad-account", "--days", "7"]], [["--ad-account="]]])(
+    "refuses a valueless --ad-account %j before resolving context",
+    async (argv) => {
+      const resolveContext = vi.fn(async () => CTX);
+      const { code, client, out } = await run(argv, undefined, { resolveContext });
+      expect(code).toBe(1);
+      expect(JSON.parse(out)).toEqual({ ok: false, message: "--ad-account requires a value", step: "args" });
+      expect(resolveContext).not.toHaveBeenCalled();
+      expect(client.calls).toEqual([]);
+    },
+  );
 
   it("exits 1 with nothing written when there are no campaigns", async () => {
     const empty = (path: string): unknown => (path === "act_1234567890" ? ACCOUNT : []);

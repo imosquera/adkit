@@ -45,9 +45,13 @@ const happyGet =
 
 describe("parsePreflightArgs", () => {
   it("reads --ad-account, defaulting to null", () => {
-    expect(parsePreflightArgs(["--ad-account", "act_9"]).adAccount).toBe("act_9");
-    expect(parsePreflightArgs(["--ad-account=77"]).adAccount).toBe("77");
-    expect(parsePreflightArgs([]).adAccount).toBeNull();
+    expect(parsePreflightArgs(["--ad-account", "act_9"])).toEqual({ kind: "ok", value: { adAccount: "act_9" } });
+    expect(parsePreflightArgs(["--ad-account=77"])).toEqual({ kind: "ok", value: { adAccount: "77" } });
+    expect(parsePreflightArgs([])).toEqual({ kind: "ok", value: { adAccount: null } });
+  });
+
+  it("rejects a bare --ad-account instead of falling back to the configured account", () => {
+    expect(parsePreflightArgs(["--ad-account"])).toEqual({ kind: "err", message: "--ad-account requires a value" });
   });
 });
 
@@ -135,6 +139,19 @@ describe("main", () => {
       return CTX;
     }, ["--ad-account", "act_555"]);
     expect(seen).toEqual([{ adAccount: "act_555" }]);
+  });
+
+  it.each([[["--ad-account"]], [["--ad-account="]]])("fails at args on a valueless --ad-account %j without resolving context", async (argv) => {
+    const seen: MetaContextFlags[] = [];
+    const { code, client, built } = await run(undefined, async (flags) => {
+      seen.push(flags);
+      return CTX;
+    }, argv);
+    expect(code).toBe(1);
+    expect(emitted()).toEqual({ ok: false, step: "args", message: "--ad-account requires a value" });
+    expect(seen).toEqual([]);
+    expect(built).toEqual([]);
+    expect(client.calls).toEqual([]);
   });
 
   it("fails at credentials (with the resolver's own step) and never builds a client", async () => {

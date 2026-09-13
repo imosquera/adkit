@@ -5,7 +5,9 @@
  * The Meta counterpart of `bin/audit.ts`, reached through its `--platform meta`
  * delegation (plan D1) or run directly. Flags: `--ad-account`, `--psi-key`,
  * `--days` (7 | 14 | 30, default 14) and `--result-action` (the insights
- * `action_type` counted as a result, default `lead`).
+ * `action_type` counted as a result, default `lead`). `--ad-account` and
+ * `--result-action` are parsed by the shared `./args.ts` helpers, so a valueless
+ * flag fails at step `args` instead of silently defaulting.
  *
  * Reads (never a write — every call is a `getAll`), all in parallel:
  * - `act_<id>/campaigns`, `act_<id>/adsets` (with `campaign{id,advantage_state_info}`),
@@ -18,11 +20,12 @@
  * The reads become `toAuditRows` → `scoreMetaAccount` → `renderMetaAudit` (stderr).
  * Landing pages are the unique ad destination links; with a PageSpeed Insights key
  * each is diagnosed once through the shared `lib/psi.ts` helpers, rendered with the
- * Google audit's `renderLandingPageHealth` / `renderPsi`.
+ * Google audit's `renderLandingPageHealth` / `renderPsi`. PSI failure text goes
+ * through `redactMetaSecrets`, so the PageSpeed `key=` never reaches the envelope.
  *
- * Success emits `{ ok: true, platform: "meta", adAccountId, window, campaigns:
- * [{ id, name, status, findings }], account, landingPageHealth, psi }`. Failures emit
- * `{ ok: false, message, step }`. Exit code 0 on success, 1 otherwise; stdout
+ * Success emits `{ ok: true, platform: "meta", adAccountId, window, resultAction,
+ * campaigns: [{ id, name, status, findings }], account, landingPageHealth, psi }`.
+ * Failures emit `{ ok: false, message, step }`. Exit code 0 on success, 1 otherwise; stdout
  * carries only the envelope.
  */
 
@@ -39,9 +42,10 @@ import { toAuditRows, type AuditInput, type MetaAuditRaw } from "../audit/rows.j
 import { scoreMetaAccount, type MetaFinding, type MetaScore } from "../audit/scoring.js";
 import { metaClientFor, type MetaClient, type Params } from "../client.js";
 import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags } from "../config.js";
-import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
+import { envelopeFailure, formatMetaError, redactMetaSecrets, type EnvelopeFailure } from "../errors.js";
 import { AdSchema, AdSetSchema, CampaignSchema, InsightsRowSchema, type Campaign } from "../graph.js";
 import type { MetaAdAccountId, Result } from "../ids.js";
+import { parseAdAccountFlag, parseResultAction } from "./args.js";
 
 // ---------------------------------------------------------------------------
 // Args
@@ -50,7 +54,6 @@ import type { MetaAdAccountId, Result } from "../ids.js";
 export const AUDIT_DAYS = [7, 14, 30] as const;
 export type AuditDays = (typeof AUDIT_DAYS)[number];
 export const DEFAULT_AUDIT_DAYS: AuditDays = 14;
-export const DEFAULT_RESULT_ACTION = "lead";
 
 export interface MetaAuditArgs {
   readonly flags: MetaContextFlags;
@@ -62,7 +65,10 @@ const isAuditDays = (n: number): n is AuditDays => AUDIT_DAYS.some((d) => d === 
 
 const stringFlag = (raw: unknown): string | null => (typeof raw === "string" && raw.trim() !== "" ? raw.trim() : null);
 
-/** Parse the audit flags once. `--days` outside 7/14/30 or a blank `--result-action` is an error. Pure. */
+/**
+ * Parse the audit flags once. `--days` outside 7/14/30, a valueless `--ad-account` or
+ * a blank `--result-action` is an error. Pure.
+ */
 export function parseMetaAuditArgs(argv: readonly string[]): Result<MetaAuditArgs> {
   const { values } = parseArgs({
     args: [...argv],
@@ -80,17 +86,16 @@ export function parseMetaAuditArgs(argv: readonly string[]): Result<MetaAuditArg
   if (!isAuditDays(days)) {
     return { kind: "err", message: `--days must be one of ${AUDIT_DAYS.join(", ")}, got ${String(rawDays)}` };
   }
-  const rawAction = values["result-action"];
-  const resultAction = rawAction === undefined ? DEFAULT_RESULT_ACTION : stringFlag(rawAction);
-  if (resultAction === null) {
-    return { kind: "err", message: "--result-action needs an action_type (e.g. lead, offsite_conversion.fb_pixel_purchase)" };
-  }
+  const resultAction = parseResultAction(values["result-action"]);
+  if (resultAction.kind === "err") return resultAction;
+  const adAccount = parseAdAccountFlag(argv);
+  if (adAccount.kind === "err") return adAccount;
   return {
     kind: "ok",
     value: {
-      flags: { adAccount: stringFlag(values["ad-account"]), psiKey: stringFlag(values["psi-key"]) },
+      flags: { adAccount: adAccount.value, psiKey: stringFlag(values["psi-key"]) },
       days,
-      resultAction,
+      resultAction: resultAction.value,
     },
   };
 }
@@ -259,13 +264,19 @@ export const uniqueLandingPages = (byCampaign: Record<string, readonly string[]>
   ...new Set(Object.values(byCampaign).flat()),
 ];
 
-/** One PSI HTTP call; a failure degrades to a per-URL error result, never a throw. */
+/** A PSI result with its failure text redacted (the request URL carries `key=<api key>`). Pure. */
+export const redactPsiResult = (result: PsiResult): PsiResult =>
+  result.ok ? result : { ...result, error: redactMetaSecrets(result.error) };
+
+/** One PSI HTTP call; a failure degrades to a redacted per-URL error result, never a throw. */
 const fetchPsi = async (doFetch: typeof fetch, url: string, apiKey: string): Promise<PsiResult> => {
   try {
     const resp = await doFetch(buildPsiRequestUrl(url, apiKey));
-    return resp.ok ? parsePsiResponse(url, await resp.json()) : { ok: false, url, error: `PSI HTTP ${resp.status}` };
+    return redactPsiResult(
+      resp.ok ? parsePsiResponse(url, await resp.json()) : { ok: false, url, error: `PSI HTTP ${resp.status}` },
+    );
   } catch (e) {
-    return { ok: false, url, error: e instanceof Error ? e.message : String(e) };
+    return redactPsiResult({ ok: false, url, error: e instanceof Error ? e.message : String(e) });
   }
 };
 

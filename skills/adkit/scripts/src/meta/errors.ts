@@ -1,6 +1,6 @@
 /**
- * The two Meta error types and the one pure formatter that turns any throwable
- * into a single human line.
+ * The two Meta error types, the pure formatter that turns any throwable into a
+ * single human line, and the helpers built on it.
  *
  * - {@link MetaApiError} — the Graph API said no (a non-2xx body parsed by the
  *   client's `GraphErrorSchema`), or a 2xx body failed its response schema
@@ -9,9 +9,14 @@
  *   (missing token, bad ad account id, removed attribution window, ...).
  *
  * Both carry `step` so the bin shells can hand them to `errorEnvelope` exactly like
- * the Google-side errors. {@link formatMetaError} redacts `access_token` and
- * `appsecret_proof` values wherever they appear, because Graph error text and
- * `fetch` failures routinely echo the request URL back.
+ * the Google-side errors.
+ *
+ * - {@link redactMetaSecrets} — replaces `access_token`, `appsecret_proof` and URL
+ *   `key` (the PageSpeed Insights API key) values with `[REDACTED]`, because Graph
+ *   error text and `fetch` failures routinely echo the request URL back.
+ * - {@link formatMetaError} — one redacted line for any throwable.
+ * - {@link envelopeFailure} — the `{ step, message }` pair for `errorEnvelope`,
+ *   keeping a Meta error's own `step`.
  */
 
 import type { ZodIssue } from "zod";
@@ -64,12 +69,16 @@ export class MetaConfigError extends Error {
   }
 }
 
-/** Query-string / form style: `access_token=EAAB...` up to the next delimiter. */
-const SECRET_PARAM = /\b(access_token|appsecret_proof)=[^&\s"'#<>]+/g;
+/**
+ * Query-string / form style: `access_token=EAAB...` up to the next delimiter. `key`
+ * is PageSpeed Insights' API key parameter; `\b` keeps it from matching inside
+ * longer names such as `monkey=`.
+ */
+const SECRET_PARAM = /\b(access_token|appsecret_proof|key)=[^&\s"'#<>]+/g;
 /** JSON style: `"access_token":"EAAB..."`. */
 const SECRET_JSON = /"(access_token|appsecret_proof)"\s*:\s*"[^"]*"/g;
 
-/** Replace every `access_token` / `appsecret_proof` value in `text` with `[REDACTED]`. Pure. */
+/** Replace every `access_token` / `appsecret_proof` value (and URL `key=` value) in `text` with `[REDACTED]`. Pure. */
 export function redactMetaSecrets(text: string): string {
   return text.replace(SECRET_PARAM, "$1=[REDACTED]").replace(SECRET_JSON, '"$1":"[REDACTED]"');
 }

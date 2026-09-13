@@ -35,12 +35,10 @@ import { AdAccountSchema } from "../graph.js";
 import { err, ok, type Result } from "../ids.js";
 import { clampAllTime, fetchMetaReportRows, parseAttribution } from "../report/fetch.js";
 import { shapeMetaReport, type AttributionWindow, type MetaReport } from "../report/shape.js";
-
-/** Default `--result-action`: the action type counted as a conversion. */
-export const DEFAULT_RESULT_ACTION = "lead";
+import { AD_ACCOUNT_FLAG, parseAdAccountFlag, parseResultAction } from "./args.js";
 
 /** Meta-only flags this bin pulls out of argv before the Google `parseArgs` sees the rest. */
-const META_FLAGS = ["--result-action", "--attribution", "--ad-account"] as const;
+const META_FLAGS = ["--result-action", "--attribution", AD_ACCOUNT_FLAG] as const;
 type MetaFlag = (typeof META_FLAGS)[number];
 
 /** The raw Meta-only flag values plus the argv left for the Google parser. */
@@ -84,29 +82,31 @@ export const splitReportArgs = (argv: readonly string[]): Result<SplitReportArgs
 };
 
 /**
- * Parse argv into {@link MetaReportArgs}: the Meta-only flags, `--attribution`
+ * Parse argv into {@link MetaReportArgs}: `--ad-account` / `--result-action` through
+ * the shared `./args.ts` parsers, `--attribution`
  * through `parseAttribution` (so `7d_view` / `28d_view` are refused), the rest
  * through the Google `parseArgs`. Google account flags (`--customer`, `--manager`,
  * a positional id) are refused with a pointer to `--ad-account`. Pure.
  */
 export const parseMetaReportArgs = (argv: readonly string[]): Result<MetaReportArgs> => {
+  const adAccount = parseAdAccountFlag(argv);
+  if (adAccount.kind === "err") return adAccount;
   const split = splitReportArgs(argv);
   if (split.kind === "err") return split;
   const { rest, values } = split.value;
   const attribution = parseAttribution(values["--attribution"]);
   if (attribution.kind === "err") return attribution;
-  const resultAction = (values["--result-action"] ?? DEFAULT_RESULT_ACTION).trim();
-  if (resultAction === "") return err("--result-action must be a non-blank action type (e.g. lead)");
+  const resultAction = parseResultAction(values["--result-action"]);
+  if (resultAction.kind === "err") return resultAction;
   const google = parseGoogleArgs(rest);
   if (google.kind === "err") return google;
   if (google.value.customer !== null || google.value.manager !== null) {
     return err("--customer / --manager / a positional id are Google Ads flags; use --ad-account <act_id> for Meta");
   }
-  const adAccount = values["--ad-account"]?.trim();
   return ok({
     window: { days: google.value.days, allTime: google.value.allTime, includePaused: google.value.includePaused },
-    adAccount: adAccount === undefined || adAccount === "" ? null : adAccount,
-    resultAction,
+    adAccount: adAccount.value,
+    resultAction: resultAction.value,
     attribution: attribution.value,
   });
 };

@@ -7,6 +7,7 @@ import { MetaAccessTokenSchema, MetaAdAccountIdSchema, MetaCampaignIdSchema } fr
 import {
   PSI_NO_KEY_REASON,
   auditWindows,
+  redactPsiResult,
   main,
   parseMetaAuditArgs,
   renderMetaLandingPageHealth,
@@ -164,6 +165,17 @@ describe("parseMetaAuditArgs", () => {
     });
   });
 
+  it.each([[["--ad-account"]], [["--ad-account", "--days", "7"]], [["--ad-account="]]])(
+    "rejects a valueless --ad-account in %j instead of falling back to the configured account",
+    (argv) => {
+      expect(parseMetaAuditArgs(argv)).toEqual({ kind: "err", message: "--ad-account requires a value" });
+    },
+  );
+
+  it.each([[["--result-action"]], [["--result-action="]]])("rejects a blank --result-action in %j", (argv) => {
+    expect(parseMetaAuditArgs(argv)).toMatchObject({ kind: "err", message: expect.stringMatching(/--result-action/) });
+  });
+
   it("rejects --days outside 7/14/30", () => {
     const parsed = parseMetaAuditArgs(["--days", "28"]);
     expect(parsed.kind).toBe("err");
@@ -185,6 +197,18 @@ describe("pure helpers", () => {
       [CAMPAIGN_ID]: [{ url: "https://x", issue: "slow_mobile_lcp", detail: "slow" }],
     });
     expect(lines.join("\n")).toContain(`Prospecting (${CAMPAIGN_ID})`);
+  });
+
+  it("redacts the PageSpeed key= from PSI failure text", async () => {
+    const leaky = vi.fn(async (input: string | URL | Request) => {
+      throw new TypeError(`fetch failed for ${String(input)}`);
+    });
+    const run = await runMetaPsi(["https://example.com/a"], "AIzaSECRET", leaky as unknown as typeof fetch);
+    const [result] = run.results;
+    expect(result?.ok).toBe(false);
+    expect(JSON.stringify(run)).not.toContain("AIzaSECRET");
+    expect(result?.ok === false && result.error).toContain("key=[REDACTED]");
+    expect(redactPsiResult({ ok: false, url: "u", error: "?key=K" })).toEqual({ ok: false, url: "u", error: "?key=[REDACTED]" });
   });
 
   it("runs PSI only with URLs and a key", async () => {
@@ -323,13 +347,31 @@ describe("main", () => {
     expect(client.calls).toEqual([]);
   });
 
-  it("reports the failing read's step", async () => {
-    const { code } = await run({
+  it("fails at args on a bare --ad-account without resolving context", async () => {
+    const { code, flags, client } = await run(undefined, ["--ad-account", "--days", "7"]);
+    expect(code).toBe(1);
+    expect(emitted()).toEqual({ ok: false, step: "args", message: "--ad-account requires a value" });
+    expect(flags).toEqual([]);
+    expect(client.calls).toEqual([]);
+  });
+
+  it.each([
+    "audit-campaigns",
+    "audit-adsets",
+    "audit-ads",
+    "audit-insights-adset",
+    "audit-insights-ad",
+    "audit-insights-ad-previous",
+    "audit-insights-placements",
+    "audit-insights-demographics",
+  ])("reports ok:false naming the failing read %s", async (step) => {
+    const { code, fetch } = await run({
       get: graph,
-      failOn: (call) => (call.step === "audit-insights-placements" ? metaApiError(100, "Invalid breakdown") : null),
+      failOn: (call) => (call.step === step ? metaApiError(100, `Invalid read at ${step}`) : null),
     });
     expect(code).toBe(1);
-    expect(emitted()).toMatchObject({ ok: false, step: "audit-insights-placements" });
-    expect(String(emitted()["message"])).toContain("Invalid breakdown");
+    expect(emitted()).toMatchObject({ ok: false, step });
+    expect(String(emitted()["message"])).toContain(`Invalid read at ${step}`);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
