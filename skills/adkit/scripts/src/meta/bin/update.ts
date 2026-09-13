@@ -48,6 +48,7 @@ import {
   type MetaPlanGroup,
 } from "../apply.js";
 import { parseMetaBrief, type MetaBrief } from "../brief.js";
+import { parseAdAccountFlag } from "./args.js";
 import { metaClientFor, type MetaClient } from "../client.js";
 import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags } from "../config.js";
 import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
@@ -85,21 +86,12 @@ const AD_ACCOUNT = "--ad-account";
 
 /** Parse `<plan.yaml> [--apply] [--ad-account <id>]`. Unknown `--flags` are ignored, as in apply-fixes. Pure. */
 export const parseUpdateArgs = (argv: readonly string[]): Result<UpdateArgs> => {
-  const flagIndex = argv.indexOf(AD_ACCOUNT);
-  const spaceValue = flagIndex === -1 ? undefined : argv[flagIndex + 1];
-  if (flagIndex !== -1 && (spaceValue === undefined || spaceValue.startsWith("--"))) {
-    return err(`${AD_ACCOUNT} requires a value`);
-  }
-  const eqValue = argv.find((a) => a.startsWith(`${AD_ACCOUNT}=`))?.slice(AD_ACCOUNT.length + 1);
-  const positionals = argv.filter((a, i) => !a.startsWith("--") && !(flagIndex !== -1 && i === flagIndex + 1));
+  const adAccount = parseAdAccountFlag(argv);
+  if (adAccount.kind === "err") return adAccount;
+  const positionals = argv.filter((a, i) => !a.startsWith("--") && argv[i - 1] !== AD_ACCOUNT);
   const planPath = positionals[0];
   if (planPath === undefined) return err("Provide a Meta update plan YAML path");
-  const adAccount = (spaceValue ?? eqValue)?.trim();
-  return ok({
-    planPath,
-    apply: argv.includes("--apply"),
-    adAccount: adAccount === undefined || adAccount === "" ? null : adAccount,
-  });
+  return ok({ planPath, apply: argv.includes("--apply"), adAccount: adAccount.value });
 };
 
 // ---------- Pure narration ----------

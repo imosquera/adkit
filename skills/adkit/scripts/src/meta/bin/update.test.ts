@@ -155,6 +155,8 @@ describe("parseUpdateArgs", () => {
     });
     expect(parseUpdateArgs(["--apply"])).toMatchObject({ kind: "err" });
     expect(parseUpdateArgs(["p.yaml", "--ad-account"])).toMatchObject({ kind: "err" });
+    expect(parseUpdateArgs(["p.yaml", "--ad-account="])).toMatchObject({ kind: "err" });
+    expect(parseUpdateArgs(["p.yaml", "--ad-account=act_7"])).toMatchObject({ kind: "ok", value: { adAccount: "act_7" } });
   });
 });
 
