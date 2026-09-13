@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PlatformError, parsePlatform, resolvePlatform, stripPlatformFlag } from "./platform.js";
+import { PlatformError, googleOnlyRefusal, parsePlatform, resolvePlatform, stripPlatformFlag } from "./platform.js";
 
 describe("parsePlatform", () => {
   it("defaults undefined, null and blank to google", () => {
@@ -90,5 +90,34 @@ describe("stripPlatformFlag", () => {
     const out = stripPlatformFlag(argv);
     expect(out).toEqual(["--days", "7"]);
     expect(out).not.toBe(argv);
+  });
+});
+
+describe("googleOnlyRefusal", () => {
+  it("returns null when the platform resolves to google", () => {
+    expect(googleOnlyRefusal("research", [], {}, {})).toBeNull();
+    expect(googleOnlyRefusal("research", ["--platform", "google"], { ADKIT_PLATFORM: "meta" }, {})).toBeNull();
+  });
+
+  it("refuses a Meta run with a platform-step envelope naming the command", () => {
+    expect(googleOnlyRefusal("keyword-ideas", ["--platform=meta"], {}, {})).toEqual({
+      ok: false,
+      message: "keyword-ideas is Google-only; Meta has no keyword planner equivalent",
+      step: "platform",
+    });
+    expect(googleOnlyRefusal("research", [], {}, { platform: "meta" })).toMatchObject({
+      message: "research is Google-only; Meta has no keyword planner equivalent",
+    });
+  });
+
+  it("turns an unparseable platform into a platform-step envelope naming the tier", () => {
+    const refusal = googleOnlyRefusal("research", [], { ADKIT_PLATFORM: "bing" }, {});
+    expect(refusal).toMatchObject({ ok: false, step: "platform" });
+    expect(refusal?.message).toContain("ADKIT_PLATFORM");
+    expect(googleOnlyRefusal("research", ["--platform"], {}, {})).toMatchObject({
+      ok: false,
+      step: "platform",
+      message: expect.stringMatching(/requires a value/),
+    });
   });
 });

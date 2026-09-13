@@ -8,6 +8,8 @@
  * behaviour.
  */
 
+import { errorEnvelope } from "./output.js";
+
 /** The ad platforms adkit can drive. */
 export type Platform = "google" | "meta";
 
@@ -115,4 +117,28 @@ export function stripPlatformFlag(argv: readonly string[]): string[] {
             : { kept: [...state.kept, arg], skipNext: false },
     { kept: [], skipNext: false },
   ).kept.slice();
+}
+
+/**
+ * The failure envelope that stops a Google-only `command` before any work (plan
+ * D10), or `null` when the resolved platform is `google`. A Meta run is refused
+ * because Meta has no Keyword Planner; an unparseable platform value is refused
+ * the same way, naming the offending tier. Pure over its inputs.
+ */
+export function googleOnlyRefusal(
+  command: string,
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  config: { platform?: string },
+): ReturnType<typeof errorEnvelope> | null {
+  try {
+    return resolvePlatform(argv, env, config) === "meta"
+      ? errorEnvelope(`${command} is Google-only; Meta has no keyword planner equivalent`, { step: "platform" })
+      : null;
+  } catch (exc) {
+    if (exc instanceof PlatformError) {
+      return errorEnvelope(exc.message, { step: exc.step });
+    }
+    throw exc;
+  }
 }

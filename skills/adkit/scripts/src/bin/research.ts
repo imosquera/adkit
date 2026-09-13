@@ -27,7 +27,7 @@ import { type services } from "google-ads-api";
 import { isMainModule } from "../cli/entry.js";
 import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
 import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
-import { PlatformError, resolvePlatform } from "../cli/platform.js";
+import { googleOnlyRefusal } from "../cli/platform.js";
 import { loadConfig } from "../lib/config.js";
 import { formatBulletText } from "../lib/markdown.js";
 import { competitionLabel, formatCpcRange } from "../lib/metrics.js";
@@ -561,31 +561,6 @@ export function buildPayload(params: {
 // IO shell
 // ---------------------------------------------------------------------------
 
-/** The refusal message for a Meta run (plan D10): Meta has no Keyword Planner. */
-export const META_REFUSAL_MESSAGE = "research is Google-only; Meta has no keyword planner equivalent";
-
-/**
- * The failure envelope that stops a non-Google run before any work (plan D10), or
- * `null` when the resolved platform is `google`. An unparseable platform value is
- * refused the same way, naming the offending tier. Pure over its inputs.
- */
-export function platformRefusal(
-  argv: readonly string[],
-  env: NodeJS.ProcessEnv,
-  config: { platform?: string },
-): ReturnType<typeof errorEnvelope> | null {
-  try {
-    return resolvePlatform(argv, env, config) === "meta"
-      ? errorEnvelope(META_REFUSAL_MESSAGE, { step: "platform" })
-      : null;
-  } catch (exc) {
-    if (exc instanceof PlatformError) {
-      return errorEnvelope(exc.message, { step: exc.step });
-    }
-    throw exc;
-  }
-}
-
 /** Read + parse the owned-history report YAML, best-effort. Returns [] index on any failure. */
 function loadHistory(path: string | null): { history: Map<string, OwnedHistory>; warning: string | null } {
   if (!path) return { history: new Map(), warning: null };
@@ -607,7 +582,7 @@ export async function main(
   argv: readonly string[] = process.argv.slice(2),
   generate: (req: services.IGenerateKeywordIdeasRequest) => Promise<IdeaRow[]> = generateIdeaRows,
 ): Promise<number> {
-  const refusal = platformRefusal(argv, process.env, loadConfig());
+  const refusal = googleOnlyRefusal("research", argv, process.env, loadConfig());
   if (refusal !== null) {
     emitJson(refusal);
     return 1;
