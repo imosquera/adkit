@@ -28,14 +28,13 @@ import { isMainModule } from "../../cli/entry.js";
 import { emitJson, errorEnvelope } from "../../cli/output.js";
 import { dateWindow } from "../../gaql/builders.js";
 import { resolveReportsDir } from "../../lib/config.js";
-import type { MetaClient } from "../client.js";
+import { metaClientFor, type MetaClient } from "../client.js";
 import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags } from "../config.js";
-import { MetaApiError, MetaConfigError, formatMetaError } from "../errors.js";
+import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
 import { AdAccountSchema } from "../graph.js";
 import { err, ok, type Result } from "../ids.js";
 import { clampAllTime, fetchMetaReportRows, parseAttribution } from "../report/fetch.js";
 import { shapeMetaReport, type AttributionWindow, type MetaReport } from "../report/shape.js";
-import { defaultClientFactory } from "./preflight.js";
 
 /** Default `--result-action`: the action type counted as a conversion. */
 export const DEFAULT_RESULT_ACTION = "lead";
@@ -143,10 +142,7 @@ export interface ReportDeps {
   readonly reportsDir: () => string;
 }
 
-interface StepFailure {
-  readonly step: string;
-  readonly message: string;
-}
+type StepFailure = EnvelopeFailure;
 
 type StepResult<T> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "err"; readonly failure: StepFailure };
 
@@ -155,13 +151,7 @@ const runStep = async <T>(step: string, effect: () => Promise<T> | T): Promise<S
   try {
     return { kind: "ok", value: await effect() };
   } catch (exc) {
-    return {
-      kind: "err",
-      failure: {
-        step: exc instanceof MetaApiError || exc instanceof MetaConfigError ? exc.step : step,
-        message: formatMetaError(exc),
-      },
-    };
+    return { kind: "err", failure: envelopeFailure(exc, step) };
   }
 };
 
@@ -179,7 +169,7 @@ export async function main(
   env: NodeJS.ProcessEnv = process.env,
   deps: Partial<ReportDeps> = {},
 ): Promise<number> {
-  const clientFactory = deps.clientFactory ?? defaultClientFactory;
+  const clientFactory = deps.clientFactory ?? metaClientFor;
   const resolveContext = deps.resolveContext ?? ((flags: MetaContextFlags) => resolveMetaContextFromProcess(flags, env));
   const now = deps.now ?? (() => new Date());
   const cwd = deps.cwd ?? (() => process.cwd());

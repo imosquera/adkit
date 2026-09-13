@@ -40,14 +40,13 @@ import { emitJson, errorEnvelope, ok } from "../../cli/output.js";
 import { urlUnreachableReason } from "../../ideas/urls.js";
 import { resolveBriefsDir } from "../../lib/config.js";
 import { parseMetaBrief, softWarnings, type MetaBrief } from "../brief.js";
-import type { MetaClient } from "../client.js";
+import { metaClientFor, type MetaClient } from "../client.js";
 import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags } from "../config.js";
-import { MetaApiError, MetaConfigError, formatMetaError } from "../errors.js";
+import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
 import { AdAccountSchema } from "../graph.js";
 import { err, ok as okResult, type MetaPageId, type Result } from "../ids.js";
 import { planPublish, publishMeta, type LocalMedia, type PublishFailure } from "../publish.js";
 import { emptyMetaState, metaStatePath, readMetaState, writeMetaState, type MetaState } from "../state.js";
-import { defaultClientFactory } from "./preflight.js";
 
 export const USAGE = "usage: ads.sh create <brief.yaml> [--dry-run] [--skip-url-check]";
 
@@ -134,10 +133,7 @@ export interface CreateDeps {
   readonly briefsDir: () => string;
 }
 
-interface StepFailure {
-  readonly step: string;
-  readonly message: string;
-}
+type StepFailure = EnvelopeFailure;
 
 type StepResult<T> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "err"; readonly failure: StepFailure };
 
@@ -146,13 +142,8 @@ const runStep = async <T>(step: string, effect: () => Promise<T> | T): Promise<S
   try {
     return { kind: "ok", value: await effect() };
   } catch (exc) {
-    return {
-      kind: "err",
-      failure: {
-        step: exc instanceof MetaApiError || exc instanceof MetaConfigError ? exc.step : step,
-        message: exc instanceof AdbriefsError ? exc.message : formatMetaError(exc),
-      },
-    };
+    const failure = envelopeFailure(exc, step);
+    return { kind: "err", failure: exc instanceof AdbriefsError ? { ...failure, message: exc.message } : failure };
   }
 };
 
@@ -200,7 +191,7 @@ export async function main(
   env: NodeJS.ProcessEnv = process.env,
   deps: Partial<CreateDeps> = {},
 ): Promise<number> {
-  const clientFactory = deps.clientFactory ?? defaultClientFactory;
+  const clientFactory = deps.clientFactory ?? metaClientFor;
   const resolveContext = deps.resolveContext ?? ((flags: MetaContextFlags) => resolveMetaContextFromProcess(flags, env));
   const checkUrl = deps.checkUrl ?? urlUnreachableReason;
   const cwd = deps.cwd ?? (() => process.cwd());

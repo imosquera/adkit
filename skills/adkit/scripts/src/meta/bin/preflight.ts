@@ -26,9 +26,9 @@ import { parseArgs } from "node:util";
 
 import { isMainModule } from "../../cli/entry.js";
 import { emitJson, errorEnvelope, ok } from "../../cli/output.js";
-import { createMetaClient, type MetaClient } from "../client.js";
+import { metaClientFor, type MetaClient } from "../client.js";
 import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags } from "../config.js";
-import { MetaApiError, MetaConfigError, formatMetaError } from "../errors.js";
+import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
 import { AdAccountSchema, MeSchema, PermissionSchema, type AdAccount, type Permission } from "../graph.js";
 
 /** The permissions every Meta command needs; preflight names whichever are missing. */
@@ -53,10 +53,6 @@ export interface PreflightDeps {
   readonly clientFactory: (ctx: MetaContext) => MetaClient;
   readonly resolveContext: (flags: MetaContextFlags) => Promise<MetaContext>;
 }
-
-/** The client every Meta command builds: token plus `appsecret_proof` when an app secret is set. */
-export const defaultClientFactory = (ctx: MetaContext): MetaClient =>
-  createMetaClient({ token: ctx.token, appSecret: ctx.appSecret ?? undefined });
 
 /** Parse preflight's one flag. Pure over its input array. */
 export function parsePreflightArgs(argv: readonly string[]): MetaContextFlags {
@@ -87,16 +83,7 @@ export const missingPermissions = (granted: readonly Permission[]): readonly str
   REQUIRED_PERMISSIONS.filter((name) => !granted.some((p) => p.permission === name && p.status === "granted"));
 
 /** A step failure: the envelope `step` plus the human message. */
-interface StepFailure {
-  readonly step: string;
-  readonly message: string;
-}
-
-/** Map a throwable from `step` to its envelope fields; Meta errors keep their own step. Pure. */
-export const failureFrom = (exc: unknown, step: string): StepFailure => ({
-  step: exc instanceof MetaApiError || exc instanceof MetaConfigError ? exc.step : step,
-  message: formatMetaError(exc),
-});
+type StepFailure = EnvelopeFailure;
 
 type StepResult<T> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "err"; readonly failure: StepFailure };
 
@@ -105,7 +92,7 @@ const runStep = async <T>(step: string, effect: () => Promise<T>): Promise<StepR
   try {
     return { kind: "ok", value: await effect() };
   } catch (exc) {
-    return { kind: "err", failure: failureFrom(exc, step) };
+    return { kind: "err", failure: envelopeFailure(exc, step) };
   }
 };
 
@@ -124,7 +111,7 @@ export async function main(
   env: NodeJS.ProcessEnv = process.env,
   deps: Partial<PreflightDeps> = {},
 ): Promise<number> {
-  const clientFactory = deps.clientFactory ?? defaultClientFactory;
+  const clientFactory = deps.clientFactory ?? metaClientFor;
   const resolveContext = deps.resolveContext ?? ((flags: MetaContextFlags) => resolveMetaContextFromProcess(flags, env));
 
   const ctx = await runStep("credentials", () => resolveContext(parsePreflightArgs(argv)));

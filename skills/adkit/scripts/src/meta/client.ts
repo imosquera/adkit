@@ -18,6 +18,7 @@ import { createHmac } from "node:crypto";
 
 import { z } from "zod";
 
+import type { MetaContext } from "./config.js";
 import { MetaApiError, MetaConfigError, redactMetaSecrets } from "./errors.js";
 import { GraphErrorSchema, ImageUploadSchema, VideoStatusSchema, createdIdSchema, pageSchema } from "./graph.js";
 import { MetaVideoIdSchema, type ImageHash, type MetaAdAccountId, type MetaVideoId } from "./ids.js";
@@ -344,3 +345,10 @@ export function createMetaClient(opts: MetaClientOptions): MetaClient {
 
   return { get, getAll, post, uploadImage, uploadVideo };
 }
+
+/**
+ * The client every Meta command builds from its resolved context: the token, plus
+ * `appsecret_proof` when an app secret is configured.
+ */
+export const metaClientFor = (ctx: Pick<MetaContext, "token" | "appSecret">): MetaClient =>
+  createMetaClient({ token: ctx.token, appSecret: ctx.appSecret ?? undefined });

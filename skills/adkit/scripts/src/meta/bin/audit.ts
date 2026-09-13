@@ -37,12 +37,11 @@ import { buildPsiRequestUrl, parsePsiResponse } from "../../lib/psi.js";
 import { renderMetaAudit } from "../audit/render.js";
 import { toAuditRows, type AuditInput, type MetaAuditRaw } from "../audit/rows.js";
 import { scoreMetaAccount, type MetaFinding, type MetaScore } from "../audit/scoring.js";
-import type { MetaClient, Params } from "../client.js";
+import { metaClientFor, type MetaClient, type Params } from "../client.js";
 import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags } from "../config.js";
-import { formatMetaError } from "../errors.js";
+import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
 import { AdSchema, AdSetSchema, CampaignSchema, InsightsRowSchema, type Campaign } from "../graph.js";
 import type { MetaAdAccountId, Result } from "../ids.js";
-import { defaultClientFactory, failureFrom } from "./preflight.js";
 
 // ---------------------------------------------------------------------------
 // Args
@@ -347,10 +346,7 @@ export interface MetaAuditDeps {
   readonly now: () => Date;
 }
 
-interface StepFailure {
-  readonly step: string;
-  readonly message: string;
-}
+type StepFailure = EnvelopeFailure;
 
 type StepResult<T> = { readonly kind: "ok"; readonly value: T } | { readonly kind: "err"; readonly failure: StepFailure };
 
@@ -359,7 +355,7 @@ const runStep = async <T>(step: string, effect: () => Promise<T>): Promise<StepR
   try {
     return { kind: "ok", value: await effect() };
   } catch (exc) {
-    return { kind: "err", failure: failureFrom(exc, step) };
+    return { kind: "err", failure: envelopeFailure(exc, step) };
   }
 };
 
@@ -377,7 +373,7 @@ export async function main(
   env: NodeJS.ProcessEnv = process.env,
   deps: Partial<MetaAuditDeps> = {},
 ): Promise<number> {
-  const clientFactory = deps.clientFactory ?? defaultClientFactory;
+  const clientFactory = deps.clientFactory ?? metaClientFor;
   const resolveContext = deps.resolveContext ?? ((flags: MetaContextFlags) => resolveMetaContextFromProcess(flags, env));
   const doFetch = deps.fetch ?? fetch;
   const now = deps.now ?? (() => new Date());

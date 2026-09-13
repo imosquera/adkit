@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { MetaApiError, MetaConfigError, formatMetaError, redactMetaSecrets } from "./errors.js";
+import { MetaApiError, MetaConfigError, envelopeFailure, formatMetaError, redactMetaSecrets } from "./errors.js";
 
 describe("MetaApiError", () => {
   it("carries the envelope fields and is an Error", () => {
@@ -103,5 +103,26 @@ describe("redactMetaSecrets", () => {
 
   it("leaves text without secrets unchanged", () => {
     expect(redactMetaSecrets("nothing to see")).toBe("nothing to see");
+  });
+});
+
+describe("envelopeFailure", () => {
+  it("keeps a MetaApiError's own step", () => {
+    const exc = new MetaApiError({ step: "campaign", code: 100, message: "Invalid parameter" });
+    expect(envelopeFailure(exc, "fallback")).toEqual({ step: "campaign", message: formatMetaError(exc) });
+  });
+
+  it("keeps a MetaConfigError's own step", () => {
+    expect(envelopeFailure(new MetaConfigError("ad-account", "no ad account"), "fallback")).toEqual({
+      step: "ad-account",
+      message: "no ad account",
+    });
+  });
+
+  it("attributes any other throwable to the fallback step, redacted", () => {
+    expect(envelopeFailure(new Error("GET /me?access_token=EAAx"), "auth")).toEqual({
+      step: "auth",
+      message: "Error: GET /me?access_token=[REDACTED]",
+    });
   });
 });

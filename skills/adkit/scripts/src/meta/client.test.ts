@@ -12,11 +12,12 @@ import {
   classifyGraphError,
   createMetaClient,
   encodeParams,
+  metaClientFor,
   retryDelayMs,
 } from "./client.js";
 import { MetaApiError, MetaConfigError, formatMetaError } from "./errors.js";
 import { CampaignSchema, CreatedIdSchema, MeSchema } from "./graph.js";
-import { MetaAdAccountIdSchema } from "./ids.js";
+import { MetaAccessTokenSchema, MetaAdAccountIdSchema } from "./ids.js";
 
 const TOKEN = "EAABsecretTOKEN123";
 const ACCOUNT = MetaAdAccountIdSchema.parse("act_42");
@@ -359,5 +360,28 @@ describe("schema typing", () => {
     const client = createMetaClient({ token: TOKEN, fetch: queueFetch([json({ n: "3" })]), sleep: noSleep() });
     const schema = z.object({ n: z.string().transform(Number) });
     await expect(client.get("x", {}, schema)).resolves.toEqual({ n: 3 });
+  });
+});
+
+describe("metaClientFor", () => {
+  const read = async (appSecret: string | null): Promise<URL> => {
+    const fetch = queueFetch([json({ id: "1" })]);
+    vi.stubGlobal("fetch", fetch);
+    try {
+      await metaClientFor({ token: MetaAccessTokenSchema.parse(TOKEN), appSecret }).get("me", {}, MeSchema);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    return new URL(fetch.mock.calls[0]![0]);
+  };
+
+  it("sends the context token and no appsecret_proof when the app secret is null", async () => {
+    const url = await read(null);
+    expect(url.searchParams.get("access_token")).toBe(TOKEN);
+    expect(url.searchParams.has("appsecret_proof")).toBe(false);
+  });
+
+  it("adds appsecret_proof when the context carries an app secret", async () => {
+    expect((await read("shh")).searchParams.get("appsecret_proof")).toBe(appsecretProof(TOKEN, "shh"));
   });
 });

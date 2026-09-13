@@ -111,3 +111,19 @@ export function formatMetaError(exc: unknown): string {
           : String(exc);
   return redactMetaSecrets(text);
 }
+
+/** The `{ step, message }` pair a bin hands to `errorEnvelope`. */
+export interface EnvelopeFailure {
+  readonly step: string;
+  readonly message: string;
+}
+
+/**
+ * Map a throwable to its envelope fields. Meta errors keep their own `step`;
+ * anything else is attributed to `fallbackStep`. The message is
+ * {@link formatMetaError}'s redacted line. Pure.
+ */
+export const envelopeFailure = (exc: unknown, fallbackStep: string): EnvelopeFailure => ({
+  step: exc instanceof MetaApiError || exc instanceof MetaConfigError ? exc.step : fallbackStep,
+  message: formatMetaError(exc),
+});
