@@ -197,8 +197,11 @@ bash ads.sh report --platform meta $ARGUMENTS  # otherwise
 - **Ad account.** `--ad-account <id>` → `META_AD_ACCOUNT_ID` →
   `meta_ad_account_id` in `adkit.yaml` → a one-time prompt on a terminal (saved).
   `123` and `act_123` are both accepted and normalised to `act_123`; that
-  `act_<digits>` form is the `<customer>` in every output file name. There is no
-  manager: `--manager` does not apply and `manager_id` is always `null`.
+  `act_<digits>` form is the `<customer>` in every output file name. A bare
+  `--ad-account` with no value is refused (`step: "args"`). There is no manager:
+  `manager_id` is always `null`, and the Google account flags — `--customer`,
+  `--manager`, or a positional customer id — are **refused** with `step: "args"`
+  and a pointer to `--ad-account`, never silently ignored.
 - **`--days`, `--all-time`, `--include-paused`** behave as for Google, with one
   limit: Meta keeps at most **37 months** of insights, so `--all-time` is clamped
   and `window.start`/`window.days` report the clamped span — say so in the
@@ -207,7 +210,9 @@ bash ads.sh report --platform meta $ARGUMENTS  # otherwise
   `offsite_conversion.fb_pixel_lead`, `complete_registration`) picks which Meta
   action counts as a conversion. `conversions` is the sum of that action's value;
   `cost_per_conversion` is spend over it. A different action means different
-  numbers — state which one the run used.
+  numbers — state which one the run used. The flag is parsed the same way as
+  `audit`'s: a bare `--result-action` or a blank value is refused with
+  `step: "args"` rather than falling back to `lead`.
 - **`--attribution <windows>`** (default `7d_click,1d_view`; allowed `1d_click`,
   `7d_click`, `28d_click`, `1d_view`, `1d_ev`). `7d_view` and `28d_view` were
   removed by Meta on 2026-01-12 and are **refused** with an error explaining the
@@ -219,8 +224,9 @@ any failure (bad flags, credentials, a Graph API error, or no campaigns with
 activity in the window, in which case nothing is written) the Meta report exits 1
 and writes a JSON envelope **on stdout**, not free text on stderr:
 `{ "ok": false, "message": "...", "step": "..." }`. `step` names where it stopped
-(`args`, `credentials`, `report-account`, a `report-*` insights read, `report`
-for the zero-campaign case, or `write`). Stop and relay `message`; do not
+(`args`, `credentials`, `ad-account`, `report-account`, `report-campaigns`, a
+`report-insights-*` read, `report` for the zero-campaign case, `write`, or
+`unexpected`). Stop and relay `message`; do not
 fabricate a report.
 
 The raw YAML keeps the Google shape so the same reading applies, with these

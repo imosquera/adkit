@@ -35,11 +35,18 @@ is a setting, resolved once at the top of each command:
 - **Values:** `google` or `meta`. Blank or absent means `google`, so a project that
   predates the switch is unchanged. Anything else is refused with an `ok:false`
   envelope (`step: "platform"`) naming the tier the bad value came from.
-- **Meta-capable commands:** `init`, `preflight`, `create`, `audit`, `update`,
-  `report`. When the platform resolves to `meta`, each Google entry point hands off to
-  its Meta implementation (the `--platform` flag is stripped first); the Google code
-  path is not touched. `update` also takes the Meta path when the plan file itself
-  says `platform: meta`.
+- **Delegating commands:** `preflight`, `report`, `audit`, `create`, `update`. When
+  the platform resolves to `meta`, each Google entry point hands off to its Meta
+  implementation (the `--platform` flag is stripped first); the Google code path is not
+  touched. Two inputs also select Meta on their own, whatever the resolved platform:
+  a `create` brief declaring `type: meta`, and an `update` plan whose top-level
+  `platform` is `meta` (an unknown value there fails with `step: "platform"`). An
+  unexpected throw escaping a Meta implementation becomes a redacted
+  `{ ok: false, message, step: "unexpected" }` envelope, exit 1.
+- **Branch-in-place commands:** `init`, `bootstrap-secrets`, `render-yaml` resolve
+  the platform through the same tiers and pick that platform's fields or secrets
+  themselves; nothing is prompted for the platform (`ads.sh init --platform meta`
+  scaffolds a Meta project).
 - **Google-only commands:** `research` and `keyword-ideas` refuse on Meta with
   `step: "platform"` — Meta has no keyword planner equivalent. `gtm` produces
   Google keyword tiers and RSA copy and has no Meta path either.
@@ -77,15 +84,22 @@ account every Meta command reads or mutates. There is no manager/login-header
 equivalent.
 
 - **Resolution:** `--ad-account <id>` → `META_AD_ACCOUNT_ID` → `meta_ad_account_id` in
-  `adkit.yaml`. A Meta brief or update plan may also carry its own `adAccountId`;
-  when absent it falls back to the same chain.
+  `adkit.yaml`. `--ad-account` (space or `=` form) is accepted by `preflight`,
+  `report`, `audit` and `update`; a bare `--ad-account` with no value is rejected
+  with `step: "args"`, never silently replaced by the configured account. `create`
+  takes no `--ad-account` (an unknown flag, `step: "args"`): it uses the brief's
+  `adAccountId`, else `META_AD_ACCOUNT_ID` / `meta_ad_account_id`. An `update` plan's
+  `adAccountId` wins over the chain, and a `--ad-account` naming a different account
+  is refused (`step: "args"`, exit 2).
 - **Format rule:** digits, with or without the `act_` prefix (`1234567890` and
   `act_1234567890` are the same account); surrounding whitespace is trimmed. The id is
   parsed **once**, at the boundary, into the canonical `act_<digits>` form — that is
   what appears in envelopes and in report file names
   (`<date>-act_<digits>-raw.yaml`). Anything that is not digits after an optional
-  `act_` is rejected, naming the tier it came from (e.g. `META_AD_ACCOUNT_ID: invalid
-  Meta ad account id …`).
+  `act_` is rejected with `step: "ad-account"`, naming the tier it came from (e.g.
+  `META_AD_ACCOUNT_ID: invalid Meta ad account id …`). `ads.sh init` stores the
+  value exactly as typed, so a malformed `meta_ad_account_id` surfaces on the first
+  Meta command that reads it, not at `init`.
 - **When it resolves nowhere** the behaviour matches `target_customer_id`: on a
   terminal the command asks once and saves the answer to `adkit.yaml`; with no
   terminal it exits non-zero with `ok:false`, `step: "ad-account"`, naming the field
@@ -111,29 +125,45 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 
 Meta runs use the same envelope contract; success payloads carry
 `"platform": "meta"` so a consumer can tell the two apart (Google payloads are
-unchanged and carry no `platform` key). Failures name one of these steps:
+unchanged and carry no `platform` key). A Meta failure envelope is
+`{ ok: false, message, step }` (plus command-specific keys). The steps a failure can
+name include:
 
 | Step | Raised when |
 | --- | --- |
-| `platform` | `--platform` / `ADKIT_PLATFORM` / `adkit.yaml platform` holds an unknown value, or a Google-only command (`research`, `keyword-ideas`) ran on Meta |
+| `platform` | `--platform` / `ADKIT_PLATFORM` / `adkit.yaml platform` (or an `update` plan's `platform`) holds an unknown value, or a Google-only command (`research`, `keyword-ideas`) ran on Meta |
+| `args` | bad flags: a bare `--ad-account` / `--result-action`, `--days` outside 7/14/30 (`audit`), a refused attribution window or a Google account flag (`report`), an unknown flag or missing brief path (`create`), no plan path or a conflicting `--ad-account` (`update`) |
 | `credentials` | no `meta_access_token` (secrets file) or `META_ACCESS_TOKEN` resolved; the message names the field, the secrets path, and `ads.sh init` |
 | `ad-account` | no ad account id resolved off a terminal, or the value is not `act_<digits>` / digits |
+| `config` | `meta_page_id` or `meta_pixel_id` in `adkit.yaml` is not a numeric id |
 | `auth` | preflight: the Graph API rejected the token (`GET /me`) |
 | `access` | preflight: the ad account could not be read, or its `account_status` is not active (the status is named) |
 | `permissions` | preflight: the token lacks `ads_read` / `ads_management` (the missing ones are named) |
-| `upload-media` · `create-campaign` · `create-ad-set` · `create-creative` · `create-ad` | `create` failed at that publish step |
-| `find-existing` | `create` found more than one live object with the same name under the same parent (duplicates named) |
+| `brief` · `url-check` · `page` · `adbriefs` · `state` · `account` | `create` before publish: the brief failed to parse, an ad link does not resolve, no Facebook Page, a slug collision / brief write failure, an unreadable `.meta-state.yaml`, the account currency read |
+| `upload-media` · `create-campaign` · `create-ad-set` · `create-creative` · `create-ad` · `find-existing` · `save-state` · `state` | `create` publish steps, reported in the publish envelope's `failure.step`; `find-existing` covers the by-name lookup, including more than one live object with the same name under the same parent (duplicates named); `state` here means the state file belongs to a different ad account |
+| `plan` · `read-live` · `validate` · `state` · `stage-briefs` · `apply` | `update`: plan file missing / invalid, live read, validation, `.meta-state.yaml` index, brief staging, and one or more failed `--apply` entries (`errors[].step` is `status`, `budget`, `exclusions`, `creative-swap`, `write-brief` or `write-state`) |
+| `report-account` · `report-campaigns` · `report-insights-*` · `report` · `write` | `report`: the account read, the campaign / insights reads (`report-insights` when no single read is named), no campaigns with activity, the file write |
+| `audit-campaigns` · `audit-adsets` · `audit-ads` · `audit-insights-*` | `audit`: the read that failed (`audit-read` when no single read is named) |
+| `unexpected` | an error the Meta implementation did not attribute to a step (redacted) |
 
 - **Graph API errors are preserved.** Meta's own `code`, `subcode`, message, user-facing
   title/message and `fbtrace_id` are carried into the failure text verbatim — surface
   them as-is. A 2xx response that does not match its expected shape fails loudly with
   code `schema` and the mismatched fields, never an empty result.
-- **Tokens never appear in output.** `access_token` and `appsecret_proof` values are
-  redacted from every error line.
-- **Retries are bounded.** Rate-limit and transient Graph errors (and HTTP 5xx) are
-  retried up to 4 attempts with backoff, honouring Meta's usage headers when present;
-  only then does the run fail with the step. The hourly budget-change quota ("at most 4
-  budget changes per hour") is not retried — it fails immediately.
+- **Tokens never appear in output.** `access_token` and `appsecret_proof` values (and
+  the PageSpeed Insights `key=` value) are redacted from every error line.
+- **Retries are bounded, and writes are never resent blindly.** Up to 4 attempts with
+  exponential backoff, honouring Meta's usage headers when present (capped at 5
+  minutes per wait). Throttling codes (4, 17, 32, 613, 80000–80014) — rejected before
+  Meta acted — are retried for every request. Ambiguous failures (HTTP 5xx, codes 1 / 2,
+  `is_transient`) and timeouts are retried **only for GETs**: a POST is never resent
+  after one, because the create may already have happened. Such a failure says so and
+  tells you to **re-run to reconcile** — `create` looks objects up by name before
+  creating them. The hourly budget-change quota (subcode 1487632, "at most 4 budget
+  changes per ad set per hour") is not retried — it fails immediately. A network error
+  (connection refused, reset) is not retried.
+- **Per-attempt timeouts.** 60 seconds for a JSON Graph call, 10 minutes for an image
+  or video upload.
 
 ## Credentials, project config, & preflight
 
@@ -198,12 +228,14 @@ committed, tokens git-ignored:
 | File | Meta keys | Env override |
 | --- | --- | --- |
 | `adkit.yaml` (committed) | `platform`, `meta_ad_account_id`, `meta_page_id`, `meta_pixel_id` | `ADKIT_PLATFORM`, `META_AD_ACCOUNT_ID` |
-| `.adkit.secrets.yaml` (git-ignored, 0600) | `meta_access_token`, `meta_app_id`, `meta_app_secret` | `META_ACCESS_TOKEN`, `META_APP_ID`, `META_APP_SECRET` |
+| `.adkit.secrets.yaml` (git-ignored, 0600) | `meta_access_token`, `meta_app_id`, `meta_app_secret`, `psi_api_key` | `META_ACCESS_TOKEN`, `META_APP_ID`, `META_APP_SECRET`, `PAGESPEED_API_KEY` |
 
 - **`meta_access_token`** is required for every Meta command — a system-user access
   token granted `ads_read` and `ads_management` (preflight names whichever is missing).
   `meta_app_id` / `meta_app_secret` are optional; when `meta_app_secret` is present
   every Graph request also carries `appsecret_proof` (an HMAC-SHA256 of the token).
+  `psi_api_key` is optional too; it enables the Meta `audit`'s PageSpeed Insights
+  landing-page diagnosis, as for Google.
 - **`meta_page_id`** is the Facebook Page the ads are published as and
   **`meta_pixel_id`** the conversion pixel; both are optional. A Meta brief can set
   `pageId` and each ad set's `conversion.pixelId` itself.
@@ -212,13 +244,18 @@ committed, tokens git-ignored:
   moves them out of the repo.
 - **Secret Manager.** The Meta secrets follow the Google kebab-case naming:
   `meta-access-token` → `meta_access_token`, `meta-app-secret` → `meta_app_secret`.
-  Both commands follow the project's `platform` in `adkit.yaml`.
-  `bootstrap-secrets` prompts only for that platform's secrets (a blank Meta answer is
-  skipped). `render-yaml` on `google` requires the four Google Ads credentials and
-  skips absent Meta secrets; on `meta` it requires only `meta-access-token`, so a
-  Meta-only project with no Google secrets renders instead of aborting.
+  Both commands resolve the platform like every other command (`--platform` →
+  `ADKIT_PLATFORM` → `platform` in `adkit.yaml` → `google`; an unknown value fails with
+  `step: "platform"`). `bootstrap-secrets` prompts only for that platform's secrets —
+  on Meta, `meta-access-token` and `meta-app-secret` — and a blank Meta answer is
+  skipped (nothing created or versioned). `render-yaml` on `google` requires the four
+  Google Ads credentials and skips absent Meta secrets; on `meta` it requires
+  `meta-access-token` (the render aborts without it, even if `bootstrap-secrets`
+  skipped it) and treats every other secret as optional, so a Meta-only project with
+  no Google secrets renders instead of aborting.
 - **Meta preflight.** `ads.sh preflight --platform meta` (or with `platform: meta` in
-  `adkit.yaml`) runs `credentials` (token + ad account resolved) → `auth`
+  `adkit.yaml`) runs `args` (a valueless `--ad-account` is refused) → `credentials`
+  (token + ad account resolved; `ad-account` / `config` for a bad id) → `auth`
   (`GET /me`) → `access` (reads the ad account's name, status, currency) →
   `permissions` (`ads_read` / `ads_management` granted). The first failing step is the
   envelope's `step`. Run it once per session, as for Google.
@@ -350,8 +387,8 @@ The live ids it creates are recorded in a sibling file, **`adbriefs/<slug>.meta-
 platform: meta
 adAccountId: act_1234567890
 campaign: { name: <campaign name>, campaignId: "…" }        # null until created
-media:                                                       # keyed by the brief's media path
-  ./path.png: { sha256: "…", imageHash: "…" }                # or videoId for a video
+media:                                                       # keyed by the staged brief's media path (relative to adbriefs/)
+  ../creative/x.png: { sha256: "…", imageHash: "…" }         # or videoId for a video
 adSets:
   - name: <ad set name>
     adSetId: "…"                                             # null until created
@@ -365,16 +402,24 @@ adSets:
   `create-campaign` → `create-ad-set` → `create-creative` → `create-ad`) is skipped
   when state already holds its id; media is not re-uploaded when the file's sha256
   matches. When state lacks an id, `create` first looks the object up live by exact
-  name under its parent (ignoring deleted objects) — which covers "the create
-  succeeded but the state write did not". More than one live match stops the run with
-  `step: "find-existing"` naming the duplicates.
+  name under its parent (ignoring deleted and archived objects) — campaigns and
+  creatives (by their `<campaign> / <ad>` name) under the ad account, ad sets under
+  the campaign, ads under the ad set — which covers "the create succeeded but the
+  state write did not". More than one live match stops the run with
+  `failure.step: "find-existing"` naming the duplicates.
+- **Renames orphan, never delete.** An ad set or ad whose name left the brief drops
+  out of state; its live ids are reported in the envelope's `orphaned` list and as a
+  `WARNING:` line on stderr. The live objects are left untouched — rename it back, or
+  pause / delete them in Ads Manager.
 - **Everything is created `PAUSED`.** Turning spend on is a deliberate
   `update --apply` status change.
 - **Kept apart from Google state.** The suffix is `.meta-state.yaml`, which does not
   end in `.state.yaml`, so the Google state index never reads it. `update` builds its
   own Meta index from these files (campaign / ad set / ad id → slug) to stage a Meta
   plan into the owning brief, with the same per-slug diff, mutate-then-write, and
-  failure-isolation rules as above.
+  failure-isolation rules as above. One difference: every successful creative swap's
+  new creative id is recorded in `<slug>.meta-state.yaml` even when another entry for
+  that slug failed, so state keeps mirroring what is live; only the brief is held back.
 
 ## Division of labor — the CLI is deterministic, the model is creative
 

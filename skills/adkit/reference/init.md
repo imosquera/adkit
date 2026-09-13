@@ -32,7 +32,7 @@ Mechanics (the JSON envelope, credentials, customer-id resolution) are in **`ref
 ads.sh init
 ```
 
-- **Platform first**: the very first prompt is `platform (google/meta) [google]`. A blank answer (or `google`) runs the Google scaffold described in the rest of this list, unchanged; `meta` runs the [Meta scaffold](#meta-projects). Only the chosen platform's fields are prompted for and written.
+- **Platform is resolved, not prompted**: `--platform` → `ADKIT_PLATFORM` → `platform` in an existing `adkit.yaml` → `google`. With none of those set, `init` runs the Google scaffold described in the rest of this list, unchanged; `ads.sh init --platform meta` runs the [Meta scaffold](#meta-projects). Only the resolved platform's fields are prompted for and written. An unknown value is refused with an `ok:false` envelope (`step: "platform"`) before any prompt.
 - **Interactive**: prompts once for each field of the file(s) it is about to write — the Google Ads credentials first (`developer_token`, `client_id`, `client_secret`, `refresh_token`, `psi_api_key`; read without echo, except the public `client_id`), then the non-secret project preferences (`mcc_customer_id`, `target_customer_id`, `secrets_project`, `read_backend`, `reports_dir`, `briefs_dir`, `ideas_dir`). A blank answer keeps the field's default (shown inline in the prompt); a field left blank with no default is simply omitted from the file.
 - **Two files, written separately.** Preferences go to `adkit.yaml` (world-readable, commit it); credentials go to `.adkit.secrets.yaml` at mode 0600. Neither file can pick up the other's fields — the writer emits only the keys that belong to it.
 - **Keeping the credentials out of the repo entirely is the stronger option.** `export ADKIT_CONFIG=~/.config/adkit/<project>.secrets.yaml` before running `init` and the credentials are written there instead: nothing in the tree can commit them, and they survive into git worktrees (which an ignored root file never does). `adkit.yaml` is still written to the repo root.
@@ -46,19 +46,23 @@ ads.sh init
 
 ## Meta projects
 
-Answer `meta` to the platform prompt and `init` scaffolds a Meta project. Every rule above — create-if-missing per file, `.gitignore` retrofit, the `secrets-path` guardrail, `ADKIT_CONFIG`, the legacy `.adkit.yaml` stop — applies unchanged; only the fields differ.
+Run `ads.sh init --platform meta` (or export `ADKIT_PLATFORM=meta` first) and `init` scaffolds a Meta project. Every rule above — create-if-missing per file, `.gitignore` retrofit, the `secrets-path` guardrail, `ADKIT_CONFIG`, the legacy `.adkit.yaml` stop — applies unchanged; only the fields differ.
+
+```bash
+ads.sh init --platform meta
+```
 
 | File | Tracked | Meta contents |
 | --- | --- | --- |
 | `adkit.yaml` | **committed** | `platform: meta`, `meta_ad_account_id`, `meta_page_id`, `meta_pixel_id`, `secrets_project`, `reports_dir`, `briefs_dir`, `ideas_dir` |
-| `.adkit.secrets.yaml` | git-ignored, mode 0600 | `meta_access_token`, `meta_app_id`, `meta_app_secret` |
+| `.adkit.secrets.yaml` | git-ignored, mode 0600 | `meta_access_token`, `meta_app_id`, `meta_app_secret`, `psi_api_key` |
 
-- **Prompt order**: after `platform`, the Meta credentials (`meta_access_token`, read without echo; `meta_app_id`, optional; `meta_app_secret`, optional and read without echo — it enables `appsecret_proof` on every request), then the preferences (`meta_ad_account_id`, `meta_page_id`, `meta_pixel_id`, `secrets_project`, `reports_dir`, `briefs_dir`, `ideas_dir`). No Google field is asked for, and `read_backend` is Google-only.
+- **Prompt order**: the Meta credentials first (`meta_access_token`, read without echo; `meta_app_id`, optional; `meta_app_secret`, optional and read without echo — it enables `appsecret_proof` on every request; `psi_api_key`, optional and read without echo — it enables `audit`'s PageSpeed Insights landing-page diagnosis), then the preferences (`meta_ad_account_id`, `meta_page_id`, `meta_pixel_id`, `secrets_project`, `reports_dir`, `briefs_dir`, `ideas_dir`). No Google Ads field is asked for, and `read_backend` is Google-only.
 - **`platform: meta` is written to `adkit.yaml`** so every later command takes the Meta path without a flag. A Google project never writes a `platform` key — absent already means `google`.
 - **`meta_access_token`** is a system-user (or long-lived user) access token with `ads_read` and `ads_management`. It is the only required Meta credential.
-- **`meta_ad_account_id`** accepts `1234567890` or `act_1234567890`; it is parsed once into `act_<digits>` and a non-numeric value is rejected naming the field. If you skip it here, the first Meta command that needs it asks once on a terminal and saves it to `adkit.yaml` (off a terminal: `ok:false`, `step: "ad-account"`).
-- **`meta_page_id`** (the Facebook Page ads are published as) is needed by `create`; **`meta_pixel_id`** (the pixel / dataset id) by conversion campaigns. Both are optional here — a Meta brief can set them itself.
-- **Credentials from Secret Manager**: `render-yaml` / `bootstrap-secrets` handle `meta_access_token` and `meta_app_secret` as optional secrets.
+- **`meta_ad_account_id`** accepts `1234567890` or `act_1234567890`. `init` stores it exactly as typed and does not check it; every Meta command parses it into `act_<digits>` when it reads it, and a malformed value fails there with `step: "ad-account"`, naming the field. If you skip it here, the first Meta command that needs it asks once on a terminal and saves it to `adkit.yaml` (off a terminal: `ok:false`, `step: "ad-account"`).
+- **`meta_page_id`** (the Facebook Page ads are published as) is needed by `create`; **`meta_pixel_id`** (the pixel / dataset id) by conversion campaigns. Both are optional here — a Meta brief can set them itself. A non-numeric value fails later with `step: "config"`.
+- **Credentials from Secret Manager**: `ads.sh bootstrap-secrets --platform meta` prompts for `meta-access-token` and `meta-app-secret` only, skipping a blank answer. `ads.sh render-yaml` on a Meta project **requires** `meta-access-token` (it aborts without it) and fetches `meta-app-secret` (and any other secret) when present. Both commands resolve the platform the same way `init` does, so `platform: meta` in `adkit.yaml` makes the flag unnecessary.
 - **Next step**: `ads.sh preflight` (the `platform: meta` in `adkit.yaml` routes it) runs `credentials` → `auth` → `access` → `permissions` and names the first step that fails — an inactive ad account or a missing `ads_read` / `ads_management` permission is reported by name. See [Meta credentials](conventions.md#meta-credentials) and [Meta ad account id](conventions.md#meta-ad-account-id-act_). For the strategy behind the account, start with the [Meta fundamentals](meta/1-fundamentals.md) playbook.
 
 ## After `init`

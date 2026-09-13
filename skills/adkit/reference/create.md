@@ -243,7 +243,7 @@ Audience ids are the numeric ids from Tools → Audience manager, or GAQL: `SELE
 
 A brief with `type: meta` publishes a **Meta (Facebook + Instagram) campaign** through the Marketing API instead of Google Ads. **The brief selects the Meta path by itself**: when the path passed to `ads.sh create` is a YAML file declaring `type: meta`, the run goes to Meta with no `--platform` flag needed (even when `adkit.yaml` says `platform: google`). `--platform meta`, `ADKIT_PLATFORM=meta`, or `platform: meta` in `adkit.yaml` also select it. The Google flags, customer id, and scaffold don't apply. There is no scaffold from a processed idea yet: author the YAML by hand (reuse the processed file's themes, offer temperature, and copy) and pass its path to `ads.sh create`. Same flow otherwise: dry run, `adbriefs/` diff gate, everything PAUSED on publish.
 
-Credentials: `meta_access_token` (plus optional `meta_app_id` / `meta_app_secret`) in `.adkit.secrets.yaml`, or `META_ACCESS_TOKEN` / `META_APP_ID` / `META_APP_SECRET`. The ad account comes from the brief's `adAccountId`, else `META_AD_ACCOUNT_ID` / `meta_ad_account_id`. The Facebook Page comes from the brief's `pageId`, else `meta_page_id` in `adkit.yaml`; with neither, the run stops at step `page` before touching `adbriefs/` or the API. `/adkit init` writes them when you answer `meta` at its first (platform) prompt.
+Credentials: `meta_access_token` (plus optional `meta_app_id` / `meta_app_secret`) in `.adkit.secrets.yaml`, or `META_ACCESS_TOKEN` / `META_APP_ID` / `META_APP_SECRET`. The ad account comes from the brief's `adAccountId`, else `META_AD_ACCOUNT_ID` / `meta_ad_account_id`. The Facebook Page comes from the brief's `pageId`, else `meta_page_id` in `adkit.yaml`; with neither, the run stops at step `page` before touching `adbriefs/` or the API. `ads.sh init --platform meta` writes them. `create` takes no `--ad-account` flag (it is refused as an unknown flag, step `args`); set `adAccountId` in the brief instead.
 
 **Before authoring, read:**
 - [`reference/meta/2-audience-mining.md`](meta/2-audience-mining.md): audience sources, and why Advantage+ suggestions are soft while controls are hard
@@ -290,7 +290,7 @@ adSets:                             # 1–10
         headlines: ["Stop typing into your CRM"]            # 1–5
         descriptions: ["No new integrations"]               # 0–5
         media: { image: ./creative/konnect-1x1.png }        # | { video: ./creative/demo.mp4, thumbnail: ./creative/demo.png }
-        enhancements:               # every key explicit; unknown keys rejected
+        enhancements:               # unknown keys rejected; an omitted key falls back to Meta's default, so set each one you care about
           enhance_cta: OPT_OUT
           text_optimizations: OPT_OUT
           image_touchups: OPT_IN
@@ -311,10 +311,10 @@ adSets:                             # 1–10
 - **Exactly one budget mode.** `mode: campaign` (Advantage+ campaign budget) is the default for a new account or one audience. Use `mode: adset` when ad sets differ a lot in size (broad vs. a small retargeting list), or for a controlled test. See [CBO vs ABO](meta/3-account-structure.md#cbo-vs-abo). A budget on the wrong level is rejected. `bidStrategy` is one of `LOWEST_COST_WITHOUT_CAP`, `COST_CAP`, `LOWEST_COST_WITH_BID_CAP`; `LOWEST_COST_WITH_MIN_ROAS` is **not supported** and is rejected. `bidAmount` is required on every ad set under `COST_CAP` / `LOWEST_COST_WITH_BID_CAP` and forbidden otherwise.
 - **Audience: controls are hard, suggestions are soft.** `genders` takes `male` / `female` (`[]` means all). With `advantageAudience: true`, interests, lookalikes, age, and gender are only hints. Location, minimum age, language, and **custom audience exclusions** are what actually restrict delivery, so anything the budget must never reach goes there. See [Broad vs Interest vs Lookalike vs Advantage+ Audience](meta/2-audience-mining.md#broad-vs-interest-vs-lookalike-vs-advantage-audience) and [Group into Ad Sets](meta/2-audience-mining.md#group-into-ad-sets).
 - **Always exclude customers and converters from prospecting** via `excludedCustomAudienceIds`. Interest exclusions no longer exist. See [Existing Customers & Converters](meta/5-exclusions.md#existing-customers--converters). Advantage+ sales campaigns ignore ad-set-level exclusions; set those in account controls instead ([Exclusion Layers](meta/5-exclusions.md#exclusion-layers)).
-- **Special ad categories narrow what you may target.** With any `specialAdCategories` entry the brief rejects `ageMin > 18`, `ageMax < 65`, gender narrowing, and `interests`.
+- **Special ad categories narrow what you may target.** With `HOUSING`, `EMPLOYMENT`, or `CREDIT` in `specialAdCategories` the brief rejects `ageMin > 18`, `ageMax < 65`, gender narrowing, `interests`, and any city `radius` below **15 miles / 25 km**. `ISSUES_ELECTIONS_POLITICS` carries none of these audience restrictions.
 - **Text pools: distinct angles, each standalone.** Up to 5 primary texts / 5 headlines / 5 descriptions per ad. Meta mixes them per impression, so every option must stand alone and take a different angle, not reword another one. Hard limits (rejected): primary text ≤1024, headline ≤255, description ≤255 chars. Recommended (warned): ≤125 / ≤40 / ≤30. Front-load the hook and qualifier. See [Text Pools](meta/4-creative.md#text-pools) and [Persuasion Angles](meta/4-creative.md#persuasion-angles). The honest-use gate there is binding.
-- **Set every Advantage+ creative enhancement explicitly.** Opt out of anything that rewrites your words or alters product imagery (`text_optimizations`, `enhance_cta`, overlays, image generation). See [Dynamic & Advantage+ Creative](meta/4-creative.md#dynamic--advantage-creative).
-- **Names are identity.** Ad set names are unique within the campaign and ad names within their ad set. A re-run finds existing objects by exact name. Media paths are relative to the brief file you pass and must exist and be readable. When the brief is staged into `adbriefs/<slug>.yaml`, relative media paths are **rewritten relative to the `adbriefs/` directory** so the staged copy still resolves them on a re-run or `update` (absolute paths are kept as-is). Re-running from the staged copy leaves them unchanged.
+- **Set every Advantage+ creative enhancement explicitly.** A key you leave out of `enhancements` is not sent, so Meta applies its own default for it. Opt out of anything that rewrites your words or alters product imagery (`text_optimizations`, `enhance_cta`, overlays, image generation). See [Dynamic & Advantage+ Creative](meta/4-creative.md#dynamic--advantage-creative).
+- **Names are identity.** Ad set names are unique within the campaign and ad names within their ad set. A re-run finds existing objects by exact name. Media paths are relative to the brief file you pass and must exist and be readable. When the brief is staged into `adbriefs/<slug>.yaml`, relative media paths are **rewritten relative to the `adbriefs/` directory** (e.g. `./creative/x.png` next to a brief at the repo root becomes `../creative/x.png`) so the staged copy still resolves them on a re-run or `update` (absolute paths are kept as-is). Re-running from the staged copy leaves them unchanged. `.meta-state.yaml` keys its `media` entries by that rewritten path.
 
 Every cross-field rule is checked **together, before any API call**: one run reports all violations at once, and nothing is created.
 
@@ -327,9 +327,13 @@ ads.sh create path/to/konnect-meta.yaml             # publish (add --skip-url-ch
 
 Publish order: **upload media** (images → hashes, videos → ids) → **campaign** → per ad set **ad set** → per ad **creative** (flexible format: the text pools and media in `asset_feed_spec`, enhancements in `degrees_of_freedom_spec`) → **ad**. Every campaign, ad set, and ad is created **PAUSED**. Nothing spends until you enable it with `/adkit update` (`status` section) or in Ads Manager.
 
-A publish is **resumable**. `adbriefs/<slug>.meta-state.yaml` records each created id **after every successful step**, not only at the end. Re-running the same brief skips anything state already holds. When state lacks an id, it first looks the object up live by exact name under its parent, so a create that succeeded before the state write is adopted, not duplicated. Unchanged media (same file sha256) is not re-uploaded. If more than one live object has that name, the run stops at step `find-existing` and names the duplicates. Clean them up in Ads Manager and re-run.
+A publish is **resumable**. `adbriefs/<slug>.meta-state.yaml` records each created id **after every successful step**, not only at the end. Re-running the same brief skips anything state already holds. When state lacks an id, it first looks the object up live by exact name under its parent (campaigns under the ad account, ad sets under the campaign, ads under the ad set, and **creatives** under the ad account by their `<campaign> / <ad>` name; a live ad also yields its creative id), so a create that succeeded before the state write is adopted, not duplicated. Unchanged media (same file sha256) is not re-uploaded. If more than one live object has that name, the run stops with `failure.step: "find-existing"` and names the duplicates. Clean them up in Ads Manager and re-run.
 
-Pre-publish steps run in order: `args` → `brief` (every schema, cross-field, and missing-media issue at once; soft length warnings go to stderr) → `url-check` → `credentials` → `page` → `adbriefs` (slug collision refused; the diff goes to stderr) → `state`. A failure in any of them prints `{ ok: false, message, step }` on stdout and exits 1 with nothing written.
+Graph writes are never resent after an ambiguous failure (HTTP 5xx, a transient code, or a timeout); only throttling errors are retried. When a create fails or times out that way, the message says the object may already exist and to **re-run to reconcile**: the by-name lookup above adopts it if it was created. See [Meta envelopes and error steps](conventions.md#meta-envelopes-and-error-steps).
+
+**Renamed or removed ad sets and ads are orphaned, never deleted.** If a name in `.meta-state.yaml` is no longer in the brief (you renamed or removed an ad set or ad), its live ids are listed in the envelope's `orphaned` (`{ kind: "ad-set", name, adSetId, ads } | { kind: "ad", name, adSetName, creativeId, adId }`) with one `WARNING:` line each on stderr, and the new name is published like any other entry (created, or adopted by name). The old live objects are left untouched: rename it back, or pause or delete them in Ads Manager.
+
+Pre-publish steps run in order: `args` → `brief` (every schema, cross-field, and missing-media issue at once) → `url-check` → `credentials` → `page` → `adbriefs` (slug collision refused; the diff goes to stderr) → `state`. A failure in any of them prints `{ ok: false, message, step }` on stdout and exits 1 with nothing written. Soft warnings (recommended text lengths, and `excludedCustomAudienceIds` combined with `advantageAudience: true`, where the exclusions may not apply) go to stderr as `warning:` lines and into the envelope's `warnings`; they never block.
 
 Dry-run envelope (exit 0, no API calls at all, not even the currency read):
 
@@ -337,20 +341,20 @@ Dry-run envelope (exit 0, no API calls at all, not even the currency read):
 { ok: true, platform: "meta", dryRun: true, adAccountId, pageId, briefPath,
   briefDiff: { changed, added, removed },
   planned: [{ step, name, parents, existingId, action: "skip" | "create" }],
-  willWriteBrief, willWriteState }
+  warnings, orphaned, willWriteBrief, willWriteState }
 ```
 
-Publish envelope (after writing the brief; a failure reading the account currency is step `account`, with the error envelope above):
+Publish: the client is built and the account currency read first (a failure there is step `account`, with the error envelope above), and **only then** is the brief written to `adbriefs/`, so a credentials or account failure leaves `adbriefs/` untouched. Publish envelope:
 
 ```
 { ok, platform: "meta", adAccountId,
   created: { campaignId, adSets: [{ name, adSetId, ads: [{ name, creativeId, adId }] }] },
-  failure: { step, message, code? } | null,
+  failure: { step, message, code?, subcode?, fbtraceId? } | null,
   briefPath, statePath, briefDiff: { changed, added, removed },
-  briefSynced, stateSynced, note }
+  briefSynced, stateSynced, warnings, orphaned, note }
 ```
 
-`created` holds the ids saved so far (null where a step has not run). `briefSynced` is `false` whenever publish failed; `stateSynced` is `false` only when the state save itself failed (`failure.step: "save-state"`). Exit 1 on failure: `failure.step` names where it stopped. Fix the cause and re-run the same command to continue from there.
+`created` holds the ids saved so far (null where a step has not run). `briefSynced` is `false` whenever publish failed; `stateSynced` is `false` only when the state save itself failed (`failure.step: "save-state"`). Exit 1 on failure: `failure.step` names where it stopped (`state` means the existing `.meta-state.yaml` belongs to a different ad account than this publish targets). Fix the cause and re-run the same command to continue from there.
 
 ## Execution
 
