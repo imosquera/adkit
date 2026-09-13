@@ -49,6 +49,7 @@ import {
 } from "../audit/scoring.js";
 import { resolveCustomer, type ResolveCustomerOptions } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
+import { PlatformError, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
 import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
 import {
   applyAdGroupNamesQuery,
@@ -1248,7 +1249,23 @@ export async function runAudit(
   clientFactory: typeof loadReadClient = loadReadClient,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
-  const args = parseAudarArgs(argv);
+  // Platform first (plan D1): a Meta run never reaches Google customer/MCC resolution.
+  let platform: Platform;
+  try {
+    platform = resolvePlatform(argv, env, loadConfig());
+  } catch (exc) {
+    if (exc instanceof PlatformError) {
+      emitJson(errorEnvelope(exc.message, { step: exc.step }));
+      return 1;
+    }
+    throw exc;
+  }
+  if (platform === "meta") {
+    return (await import("../meta/bin/audit.js")).main(stripPlatformFlag(argv), env);
+  }
+
+  // The Google parser is strict, so the platform flag is stripped before it.
+  const args = parseAudarArgs(stripPlatformFlag(argv));
   // Required to operate: resolves, or asks once on a TTY, or fails loudly. Never guesses.
   let customer: string;
   try {
