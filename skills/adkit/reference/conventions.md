@@ -210,9 +210,13 @@ committed, tokens git-ignored:
 - **Same guardrail, same placements.** Meta credentials go through the checks below
   exactly like the Google ones — refused if the target is committable, `ADKIT_CONFIG`
   moves them out of the repo.
-- **Secret Manager.** `render-yaml` / `bootstrap-secrets` treat the Meta secrets
-  (`META_ACCESS_TOKEN` → `meta_access_token`, `META_APP_SECRET` → `meta_app_secret`)
-  as **optional**: a Google-only project without them is skipped, not failed.
+- **Secret Manager.** The Meta secrets follow the Google kebab-case naming:
+  `meta-access-token` → `meta_access_token`, `meta-app-secret` → `meta_app_secret`.
+  Both commands follow the project's `platform` in `adkit.yaml`.
+  `bootstrap-secrets` prompts only for that platform's secrets (a blank Meta answer is
+  skipped). `render-yaml` on `google` requires the four Google Ads credentials and
+  skips absent Meta secrets; on `meta` it requires only `meta-access-token`, so a
+  Meta-only project with no Google secrets renders instead of aborting.
 - **Meta preflight.** `ads.sh preflight --platform meta` (or with `platform: meta` in
   `adkit.yaml`) runs `credentials` (token + ad account resolved) → `auth`
   (`GET /me`) → `access` (reads the ad account's name, status, currency) →

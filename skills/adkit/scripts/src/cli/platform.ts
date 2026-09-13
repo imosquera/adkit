@@ -119,6 +119,22 @@ export function stripPlatformFlag(argv: readonly string[]): string[] {
   ).kept.slice();
 }
 
+/** {@link resolvePlatform} as a `Result`, for callers that branch instead of catching. */
+export function platformResult(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  config: { platform?: string },
+): Result<Platform> {
+  try {
+    return { kind: "ok", value: resolvePlatform(argv, env, config) };
+  } catch (exc) {
+    if (exc instanceof PlatformError) {
+      return { kind: "err", message: exc.message };
+    }
+    throw exc;
+  }
+}
+
 /**
  * The failure envelope that stops a Google-only `command` before any work (plan
  * D10), or `null` when the resolved platform is `google`. A Meta run is refused
@@ -131,14 +147,10 @@ export function googleOnlyRefusal(
   env: NodeJS.ProcessEnv,
   config: { platform?: string },
 ): ReturnType<typeof errorEnvelope> | null {
-  try {
-    return resolvePlatform(argv, env, config) === "meta"
+  const platform = platformResult(argv, env, config);
+  return platform.kind === "err"
+    ? errorEnvelope(platform.message, { step: "platform" })
+    : platform.value === "meta"
       ? errorEnvelope(`${command} is Google-only; Meta has no keyword planner equivalent`, { step: "platform" })
       : null;
-  } catch (exc) {
-    if (exc instanceof PlatformError) {
-      return errorEnvelope(exc.message, { step: exc.step });
-    }
-    throw exc;
-  }
 }

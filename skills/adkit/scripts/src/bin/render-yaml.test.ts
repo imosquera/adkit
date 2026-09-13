@@ -10,7 +10,7 @@ const execFileSync = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ execFileSync }));
 
 import { CONFIG_FIELDS, SECRETS_YAML_SHAPE } from "../lib/config.js";
-import { accessSecretArgs, main, mergeSecretsIntoConfig, SECRETS, withMetaCredentials } from "./render-yaml.js";
+import { accessSecretArgs, main, mergeSecretsIntoConfig, SECRETS, secretSpecsFor, withMetaCredentials } from "./render-yaml.js";
 
 // The guardrail shells out to git through the same `node:child_process` the mock
 // above replaces. `createRequire` goes through Node's own loader, which vitest's
@@ -25,8 +25,8 @@ describe("SECRETS", () => {
       ["client_secret", "google-ads-client-secret", true],
       ["refresh_token", "google-ads-refresh-token", true],
       ["psi_api_key", "google-pagespeed-api-key", false],
-      ["meta_access_token", "META_ACCESS_TOKEN", false],
-      ["meta_app_secret", "META_APP_SECRET", false],
+      ["meta_access_token", "meta-access-token", false],
+      ["meta_app_secret", "meta-app-secret", false],
     ]);
   });
 
@@ -35,6 +35,33 @@ describe("SECRETS", () => {
   it("does not fetch either customer id", () => {
     expect(SECRETS.map((s) => s.field)).not.toContain("mcc_customer_id");
     expect(SECRETS.map((s) => s.field)).not.toContain("target_customer_id");
+  });
+
+  // Secret Manager names follow one kebab-case convention across platforms.
+  it("names every secret in kebab-case", () => {
+    expect(SECRETS.filter((s) => !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(s.secret))).toEqual([]);
+  });
+});
+
+describe("secretSpecsFor", () => {
+  it("is SECRETS unchanged on google", () => {
+    expect(secretSpecsFor("google")).toEqual(SECRETS);
+  });
+
+  it("requires only the Meta access token on meta, fetching the same secrets in the same order", () => {
+    const specs = secretSpecsFor("meta");
+    expect(specs.map((s) => s.secret)).toEqual(SECRETS.map((s) => s.secret));
+    expect(specs.filter((s) => s.required).map((s) => s.field)).toEqual(["meta_access_token"]);
+  });
+
+  it("does not mutate SECRETS", () => {
+    secretSpecsFor("meta");
+    expect(SECRETS.filter((s) => s.required).map((s) => s.field)).toEqual([
+      "developer_token",
+      "client_id",
+      "client_secret",
+      "refresh_token",
+    ]);
   });
 });
 
@@ -202,8 +229,47 @@ describe("render-yaml writes only the credentials file", () => {
     gcloudServing(CREDENTIAL_SECRETS);
     expect(main()).toBe(0);
     const written = secretsFile();
-    expect(written).toContain('meta_access_token: "META_ACCESS_TOKEN-value"');
-    expect(written).toContain('meta_app_secret: "META_APP_SECRET-value"');
+    expect(written).toContain('meta_access_token: "meta-access-token-value"');
+    expect(written).toContain('meta_app_secret: "meta-app-secret-value"');
+  });
+
+  // A Meta-only project has no Google secrets in Secret Manager; that must not abort.
+  it("on platform: meta, succeeds without any Google secret", () => {
+    writeFileSync(join(dir, "adkit.yaml"), "platform: meta\n");
+    gcloudServing(new Set(["meta-access-token"]));
+    expect(main()).toBe(0);
+    const written = secretsFile();
+    expect(written).toContain('meta_access_token: "meta-access-token-value"');
+    expect(written).not.toContain("developer_token");
+  });
+
+  it("on platform: meta, aborts when the Meta access token is absent", () => {
+    writeFileSync(join(dir, "adkit.yaml"), "platform: meta\n");
+    gcloudServing(new Set(["google-ads-developer-token", "google-ads-client-id", "google-ads-client-secret", "google-ads-refresh-token"]));
+    expect(() => main()).toThrow(/NOT_FOUND: meta-access-token/);
+  });
+
+  it("on platform: google, still aborts when a Google credential is absent", () => {
+    gcloudServing(new Set(["meta-access-token"]));
+    expect(() => main()).toThrow(/NOT_FOUND: google-ads-developer-token/);
+  });
+
+  it("emits a platform envelope and writes nothing for an unknown adkit.yaml platform", () => {
+    writeFileSync(join(dir, "adkit.yaml"), "platform: tiktok\n");
+    gcloudServing(CREDENTIAL_SECRETS);
+    const chunks: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    const code = main();
+    process.stdout.write = original;
+    expect(code).toBe(1);
+    const envelope = JSON.parse(chunks.join(""));
+    expect(envelope.ok).toBe(false);
+    expect(envelope.step).toBe("platform");
+    expect(existsSync(join(dir, ".adkit.secrets.yaml"))).toBe(false);
   });
 
   it("keeps a Meta credential already in the file when its secret is absent", () => {

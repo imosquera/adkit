@@ -15,9 +15,12 @@
  * secrets. A credential already in the file survives when its secret is absent, so
  * an optional field is never blanked by a re-render.
  *
- * Required secrets that are missing abort (the `gcloud` call throws); the optional
- * `psi_api_key` and Meta (`meta_access_token`, `meta_app_secret`) fields are
- * skipped when absent, so a Google-only project renders exactly as before. The file is written atomically
+ * Required secrets that are missing abort (the `gcloud` call throws); optional ones
+ * are skipped when absent. Which secrets are required follows the project's
+ * platform (`platform` in `adkit.yaml`, see {@link secretSpecsFor}): a Google project
+ * requires the four Google Ads credentials and treats `psi_api_key` and the Meta
+ * fields as optional, exactly as before; a Meta project requires only
+ * `meta_access_token`, so absent Google secrets never abort it. The file is written atomically
  * (temp file + rename) with 0600 perms so the plaintext credentials never briefly
  * exist world-readable, and only after the guardrail in `lib/secrets-guard.ts`
  * confirms the target path is not committable.
@@ -32,6 +35,7 @@
 import { execFileSync } from "node:child_process";
 import { isMainModule } from "../cli/entry.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
+import { platformResult, type Platform } from "../cli/platform.js";
 import {
   type AdkitConfig,
   buildConfigYamlBody,
@@ -74,11 +78,26 @@ export const SECRETS: readonly SecretSpec[] = [
   // Optional: not every operator has PSI access, and audit's PSI diagnosis
   // degrades gracefully (skips with a reason) without it.
   { field: "psi_api_key", secret: "google-pagespeed-api-key", required: false },
-  // Optional: only a Meta project has these, so their absence must never abort a
-  // Google-only render. Fetched values land via {@link withMetaCredentials}.
-  { field: "meta_access_token", secret: "META_ACCESS_TOKEN", required: false },
-  { field: "meta_app_secret", secret: "META_APP_SECRET", required: false },
+  // Optional on Google: only a Meta project has these, so their absence must never
+  // abort a Google-only render. {@link secretSpecsFor} makes the token required on
+  // Meta. Fetched values land via {@link withMetaCredentials}.
+  { field: "meta_access_token", secret: "meta-access-token", required: false },
+  { field: "meta_app_secret", secret: "meta-app-secret", required: false },
 ];
+
+/**
+ * {@link SECRETS} with requiredness for `platform`. Pure.
+ *
+ * `google` is {@link SECRETS} itself, so a Google render is unchanged. `meta`
+ * requires `meta_access_token` alone — every Meta command needs it — and makes the
+ * Google credentials optional, so a Meta-only project whose Secret Manager holds no
+ * Google secrets still renders.
+ */
+export function secretSpecsFor(platform: Platform): readonly SecretSpec[] {
+  return platform === "google"
+    ? SECRETS
+    : SECRETS.map((spec) => ({ ...spec, required: spec.field === "meta_access_token" }));
+}
 
 /**
  * `shape` widened to also admit the Meta credential fields. Pure.
@@ -122,9 +141,9 @@ function readSecret(spec: SecretSpec): string | null {
   }
 }
 
-/** Fetch every secret, returning a `field -> value` map (absent optionals omitted). */
-function readAllSecrets(): Map<string, string> {
-  const entries = SECRETS.flatMap((spec): Array<[string, string]> => {
+/** Fetch every secret in `specs`, returning a `field -> value` map (absent optionals omitted). */
+function readAllSecrets(specs: readonly SecretSpec[]): Map<string, string> {
+  const entries = specs.flatMap((spec): Array<[string, string]> => {
     const value = readSecret(spec);
     return value === null ? [] : [[spec.field, value]];
   });
@@ -156,6 +175,11 @@ export function mergeSecretsIntoConfig(
  * envelope and writes nothing.
  */
 export function main(): number {
+  const platform = platformResult(process.argv.slice(2), process.env, loadConfig());
+  if (platform.kind === "err") {
+    emitJson(errorEnvelope(platform.message, { step: "platform" }));
+    return 1;
+  }
   const target = secretsPath();
   try {
     const warning = assertWritableSecretsPath(target);
@@ -174,7 +198,7 @@ export function main(): number {
   const shape = withMetaCredentials(isLegacyConfigFile(target) ? COMBINED_YAML_SHAPE : SECRETS_YAML_SHAPE);
   // Only the target file is re-read — never the merged config — so a preference
   // from adkit.yaml can never be written back into the credentials file.
-  const merged = mergeSecretsIntoConfig(readConfigFile(target), readAllSecrets(), shape.fields);
+  const merged = mergeSecretsIntoConfig(readConfigFile(target), readAllSecrets(secretSpecsFor(platform.value)), shape.fields);
   writeYamlAtomic(target, buildConfigYamlBody(merged, shape), 0o600);
   process.stdout.write(`wrote ${target}\n`);
   return 0;

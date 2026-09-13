@@ -1,11 +1,13 @@
 /**
- * One-time interactive seed of Google Ads secrets into GCP Secret Manager.
+ * One-time interactive seed of the ad-platform secrets into GCP Secret Manager.
  *
  * Faithful port of `ads_skill/bin/bootstrap_secrets.py`. Prompts for each secret
  * (sensitive values read without echo), creates the secret if it does not yet
  * exist, then adds a new version with the entered value — shelling out to `gcloud`
- * for all three operations. The Meta secrets are optional: a blank answer skips
- * them entirely, so a Google-only project creates nothing it did not before. The project defaults to `your-project-prod`,
+ * for all three operations. Only the project's platform (`platform` in `adkit.yaml`,
+ * default `google`) is prompted for — see {@link secretsFor}: a Google project sees
+ * the Google Ads secrets, a Meta project only the Meta ones, where a blank answer
+ * skips the secret entirely. The project defaults to `your-project-prod`,
  * overridable via the `GOOGLE_ADS_SECRETS_PROJECT` env var.
  *
  * The IO (child_process, terminal prompts) is isolated at the edges; the argv
@@ -17,17 +19,18 @@ import { execFileSync } from "node:child_process";
 import { isMainModule } from "../cli/entry.js";
 import { createInterface } from "node:readline";
 import { emitJson, errorEnvelope } from "../cli/output.js";
+import { platformResult, type Platform } from "../cli/platform.js";
 import { loadConfig, resolveTier } from "../lib/config.js";
 
 /** GCP project the secrets live in: env var, then the project config, then the Python-mirroring default. */
 export const PROJECT = resolveTier(null, process.env["GOOGLE_ADS_SECRETS_PROJECT"], loadConfig().secrets_project, "your-project-prod")!;
 
 /**
- * The secret names to seed, in prompt order. Load-bearing — must match render-yaml.
- * Only real credentials belong here: the target/MCC customer ids are account
- * numbers and live in the committed `adkit.yaml` instead (`ads.sh init`).
+ * The Google project's secret names, in prompt order. Load-bearing — must match
+ * render-yaml. Only real credentials belong here: the target/MCC customer ids are
+ * account numbers and live in the committed `adkit.yaml` instead (`ads.sh init`).
  */
-export const SECRETS: readonly string[] = [
+const GOOGLE_SECRETS: readonly string[] = [
   "google-ads-developer-token",
   "google-ads-client-id",
   "google-ads-client-secret",
@@ -36,14 +39,21 @@ export const SECRETS: readonly string[] = [
   // answer here still creates/updates the secret with an empty value; render-yaml
   // treats it as an optional field.
   "google-pagespeed-api-key",
-  // Optional — a Meta project's credentials (render-yaml maps them to
-  // `meta_access_token` / `meta_app_secret`). A blank answer is skipped.
-  "META_ACCESS_TOKEN",
-  "META_APP_SECRET",
 ];
 
+/**
+ * The Meta project's secret names, in prompt order (render-yaml maps them to
+ * `meta_access_token` / `meta_app_secret`). A blank answer is skipped.
+ */
+const META_SECRETS: readonly string[] = ["meta-access-token", "meta-app-secret"];
+
+/** The secret names to seed for `platform`, in prompt order. Pure. */
+export function secretsFor(platform: Platform): readonly string[] {
+  return platform === "google" ? GOOGLE_SECRETS : META_SECRETS;
+}
+
 /** Secrets whose blank answer is skipped (no create, no version) rather than stored empty. */
-const SKIP_WHEN_BLANK = new Set(["META_ACCESS_TOKEN", "META_APP_SECRET"]);
+const SKIP_WHEN_BLANK = new Set(META_SECRETS);
 
 /**
  * True when `value` for `name` should be skipped: an optional (Meta) secret left
@@ -156,7 +166,12 @@ function prompt(text: string, sensitive: boolean): Promise<string> {
  * process exit code (0 on success). Emits the completion hint on stdout.
  */
 export async function main(): Promise<number> {
-  for (const name of SECRETS) {
+  const platform = platformResult(process.argv.slice(2), process.env, loadConfig());
+  if (platform.kind === "err") {
+    emitJson(errorEnvelope(platform.message, { step: "platform" }));
+    return 1;
+  }
+  for (const name of secretsFor(platform.value)) {
     const value = await prompt(promptFor(name), isSensitive(name));
     if (shouldSkip(name, value)) {
       process.stdout.write(skippedLine(name));

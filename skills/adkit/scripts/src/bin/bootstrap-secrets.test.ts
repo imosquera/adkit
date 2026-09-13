@@ -6,30 +6,40 @@ import {
   doneLine,
   isSensitive,
   promptFor,
-  SECRETS,
+  secretsFor,
   shouldSkip,
   skippedLine,
   updatedLine,
 } from "./bootstrap-secrets.js";
+import { SECRETS as RENDER_SECRETS } from "./render-yaml.js";
 
-describe("SECRETS", () => {
-  it("lists the exact secret names in prompt order", () => {
-    expect(SECRETS).toEqual([
+describe("secretsFor", () => {
+  it("lists exactly the Google secret names, in prompt order, on google", () => {
+    expect(secretsFor("google")).toEqual([
       "google-ads-developer-token",
       "google-ads-client-id",
       "google-ads-client-secret",
       "google-ads-refresh-token",
       "google-pagespeed-api-key",
-      "META_ACCESS_TOKEN",
-      "META_APP_SECRET",
     ]);
+  });
+
+  it("lists only the Meta secret names on meta", () => {
+    expect(secretsFor("meta")).toEqual(["meta-access-token", "meta-app-secret"]);
+  });
+
+  // Load-bearing: every secret seeded here is one render-yaml fetches, and vice versa.
+  it("covers exactly the secrets render-yaml fetches", () => {
+    const seeded = [...secretsFor("google"), ...secretsFor("meta")];
+    expect(seeded).toEqual(RENDER_SECRETS.map((s) => s.secret));
   });
 
   // Account numbers, not credentials: they live in `.adkit.yaml` via `ads.sh init`.
   it("does not seed either customer id", () => {
     // The historical secret names, pinned so a revert would fail loudly.
-    expect(SECRETS).not.toContain("google-ads-login-customer-id");
-    expect(SECRETS).not.toContain("google-ads-target-customer-id");
+    const seeded = [...secretsFor("google"), ...secretsFor("meta")];
+    expect(seeded).not.toContain("google-ads-login-customer-id");
+    expect(seeded).not.toContain("google-ads-target-customer-id");
   });
 });
 
@@ -51,17 +61,17 @@ describe("isSensitive", () => {
 
 describe("optional Meta secrets", () => {
   it("treats both Meta secrets as sensitive", () => {
-    expect(isSensitive("META_ACCESS_TOKEN")).toBe(true);
-    expect(isSensitive("META_APP_SECRET")).toBe(true);
+    expect(isSensitive("meta-access-token")).toBe(true);
+    expect(isSensitive("meta-app-secret")).toBe(true);
   });
 
-  it("skips a blank Meta answer so a Google-only project creates nothing new", () => {
-    expect(shouldSkip("META_ACCESS_TOKEN", "")).toBe(true);
-    expect(shouldSkip("META_APP_SECRET", "   ")).toBe(true);
+  it("skips a blank Meta answer rather than storing it empty", () => {
+    expect(shouldSkip("meta-access-token", "")).toBe(true);
+    expect(shouldSkip("meta-app-secret", "   ")).toBe(true);
   });
 
   it("stores a non-blank Meta answer", () => {
-    expect(shouldSkip("META_ACCESS_TOKEN", "EAAB-token")).toBe(false);
+    expect(shouldSkip("meta-access-token", "EAAB-token")).toBe(false);
   });
 
   it("keeps today's behaviour for the Google secrets, blank or not", () => {
@@ -70,7 +80,7 @@ describe("optional Meta secrets", () => {
   });
 
   it("formats the skip line", () => {
-    expect(skippedLine("META_APP_SECRET")).toBe("  - META_APP_SECRET skipped (blank)\n");
+    expect(skippedLine("meta-app-secret")).toBe("  - meta-app-secret skipped (blank)\n");
   });
 });
 
