@@ -21,7 +21,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { dirname, join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
-import { DEFAULT_REPORTS_DIR, resolveReportsDir } from "../lib/config.js";
+import { DEFAULT_REPORTS_DIR, loadConfig, resolveReportsDir } from "../lib/config.js";
 import { mccCustomerIdFromYaml, type AdsClient, type GaqlRow } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
 import type { SearchArgs } from "../gaql/search-args.js";
@@ -33,7 +33,8 @@ import {
   resolveMccCustomerId,
   type ResolvedMcc,
 } from "../cli/args.js";
-import { sdkErrorMessage } from "../cli/output.js";
+import { emitJson, errorEnvelope, sdkErrorMessage } from "../cli/output.js";
+import { PlatformError, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
 import { resolveTargetCustomerId } from "../cli/customer-id.js";
 import { InvalidCustomerIdError, MissingTargetCustomerIdError } from "../lib/customer-id.js";
 import { isManagerMetricsError, managerMetricsHint } from "./audit.js";
@@ -606,13 +607,33 @@ function effectiveManager(login: ResolvedMcc): EffectiveManager {
  * The mcc-customer-id is parsed exactly once here, by
  * {@link resolveMccCustomerId} (tier + digit-check), into the value the client
  * seam accepts; nothing downstream re-checks or re-normalizes it.
+ *
+ * The platform is resolved first (plan D1): `meta` delegates to the Meta report
+ * with `--platform` stripped from argv, loaded by dynamic import so a Google run
+ * never loads a Meta module; an unknown platform fails with step `"platform"`.
+ * The Google path also parses the stripped argv, because this parser would
+ * otherwise read `--platform` as the back-compat positional customer.
  */
 export async function main(
   argv: string[],
   clientFactory: (login: MccCustomerId) => AdsClient = loadReadClient,
   env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
-  const args = parseArgs(argv);
+  let platform: Platform;
+  try {
+    platform = resolvePlatform(argv, env, loadConfig());
+  } catch (exc) {
+    if (exc instanceof PlatformError) {
+      emitJson(errorEnvelope(exc.message, { step: exc.step }));
+      return 1;
+    }
+    throw exc;
+  }
+  if (platform === "meta") {
+    return (await import("../meta/bin/report.js")).main(stripPlatformFlag(argv), env);
+  }
+
+  const args = parseArgs(stripPlatformFlag(argv));
   // Same flag -> env -> yaml -> prompt-and-persist resolution every other
   // entrypoint uses, rather than a placeholder literal. Failure is named and
   // actionable (which tier, which field, which file) instead of surfacing later

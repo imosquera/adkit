@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { KEEP_YAML_MCC, type AdsClient } from "../lib/auth.js";
 import type { MccCustomerId } from "../cli/args.js";
@@ -27,6 +27,16 @@ import {
   shapeRows,
   spanInDays,
 } from "./report.js";
+
+/**
+ * The Meta report, mocked. `loaded` flips when the factory runs — i.e. when
+ * `main` dynamically imports it — so the Google path can prove it never does.
+ */
+const meta = vi.hoisted(() => ({ loaded: false, main: vi.fn(async () => 0) }));
+vi.mock("../meta/bin/report.js", () => {
+  meta.loaded = true;
+  return { main: meta.main };
+});
 
 /** The placeholder MCC this feature removed; must never come back as a runtime default. */
 const PLACEHOLDER_MANAGER = "2222222222";
@@ -1090,3 +1100,85 @@ describe("no hardcoded manager placeholder in the report entrypoint (FR-010)", (
   });
 });
 
+/**
+ * Platform delegation (plan D1). The Google-path test runs first on purpose: the
+ * mocked Meta module's factory runs once per file, on first import, so `loaded`
+ * is only meaningful before any Meta run in this file has imported it.
+ */
+describe("report platform delegation", () => {
+  let dir: string;
+  let cwd: string;
+  let prevConfig: string | undefined;
+  let stdout: ReturnType<typeof vi.spyOn>;
+  let stderr: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "adkit-report-platform-"));
+    cwd = process.cwd();
+    process.chdir(dir);
+    prevConfig = process.env["ADKIT_CONFIG"];
+    process.env["ADKIT_CONFIG"] = join(dir, ".adkit.yaml");
+    writeFileSync(process.env["ADKIT_CONFIG"], "developer_token: t\n");
+    stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    meta.main.mockClear();
+  });
+
+  afterEach(() => {
+    process.chdir(cwd);
+    if (prevConfig === undefined) {
+      delete process.env["ADKIT_CONFIG"];
+    } else {
+      process.env["ADKIT_CONFIG"] = prevConfig;
+    }
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  /** A client with no campaigns: the Google path reaches its query and exits 1. */
+  const emptyClient = (): AdsClient =>
+    ({
+      search: async () => [],
+      searchStructured: async () => [],
+      mutate: async () => {
+        throw new Error("not used");
+      },
+    }) as unknown as AdsClient;
+
+  it("runs the Google report without importing the Meta module when no platform or google is set", async () => {
+    expect(await main(["1234567890"], emptyClient, {})).toBe(1);
+    // `--platform google` is stripped before the Google parser, so it is not
+    // mistaken for the back-compat positional customer.
+    expect(await main(["--platform", "google", "1234567890"], emptyClient, {})).toBe(1);
+    const text = stderr.mock.calls.map((c) => String(c[0])).join("");
+    expect(text.match(/no ENABLED campaigns/g)).toHaveLength(2);
+    expect(meta.loaded).toBe(false);
+    expect(meta.main).not.toHaveBeenCalled();
+  });
+
+  it("delegates --platform meta to the Meta report with the flag stripped and env passed through", async () => {
+    const env = { META_ACCESS_TOKEN: "tok" };
+    const factory = vi.fn(emptyClient);
+    expect(await main(["--platform", "meta", "--ad-account", "act_1", "--days", "7"], factory, env)).toBe(0);
+    expect(meta.main).toHaveBeenCalledWith(["--ad-account", "act_1", "--days", "7"], env);
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("delegates when ADKIT_PLATFORM=meta and returns the Meta exit code", async () => {
+    expect(await main(["--platform=meta"], emptyClient, {})).toBe(0);
+    meta.main.mockResolvedValueOnce(1);
+    expect(await main([], emptyClient, { ADKIT_PLATFORM: "meta" })).toBe(1);
+    expect(meta.main).toHaveBeenLastCalledWith([], { ADKIT_PLATFORM: "meta" });
+  });
+
+  it("fails with step 'platform' on an unknown platform, before any query", async () => {
+    const factory = vi.fn(emptyClient);
+    expect(await main(["--platform", "tiktok"], factory, {})).toBe(1);
+    expect(factory).not.toHaveBeenCalled();
+    expect(meta.main).not.toHaveBeenCalled();
+    const envelope = JSON.parse(stdout.mock.calls.map((c) => String(c[0])).join("")) as Record<string, unknown>;
+    expect(envelope["ok"]).toBe(false);
+    expect(envelope["step"]).toBe("platform");
+    expect(String(envelope["message"])).toContain("tiktok");
+  });
+});
