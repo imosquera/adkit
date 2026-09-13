@@ -4,7 +4,9 @@
  *
  * Unlike the Google path, this file is written after EVERY successful publish step
  * (plan D7, FR-011), so ids are nullable: a partially published campaign records the
- * objects that exist and leaves `null` where a re-run still has work to do.
+ * objects that exist and leaves `null` where a re-run still has work to do. `update`
+ * also rewrites it after every successful creative swap ({@link withSwappedCreatives}),
+ * so the recorded `creativeId` always mirrors what is live.
  *
  * The suffix `.meta-state.yaml` deliberately does not end in `.state.yaml`, so the
  * Google `loadStateIndex` never picks Meta state up.
@@ -34,6 +36,7 @@ import {
   MetaVideoIdSchema,
   ok,
   type MetaAdAccountId,
+  type MetaAdId,
   type MetaCreativeId,
   type Result,
 } from "./ids.js";
@@ -128,7 +131,7 @@ export function emptyMetaState(brief: MetaStateSkeleton, adAccountId: MetaAdAcco
 }
 
 /** A successful creative swap: the ad now points at `creativeId`. */
-export type MetaCreativeSwap = { readonly adId: string; readonly creativeId: MetaCreativeId };
+export type MetaCreativeSwap = { readonly adId: MetaAdId; readonly creativeId: MetaCreativeId };
 
 /**
  * Pure: `state` with the `creativeId` of every ad named by a swap (matched on `adId`)

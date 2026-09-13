@@ -122,7 +122,7 @@ describe("readLiveState", () => {
           ? { currency: "USD" }
           : Object.fromEntries(String(params.ids).split(",").map((id) => [id, id === "200" ? rawAdSet : rawAd])),
       failOn: (c) =>
-        c.method === "get" && c.path === "" && String(c.params.ids).includes("999") ? metaApiError(100, "does not exist") : null,
+        c.method === "get" && c.path === "" && String(c.params.ids).includes("999") ? metaApiError(100, "does not exist", 33) : null,
     });
     const state = await readLiveState(
       client,
@@ -130,6 +130,19 @@ describe("readLiveState", () => {
       account,
     );
     expect([...state.ads.keys()]).toEqual(["300"]);
+  });
+
+  it("treats 803 as missing but rethrows code 100 without subcode 33 (bad field, permissions)", async () => {
+    const get = (path: string, params: Record<string, unknown>) =>
+      path === "act_111" ? { currency: "USD" } : Object.fromEntries(String(params.ids).split(",").map((id) => [id, id === "200" ? rawAdSet : rawAd]));
+    const failing = (e: ReturnType<typeof metaApiError>) =>
+      fakeMetaClient({ get, failOn: (c) => (c.method === "get" && c.path === "" && String(c.params.ids).includes("999") ? e : null) });
+    const p = plan({ status: [{ level: "ad", id: "300", status: "ACTIVE" }, { level: "ad", id: "999", status: "ACTIVE" }] });
+    const state = await readLiveState(failing(metaApiError(803, "unknown alias")), p, account);
+    expect([...state.ads.keys()]).toEqual(["300"]);
+    await expect(readLiveState(failing(metaApiError(100, "Tried accessing nonexisting field")), p, account)).rejects.toThrow(
+      "nonexisting field",
+    );
   });
 
   it("rethrows other read failures", async () => {
@@ -265,6 +278,33 @@ describe("runMetaApply", () => {
       { step: "budget", entityId: "200", message: expect.stringContaining("budget changed too often") },
       { step: "creative-swap", entityId: "404", message: expect.stringContaining("not found in live state") },
     ]);
+  });
+
+  it("names the created creative when re-pointing the ad fails", async () => {
+    const client = fakeMetaClient({
+      post: (path) => (path.endsWith("/adcreatives") ? { id: "777" } : { success: true }),
+      failOn: (c) => (c.method === "post" && c.path === "300" ? metaApiError(200, "permission denied") : null),
+    });
+    const result = await runMetaApply(client, ctx, plan({ textPools: [{ adId: "300", headlines: ["h"] }] }));
+    expect(result.creativeSwaps).toEqual([]);
+    expect(result.errors).toEqual([
+      {
+        step: "creative-swap",
+        entityId: "300",
+        message: expect.stringContaining("created creative 777 but could not attach it to ad 300: permission denied"),
+      },
+    ]);
+  });
+
+  it("propagates a non-Meta exception instead of recording it as an entry error", async () => {
+    const client = fakeMetaClient({
+      post: () => {
+        throw new TypeError("boom");
+      },
+    });
+    await expect(
+      runMetaApply(client, ctx, plan({ budgets: [{ level: "adset", id: "200", dailyBudget: 60 }] })),
+    ).rejects.toThrow(TypeError);
   });
 
   it("does not repoint the ad when creating the new creative fails", async () => {

@@ -6,7 +6,8 @@
  *   sets and ads a plan references (plus the ad sets whose delivery those changes
  *   affect, which the learning-reset warning needs), and the account currency.
  * - {@link applyStatus}, {@link applyBudget}, {@link applyExclusions},
- *   {@link applyCreativeSwap} — one Graph write (two for a swap) per plan entry.
+ *   {@link applyCreativeSwap} — one Graph write per step; a creative swap merges an ad's
+ *   enhancement and text-pool entries into one step of two writes (create, re-point).
  * - {@link runMetaApply} — a sequential fold over the ordered steps; every step is
  *   isolated, so one failure is recorded and the run continues (FR-015).
  *
@@ -26,7 +27,7 @@ import { z } from "zod";
 
 import type { MetaClient } from "./client.js";
 import type { Enhancements, MetaBrief } from "./brief.js";
-import { MetaApiError, formatMetaError } from "./errors.js";
+import { MetaApiError, MetaConfigError, formatMetaError } from "./errors.js";
 import {
   AdSchema,
   AdSetSchema,
@@ -38,7 +39,15 @@ import {
   type AdSet,
   type Campaign,
 } from "./graph.js";
-import { MetaCreativeIdSchema, err, ok, type MetaAdAccountId, type MetaCreativeId, type Result } from "./ids.js";
+import {
+  MetaCreativeIdSchema,
+  err,
+  ok,
+  type MetaAdAccountId,
+  type MetaAdId,
+  type MetaCreativeId,
+  type Result,
+} from "./ids.js";
 import { toMinorUnits } from "./money.js";
 import type {
   MetaBudgetChange,
@@ -66,12 +75,21 @@ export const AD_FIELDS =
   "id,name,adset_id,campaign_id,effective_status,status," +
   "creative{id,name,object_story_spec,asset_feed_spec,degrees_of_freedom_spec}";
 
-/** Graph codes for "object does not exist / not visible": 100 (invalid param), 803 (unknown alias). */
-const MISSING_OBJECT_CODES: ReadonlySet<number | "schema"> = new Set([100, 803]);
+/** Graph code 803: "some of the aliases you requested do not exist". */
+const UNKNOWN_ALIAS_CODE = 803;
+/** Graph code 100 is any invalid parameter; only with subcode 33 does it mean "object does not exist / not visible". */
+const INVALID_PARAM_CODE = 100;
+const OBJECT_NOT_FOUND_SUBCODE = 33;
 
-const isMissingObject = (e: unknown): boolean => e instanceof MetaApiError && MISSING_OBJECT_CODES.has(e.code);
+/**
+ * An error meaning "this id does not exist or is not visible" — 803, or 100/33. Every
+ * other code 100 (a bad field, a permission problem) is a real failure and is rethrown.
+ */
+export const isMissingObject = (e: unknown): boolean =>
+  e instanceof MetaApiError &&
+  (e.code === UNKNOWN_ALIAS_CODE || (e.code === INVALID_PARAM_CODE && e.subcode === OBJECT_NOT_FOUND_SUBCODE));
 
-const uniqueIds = (ids: readonly string[]): string[] => [...new Set(ids)];
+const uniqueIds = <T extends string>(ids: readonly T[]): T[] => [...new Set(ids)];
 
 const chunks = <T>(xs: readonly T[], size: number): T[][] =>
   Array.from({ length: Math.ceil(xs.length / size) }, (_, i) => xs.slice(i * size, (i + 1) * size));
@@ -275,7 +293,8 @@ export async function applyExclusions(client: MetaClient, change: MetaExclusionC
 /**
  * Create a new creative from the live one plus `change` (`POST act_<id>/adcreatives`),
  * then point the ad at it (`POST /<ad-id> { creative: { creative_id } }`). Returns the
- * new creative id.
+ * new creative id. When the re-point fails, the rethrown error names the created
+ * creative so the orphan is not lost.
  */
 export async function applyCreativeSwap(
   client: MetaClient,
@@ -290,7 +309,21 @@ export async function applyCreativeSwap(
     throw new MetaApiError({ step, code: "schema", message: params.message });
   }
   const { id } = await client.post(`${adAccountId}/adcreatives`, params.value, createdIdSchema(MetaCreativeIdSchema), { step });
-  await client.post(ad.id, { creative: { creative_id: id } }, SuccessSchema, { step });
+  try {
+    await client.post(ad.id, { creative: { creative_id: id } }, SuccessSchema, { step });
+  } catch (e) {
+    if (!(e instanceof MetaApiError)) throw e;
+    throw new MetaApiError({
+      step: e.step,
+      code: e.code,
+      subcode: e.subcode,
+      userTitle: e.userTitle,
+      userMessage: e.userMessage,
+      fbtraceId: e.fbtraceId,
+      issues: e.issues,
+      message: `created creative ${id} but could not attach it to ad ${ad.id}: ${e.message}`,
+    });
+  }
   return id;
 }
 
@@ -316,7 +349,7 @@ export type MetaApplyStep =
   | { readonly kind: "exclusions"; readonly change: MetaExclusionChange }
   | {
       readonly kind: "creative-swap";
-      readonly adId: string;
+      readonly adId: MetaAdId;
       readonly enhancement?: MetaEnhancementChange;
       readonly textPool?: MetaTextPoolChange;
     };
@@ -410,9 +443,13 @@ async function runStep(client: MetaClient, ctx: MetaApplyContext, s: MetaApplySt
   }
 }
 
+/** A failure that belongs to one entry (Graph or config); anything else is a programming error. */
+const isEntryFailure = (e: unknown): boolean => e instanceof MetaApiError || e instanceof MetaConfigError;
+
 /**
- * Apply `changes` in `order`, one step at a time. Each step is isolated: a failure is
- * recorded as `{ step, entityId, message }` and the fold moves on to the next step.
+ * Apply `changes` in `order`, one step at a time. Each step is isolated: a Meta API or
+ * config failure is recorded as `{ step, entityId, message }` and the fold moves on to
+ * the next step; any other exception propagates.
  * Every successful creative swap is also reported as `{ adId, creativeId }`.
  */
 export async function runMetaApply(
@@ -432,6 +469,7 @@ export async function runMetaApply(
         creativeSwaps: swap === null ? acc.creativeSwaps : [...acc.creativeSwaps, swap],
       };
     } catch (e) {
+      if (!isEntryFailure(e)) throw e;
       return { ...acc, errors: [...acc.errors, { step: stepLabel(s), entityId, message: formatMetaError(e) }] };
     }
   }, Promise.resolve({ applied: [], errors: [], creativeSwaps: [] }));

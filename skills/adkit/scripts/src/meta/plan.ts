@@ -314,7 +314,7 @@ export type MetaWarnings = {
   readonly enableStartsLiveSpend: string[];
   /** Campaign / ad set ids whose daily budget goes up. */
   readonly budgetIncreases: string[];
-  /** Ad set ids in `LEARNING` touched by a > 20% budget change, targeting change or creative swap. */
+  /** Ad set ids in `LEARNING` touched by a budget change above {@link LEARNING_RESET_BUDGET_PCT}%, a targeting change or a creative swap. */
   readonly learningResetRisk: string[];
   /** Ad set ids whose exclusions Meta ignores (Advantage+ audience on the campaign). */
   readonly exclusionIgnored: string[];

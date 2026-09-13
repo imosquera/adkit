@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { loadStateIndex } from "../adbriefs/state.js";
 import { AdbriefsError } from "../adbriefs/store.js";
-import { MetaAdAccountIdSchema, MetaCreativeIdSchema } from "./ids.js";
+import { MetaAdAccountIdSchema, MetaAdIdSchema, MetaCreativeIdSchema } from "./ids.js";
 import {
   emptyMetaState,
   loadMetaStateIndex,
@@ -134,8 +134,8 @@ describe("withSwappedCreatives", () => {
     const state = partialState();
     const before = structuredClone(state);
     const next = withSwappedCreatives(state, [
-      { adId: "400", creativeId: MetaCreativeIdSchema.parse("777") },
-      { adId: "999", creativeId: MetaCreativeIdSchema.parse("888") },
+      { adId: MetaAdIdSchema.parse("400"), creativeId: MetaCreativeIdSchema.parse("777") },
+      { adId: MetaAdIdSchema.parse("999"), creativeId: MetaCreativeIdSchema.parse("888") },
     ]);
     expect(next.adSets[0]?.ads).toEqual([
       { name: "Ad A", creativeId: "777", adId: "400" },

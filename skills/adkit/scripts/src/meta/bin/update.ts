@@ -16,15 +16,17 @@
  * 4. Narrate planned actions plus one `WARNING:` line per {@link metaWarnings} risk.
  * 5. Dry run (default): the envelope with `applied: false`; zero Graph writes and zero
  *    file writes.
- * 6. `--apply`: {@link runMetaApply} (every entry isolated), then — for slugs no
- *    failed entry touches — write the staged briefs and record each swapped creative's
- *    new id in `<slug>.meta-state.yaml` ({@link withSwappedCreatives}). Any failure →
- *    the same keys on an `ok: false` envelope with `errors[]`, exit 1.
+ * 6. `--apply`: {@link runMetaApply} (every entry isolated), then record every
+ *    successful creative swap's new id in `<slug>.meta-state.yaml`
+ *    ({@link withSwappedCreatives}) — always, so state mirrors what is live — and write
+ *    the staged briefs only for slugs no failed entry touches. Any failure (apply,
+ *    `write-brief`, `write-state`) → the same keys on an `ok: false` envelope with
+ *    `errors[]`, exit 1.
  *
  * Exit codes mirror apply-fixes: 0 success (incl. dry run), 1 validation / Graph /
  * apply failure, 2 bad arguments or an unreadable / invalid plan file.
  *
- * Usage: adkit-update <plan.yaml> [--apply] [--ad-account <act_id>]
+ * Usage: ads.sh update <plan.yaml> [--apply] [--ad-account <act_id>]
  */
 
 import { accessSync, constants as fsConstants, existsSync, readFileSync, statSync } from "node:fs";
@@ -49,7 +51,7 @@ import { parseMetaBrief, type MetaBrief } from "../brief.js";
 import { metaClientFor, type MetaClient } from "../client.js";
 import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags } from "../config.js";
 import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
-import { err, ok, type Result } from "../ids.js";
+import { err, MetaAdAccountIdSchema, ok, type Result } from "../ids.js";
 import { fromMinorUnits } from "../money.js";
 import {
   leveledLiveMap,
@@ -329,7 +331,18 @@ export async function main(
   if (loaded.kind === "err") return fail({ step: "plan", message: loaded.message }, 2);
   const plan = loaded.value;
 
-  // The plan's own adAccountId wins: a plan is generated against one specific account.
+  // A plan is generated against one specific account: a conflicting --ad-account is refused.
+  const flagAccount = args.value.adAccount;
+  if (plan.adAccountId !== undefined && flagAccount !== null) {
+    const parsedFlag = MetaAdAccountIdSchema.safeParse(flagAccount);
+    const canonicalFlag = parsedFlag.success ? parsedFlag.data : flagAccount;
+    if (canonicalFlag !== plan.adAccountId) {
+      return fail(
+        { step: "args", message: `${AD_ACCOUNT} ${flagAccount} conflicts with the plan's adAccountId ${plan.adAccountId}` },
+        2,
+      );
+    }
+  }
   const ctx = await runStep("credentials", () => resolveContext({ adAccount: plan.adAccountId ?? args.value.adAccount }));
   if (ctx.kind === "err") return fail(ctx.failure);
   const adAccountId = plan.adAccountId ?? ctx.value.adAccountId;
@@ -416,7 +429,7 @@ export async function main(
   const applyErrors: SlugError[] = result.errors.map((e) => ({ ...e, slugs: slugsForEntity(index.value, e.entityId) }));
   const failedSlugs = new Set(applyErrors.flatMap((e) => e.slugs));
 
-  // Write briefs only after the live writes, and only for slugs no failure touched.
+  // Briefs are intent: write them only after the live writes, and only for slugs no apply failure touched.
   const written = staged.value.map((s): { entry: Record<string, unknown>; error: SlugError | null } => {
     if (s.skipReason !== null || failedSlugs.has(s.slug)) return { entry: briefEntry(s, false), error: null };
     if (!s.diff.changed) return { entry: briefEntry(s, true), error: null };
@@ -430,10 +443,8 @@ export async function main(
       };
     }
   });
-  // Record swapped creative ids in `.meta-state.yaml`, again only for slugs no failure touched.
-  const stateErrors = swapsBySlug(index.value, result.creativeSwaps)
-    .filter(([slug]) => !failedSlugs.has(slug))
-    .flatMap(([slug, swaps]): SlugError[] => {
+  // State mirrors what is live: record every successful swap, even for slugs where another entry failed.
+  const stateErrors = swapsBySlug(index.value, result.creativeSwaps).flatMap(([slug, swaps]): SlugError[] => {
       const path = join(root, briefsDir, `${slug}${META_STATE_SUFFIX}`);
       try {
         const state = readMetaState(path);
@@ -443,7 +454,8 @@ export async function main(
         return [{ step: "write-state", entityId: slug, message: formatMetaError(exc), slugs: [slug] }];
       }
     });
-  const errors = [...applyErrors, ...written.flatMap((w) => (w.error === null ? [] : [w.error])), ...stateErrors];
+  const briefErrors = written.flatMap((w) => (w.error === null ? [] : [w.error]));
+  const errors = [...applyErrors, ...briefErrors, ...stateErrors];
   const briefs = written.map((w) => w.entry);
 
   if (errors.length === 0) {
@@ -451,9 +463,9 @@ export async function main(
     return 0;
   }
 
-  const allFailedSlugs = new Set(errors.flatMap((e) => e.slugs));
+  const briefNotUpdatedSlugs = new Set([...applyErrors, ...briefErrors].flatMap((e) => e.slugs));
   console.log(
-    "\nWARNING: local adbriefs brief(s) and the live account have diverged — " +
+    `\nWARNING: local brief(s) / ${META_STATE_SUFFIX} and the live account have diverged — ` +
       `${errors.length} step(s) failed partway through this run:`,
   );
   errors.forEach((e) => {
@@ -461,8 +473,14 @@ export async function main(
     if (e.slugs.length > 0) console.log(`    affected brief(s): ${e.slugs.join(", ")}`);
   });
   staged.value
-    .flatMap((s) => (s.skipReason === null && s.diff.changed && allFailedSlugs.has(s.slug) ? [s] : []))
+    .flatMap((s) => (s.skipReason === null && s.diff.changed && briefNotUpdatedSlugs.has(s.slug) ? [s] : []))
     .forEach((s) => console.log(`  - ${s.path} NOT updated (would have changed +${s.diff.added}/-${s.diff.removed})`));
+  stateErrors.forEach((e) =>
+    console.log(
+      `WARNING: could not record swapped creative id(s) in ${briefsDir}/${e.entityId}${META_STATE_SUFFIX}; ` +
+        "it no longer matches the live ads — fix the file before the next run",
+    ),
+  );
   emitJson(
     errorEnvelope(errors.map((e) => `${e.step} ${e.entityId}: ${e.message}`).join("; "), {
       ...envelopeFields(true, briefs),

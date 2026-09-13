@@ -98,6 +98,17 @@ describe("parseMetaPlan", () => {
     cases.forEach((c) => expect(parseMetaPlan(c).kind, JSON.stringify(c)).toBe("err"));
   });
 
+  it("reports empty exclusions and enhancements entries by message", () => {
+    expect(parseMetaPlan({ platform: "meta", exclusions: [{ adSetId: "1" }] })).toEqual({
+      kind: "err",
+      message: "exclusions.0: exclusions entry needs add or remove",
+    });
+    expect(parseMetaPlan({ platform: "meta", enhancements: [{ adId: "1", features: {} }] })).toEqual({
+      kind: "err",
+      message: "enhancements.0: enhancements entry needs at least one feature",
+    });
+  });
+
   it("rejects duplicate entries for the same entity, reporting the path", () => {
     const r = parseMetaPlan({
       platform: "meta",
