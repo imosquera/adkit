@@ -7,8 +7,7 @@
  * "no prior brief", which renders as an all-added diff).
  */
 
-import { serializeBrief } from "./store.js";
-import type { AnyBrief } from "../lib/schema.js";
+import { serializeBrief, type StorableBrief } from "./store.js";
 
 /**
  * The result of comparing two briefs. `changed` is the single fact both commands
@@ -69,9 +68,9 @@ function diffOps(a: readonly string[], b: readonly string[]): DiffOp[] {
 /**
  * Diff the current brief (or `null` for "none yet") against a proposed brief. Only
  * changed lines and a little surrounding context are rendered, so a small edit shows
- * a small, scoped diff (FR-009).
+ * a small, scoped diff (FR-009). Generic over any platform's brief.
  */
-export function diffBriefs(current: AnyBrief | null, proposed: AnyBrief): BriefDiff {
+export function diffBriefs<B extends StorableBrief>(current: B | null, proposed: B): BriefDiff {
   const currentLines = current === null ? [] : serializeBrief(current).split("\n");
   const proposedLines = serializeBrief(proposed).split("\n");
   const ops = diffOps(currentLines, proposedLines);

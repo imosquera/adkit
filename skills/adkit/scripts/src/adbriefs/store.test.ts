@@ -4,10 +4,12 @@ import { join } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { parseBrief, type Brief } from "../lib/schema.js";
 import {
   AdbriefsError,
+  assertNoForeignBrief,
   briefPathForCampaign,
   loadBriefIfExists,
   serializeBrief,
@@ -117,5 +119,42 @@ describe("loadBriefIfExists / writeBrief", () => {
       writeBrief(root, brief("Same Slug"), "ads/briefs");
       expect(() => writeBrief(root, brief("same  slug", "other-brief"), "ads/briefs")).toThrow(AdbriefsError);
     });
+  });
+});
+
+// Plan D7: the store is generic over StorableBrief so a non-Google brief (e.g. Meta)
+// round-trips through its own parse boundary instead of parseAnyBrief.
+describe("with a custom brief parser", () => {
+  const OtherBriefSchema = z
+    .object({ type: z.literal("other"), name: z.string(), campaign: z.object({ name: z.string(), objective: z.string() }).strict() })
+    .strict();
+  type OtherBrief = z.infer<typeof OtherBriefSchema>;
+  const parseOther = (data: unknown): OtherBrief => OtherBriefSchema.parse(data);
+  const other = (campaignName: string): OtherBrief => ({
+    type: "other",
+    name: "other-brief",
+    campaign: { name: campaignName, objective: "OUTCOME_LEADS" },
+  });
+
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "adbriefs-test-"));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("writes, reloads through the parser, and guards collisions with it", () => {
+    const b = other("Meta Leads Q4");
+    expect(loadBriefIfExists(root, b, undefined, parseOther)).toBeNull();
+    const path = writeBrief(root, b, undefined, parseOther);
+    expect(path).toBe(join(root, "adbriefs", "meta-leads-q4.yaml"));
+    const loaded: OtherBrief | null = loadBriefIfExists(root, b, undefined, parseOther);
+    expect(loaded).toEqual(b);
+    // Same campaign overwrites cleanly; the occupant is read with the custom parser.
+    expect(() => writeBrief(root, { ...b, campaign: { ...b.campaign, objective: "OUTCOME_SALES" } }, undefined, parseOther)).not.toThrow();
+    expect(() => assertNoForeignBrief(root, other("meta  leads q4"), undefined, parseOther)).toThrow(AdbriefsError);
+    // The default (Google) parser rejects the same file as a schema violation.
+    expect(() => loadBriefIfExists(root, brief("Meta Leads Q4"))).toThrow(AdbriefsError);
   });
 });

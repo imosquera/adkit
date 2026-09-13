@@ -93,7 +93,7 @@ export function judgeSecretsPath(path: string, facts: GitFacts): SecretsPathVerd
       reason: "not-ignored",
       message:
         `refusing to write credentials to ${path}: git does not ignore that path, so the next ` +
-        `\`git add\` would commit your Google Ads secrets. Fix: add \`/${rel}\` to .gitignore, ${OUT_OF_REPO_FIX}. ` +
+        `\`git add\` would commit your ads credentials. Fix: add \`/${rel}\` to .gitignore, ${OUT_OF_REPO_FIX}. ` +
         `Nothing was written.${alsoTracked}`,
     };
   }
@@ -244,7 +244,7 @@ export function secretsReadWarning(path: string, facts: GitFacts = gitFactsFor(p
   if (verdict.reason === "not-ignored") {
     return (
       `WARNING: ${path} holds credentials and git does NOT ignore it — the next \`git add\` would ` +
-      `commit your Google Ads secrets. Add \`/${rel}\` to .gitignore, ${OUT_OF_REPO_FIX}.`
+      `commit your ads credentials. Add \`/${rel}\` to .gitignore, ${OUT_OF_REPO_FIX}.`
     );
   }
   if (verdict.reason === "already-tracked") {
