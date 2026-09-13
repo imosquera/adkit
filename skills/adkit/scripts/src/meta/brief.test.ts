@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   ENHANCEMENT_FEATURE_KEYS,
-  isMetaBriefData,
   OBJECTIVE_OPTIMIZATION_GOALS,
   parseMetaBrief,
   softWarnings,
@@ -215,15 +214,6 @@ describe("parseMetaBrief", () => {
       ),
     );
     expect(msg.split("\n").length).toBeGreaterThanOrEqual(6);
-  });
-});
-
-describe("isMetaBriefData", () => {
-  it("detects type: meta only", () => {
-    expect(isMetaBriefData({ type: "meta" })).toBe(true);
-    expect(isMetaBriefData({ type: "display" })).toBe(false);
-    expect(isMetaBriefData(null)).toBe(false);
-    expect(isMetaBriefData("meta")).toBe(false);
   });
 });
 

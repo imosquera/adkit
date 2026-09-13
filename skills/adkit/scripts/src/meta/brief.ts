@@ -449,10 +449,6 @@ export type MetaBriefDeps = {
   readonly fileExists: (path: string) => boolean;
 };
 
-/** True when raw YAML data declares `type: meta` (dispatch check before parsing). */
-export const isMetaBriefData = (data: unknown): boolean =>
-  data !== null && typeof data === "object" && (data as { type?: unknown }).type === "meta";
-
 const formatIssue = (i: Pick<ZodIssue, "path" | "message">): string =>
   `${i.path.length > 0 ? i.path.join(".") : "(root)"}: ${i.message}`;
 

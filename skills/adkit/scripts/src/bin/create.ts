@@ -301,8 +301,8 @@ function resolveBriefPath(input: string, topN: number): string {
 
 /**
  * True when `input` names a `.yaml`/`.yml` brief whose parsed YAML declares
- * `type: meta` — the brief-driven half of the Meta delegation (plan D1). Mirrors
- * `isMetaBriefData` in `meta/brief.ts`, inlined so a Google run never loads the
+ * `type: meta` — the brief-driven half of the Meta delegation (plan D1). This only
+ * routes; the Meta bin parses the brief properly, and a Google run never loads the
  * Meta modules. A missing or unparseable file is not Meta: {@link readBrief}
  * reports it on the Google path.
  */
