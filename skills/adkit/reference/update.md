@@ -153,6 +153,48 @@ ads.sh update plan.yaml --apply     # mutate live
 
 Surface, per campaign: what you changed, and what you deliberately left (e.g. a converting POOR ad — never pause a converting ad to chase ad strength; enrich it). If you flipped any campaign to `ENABLED`, call out that it now spends. `--apply` auto-syncs `adbriefs/<slug>.yaml` for every resolved brief (see §2), so `git status` should show exactly the brief changes the plan implies — call out any slug the envelope reports as unsynced (`briefSynced: false` or `briefStagingSkipped: true`) so the operator knows the local brief still needs attention.
 
+## Meta plans (`platform: meta`)
+
+Meta campaigns published by `/adkit create` (`type: meta` briefs) are updated through the same command. `platform: meta` in the plan selects the Meta path, as do `--platform meta`, `ADKIT_PLATFORM=meta`, and `platform: meta` in `adkit.yaml`. The Google sections above don't apply. Same contract: **dry-run unless `--apply`**, every section optional, and ids come from the Meta `/adkit audit` / `/adkit report` output.
+
+**Before proceeding, read:**
+- [`reference/meta/6-analyze.md`](meta/6-analyze.md): scaling signals, what resets learning, creative fatigue
+
+```yaml
+platform: meta
+adAccountId: act_1234567890        # optional; falls back to META_AD_ACCOUNT_ID / meta_ad_account_id
+budgets:
+  - { level: campaign, id: "120210000000000001", dailyBudget: 80 }   # account currency, decimal
+  - { level: adset, id: "120210000000000002", dailyBudget: 40 }
+status:
+  - { level: ad, id: "120210000000000010", status: PAUSED }        # campaign | adset | ad; ACTIVE | PAUSED
+  - { level: campaign, id: "120210000000000001", status: ACTIVE }
+exclusions:
+  - adSetId: "120210000000000002"
+    add: ["2384000000001"]         # custom audience ids to exclude
+    remove: []
+enhancements:
+  - adId: "120210000000000010"
+    features: { enhance_cta: OPT_OUT, text_optimizations: OPT_OUT }
+textPools:
+  - adId: "120210000000000011"
+    primaryTexts: ["…1–5…"]
+    headlines: ["…1–5…"]
+    descriptions: ["…0–5…"]
+```
+
+- **`budgets`** set a daily budget at the level that owns it: `campaign` for a campaign budget (CBO), `adset` for ad set budgets (ABO). A budget on the wrong level is **rejected** (e.g. an ad set whose campaign uses campaign budget). As with Google, a raise **above 50%** is **rejected**. Any raise prints a `WARNING:` and lands in `budgetIncreases`.
+- **`status`** pause or enable a campaign, ad set, or ad. **PAUSE is always safe. ACTIVE starts live spend**: `WARNING:` line + `enableStartsLiveSpend`. `/adkit create` publishes everything PAUSED, so this is how a vetted Meta campaign goes live. Enabling a campaign alone doesn't serve its paused ad sets and ads, so list every level you mean to turn on.
+- **`exclusions`** add or remove excluded custom audiences on an ad set (customers, converters, employees; see [`reference/meta/5-exclusions.md`](meta/5-exclusions.md)). On an **Advantage+** campaign (`advantage_state` not `DISABLED`), ad-set exclusions are ignored by delivery: the entry still applies, but it warns and lands in `exclusionIgnored`. Use account controls there instead.
+- **`enhancements`** set Advantage+ creative features per ad (`OPT_IN` / `OPT_OUT`). **`textPools`** replace an ad's primary texts / headlines / descriptions, with the same limits and angle rules as the brief (see *Meta campaigns* in `create.md`). Meta creatives are immutable, so both **create a new creative** from the live one plus your change and swap it onto the ad. That swap is a significant edit.
+- **Skip-if-unchanged.** Every entry is compared to live state first, and an entry that asks for what is already live is reported in the section's `…Skipped` list, not mutated. Re-running a plan is safe.
+
+**Learning resets.** A budget change over **20%**, or any targeting (`exclusions`) or creative (`enhancements`, `textPools`) change on an ad set still in `LEARNING`, restarts learning. It is never refused, but it prints a `WARNING:` and lands in `learningResetRisk`. Before applying, check [Scaling Signals](meta/6-analyze.md#scaling-signals). Raise budget about 20% at a time and wait 3–7 days between raises ([Vertical Scaling](meta/6-analyze.md#vertical-scaling-more-budget)). Batch significant edits into one plan rather than spreading them over the week, and never change budget and creative in the same plan if you want to know what moved cost per lead.
+
+**Apply order and isolation.** `--apply` runs pauses first → budgets → exclusions → creative swaps → enables last, so nothing new spends before the rest has landed. Each entry is isolated: a failure is recorded in `errors[]` as `{ step, entityId, message }` and the run continues. Like Google, the plan is staged onto the owning brief via `adbriefs/<slug>.meta-state.yaml` and the diff is printed on every run. Unresolvable ids are reported in `unresolvedPlanIds`, not fatal. On `--apply`, briefs and state are written **only for slugs with no failure**.
+
+Envelope keys: `applied`, `budgetChanges` / `budgetSkipped`, `statusChanges` / `statusSkipped`, `exclusionChanges` / `exclusionSkipped`, `enhancementChanges` / `enhancementSkipped`, `textPoolChanges` / `textPoolSkipped`, the warning keys `enableStartsLiveSpend`, `budgetIncreases`, `learningResetRisk`, `exclusionIgnored`, plus `briefs[]`, `unresolvedPlanIds`, `errors[]`. Report every id in a warning key to the operator. A non-empty `errors[]` means the live account and the brief have diverged for that slug.
+
 ## Notes
 
 - `update` can change budgets (`budgets`), bid strategy (`bidding`), add negatives (`negatives`), add whole new ad groups (`adGroups`), flip a campaign on/off (`campaignStatus`) or an ad group on/off (`adGroupStatus`), and it improves ad strength (which feeds Ad Rank) by closing `pathToExcellent` gaps. It **cannot** change geo/schedule — the operator does that in the UI. For `rank_constrained` IS loss, adding negatives to cut junk clicks (or pausing a whole wrong-intent ad group) lifts CTR → Quality Score → Ad Rank.

@@ -239,6 +239,90 @@ adGroups:
 
 Audience ids are the numeric ids from Tools → Audience manager, or GAQL: `SELECT user_interest.user_interest_id, user_interest.name FROM user_interest`, `SELECT user_list.id, user_list.name FROM user_list`, `SELECT custom_audience.id, custom_audience.name FROM custom_audience`. Each ad group needs at least one audience, or `optimizedTargeting: true`.
 
+## Meta campaigns (`type: meta`)
+
+A brief with `type: meta` publishes a **Meta (Facebook + Instagram) campaign** through the Marketing API instead of Google Ads. Select the Meta path with `--platform meta`, `ADKIT_PLATFORM=meta`, or `platform: meta` in `adkit.yaml`. The Google flags, customer id, and scaffold don't apply. There is no scaffold from a processed idea yet: author the YAML by hand (reuse the processed file's themes, offer temperature, and copy) and pass its path to `ads.sh create`. Same flow otherwise: dry run, `adbriefs/` diff gate, everything PAUSED on publish.
+
+Credentials: `meta_access_token` (plus optional `meta_app_id` / `meta_app_secret`) in `.adkit.secrets.yaml`, or `META_ACCESS_TOKEN` / `META_APP_ID` / `META_APP_SECRET`. The ad account comes from the brief's `adAccountId`, else `META_AD_ACCOUNT_ID` / `meta_ad_account_id`. The Facebook Page comes from the brief's `pageId`, else `meta_page_id`. `/adkit init` writes them when you answer `meta` at its first (platform) prompt.
+
+**Before authoring, read:**
+- [`reference/meta/2-audience-mining.md`](meta/2-audience-mining.md): audience sources, and why Advantage+ suggestions are soft while controls are hard
+- [`reference/meta/3-account-structure.md`](meta/3-account-structure.md): objectives, CBO vs ABO, consolidation
+- [`reference/meta/4-creative.md`](meta/4-creative.md): text pools, angles, Advantage+ creative enhancements
+- [`reference/meta/5-exclusions.md`](meta/5-exclusions.md): customer and converter exclusions, placements
+
+```yaml
+type: meta
+name: konnect-meta                  # slug source, as for Google
+adAccountId: act_1234567890         # optional; falls back to META_AD_ACCOUNT_ID / meta_ad_account_id
+pageId: "1234567890"                # optional; falls back to meta_page_id
+campaign:
+  name: konnect-meta-leads
+  objective: OUTCOME_LEADS          # OUTCOME_LEADS | OUTCOME_SALES | OUTCOME_TRAFFIC | OUTCOME_AWARENESS | OUTCOME_ENGAGEMENT
+  specialAdCategories: []           # [] | [CREDIT | EMPLOYMENT | HOUSING | ISSUES_ELECTIONS_POLITICS]
+  budget:
+    mode: campaign                  # campaign (CBO): dailyBudget here, none on ad sets | adset (ABO): dailyBudget on every ad set
+    dailyBudget: 100                # account currency, decimal (100 = $100/day)
+    bidStrategy: LOWEST_COST_WITHOUT_CAP   # | COST_CAP | LOWEST_COST_WITH_BID_CAP | LOWEST_COST_WITH_MIN_ROAS
+  startTime: 2026-10-01T00:00:00Z   # optional
+adSets:                             # 1–10
+  - name: prospecting-broad
+    # dailyBudget: 50               # required iff campaign.budget.mode = adset
+    # bidAmount: 40                 # required iff bidStrategy is COST_CAP / LOWEST_COST_WITH_BID_CAP
+    optimizationGoal: OFFSITE_CONVERSIONS   # must pair with the objective
+    conversion: { pixelId: "111222333", event: LEAD }   # required iff OFFSITE_CONVERSIONS
+    audience:
+      countries: [US]               # and/or regions / cities: [{ key, radius, distance_unit }]
+      ageMin: 25
+      ageMax: 65
+      genders: []                   # [] = all
+      locales: []
+      customAudienceIds: []         # includes lookalikes
+      excludedCustomAudienceIds: ["2384000000001"]   # customers + converters
+      interests: []                 # [{ id, name }]
+      advantageAudience: true
+    placements: advantage           # | { publisherPlatforms: [...], facebookPositions: [...], instagramPositions: [...] }
+    ads:                            # 1–6
+      - name: cost-of-inaction
+        link: https://www.example.com/ideas/published-slug
+        callToAction: LEARN_MORE    # LEARN_MORE | SIGN_UP | GET_QUOTE | BOOK_NOW | CONTACT_US | DOWNLOAD | SUBSCRIBE | APPLY_NOW
+        primaryTexts: ["Your reps lose hours a week to CRM entry. Konnect logs it for them."]   # 1–5
+        headlines: ["Stop typing into your CRM"]            # 1–5
+        descriptions: ["No new integrations"]               # 0–5
+        media: { image: ./creative/konnect-1x1.png }        # | { video: ./creative/demo.mp4, thumbnail: ./creative/demo.png }
+        enhancements:               # every key explicit; unknown keys rejected
+          enhance_cta: OPT_OUT
+          text_optimizations: OPT_OUT
+          image_touchups: OPT_IN
+```
+
+### Authoring rules
+
+- **Campaigns by objective and budget, ad sets by audience, ads by message.** Split an ad set only when the audience or optimization event genuinely differs, and never mix cold and warm audiences in one ad set. Test messages as ads inside one ad set. Keep ad sets few so each can reach ~50 optimization events a week and exit learning. See [Campaign, Ad Set & Ad Logic](meta/3-account-structure.md#campaign-ad-set--ad-logic) and [Consolidation Rules](meta/3-account-structure.md#consolidation-rules).
+- **Objective ↔ optimization goal.** Default to `OUTCOME_LEADS` with `OFFSITE_CONVERSIONS` on a pixel event close to revenue that still fires often (see [Objectives — B2B SaaS](meta/3-account-structure.md#objectives--b2b-saas)). The brief rejects a goal that doesn't pair with the objective, and `OFFSITE_CONVERSIONS` without a `conversion`.
+- **Exactly one budget mode.** `mode: campaign` (Advantage+ campaign budget) is the default for a new account or one audience. Use `mode: adset` when ad sets differ a lot in size (broad vs. a small retargeting list), or for a controlled test. See [CBO vs ABO](meta/3-account-structure.md#cbo-vs-abo). A budget on the wrong level is rejected. `bidAmount` is required on every ad set under `COST_CAP` / `LOWEST_COST_WITH_BID_CAP` and forbidden otherwise.
+- **Audience: controls are hard, suggestions are soft.** With `advantageAudience: true`, interests, lookalikes, age, and gender are only hints. Location, minimum age, language, and **custom audience exclusions** are what actually restrict delivery, so anything the budget must never reach goes there. See [Broad vs Interest vs Lookalike vs Advantage+ Audience](meta/2-audience-mining.md#broad-vs-interest-vs-lookalike-vs-advantage-audience) and [Group into Ad Sets](meta/2-audience-mining.md#group-into-ad-sets).
+- **Always exclude customers and converters from prospecting** via `excludedCustomAudienceIds`. Interest exclusions no longer exist. See [Existing Customers & Converters](meta/5-exclusions.md#existing-customers--converters). Advantage+ sales campaigns ignore ad-set-level exclusions; set those in account controls instead ([Exclusion Layers](meta/5-exclusions.md#exclusion-layers)).
+- **Special ad categories narrow what you may target.** With any `specialAdCategories` entry the brief rejects `ageMin > 18`, `ageMax < 65`, gender narrowing, and `interests`.
+- **Text pools: distinct angles, each standalone.** Up to 5 primary texts / 5 headlines / 5 descriptions per ad. Meta mixes them per impression, so every option must stand alone and take a different angle, not reword another one. Hard limits (rejected): primary text ≤1024, headline ≤255, description ≤255 chars. Recommended (warned): ≤125 / ≤40 / ≤30. Front-load the hook and qualifier. See [Text Pools](meta/4-creative.md#text-pools) and [Persuasion Angles](meta/4-creative.md#persuasion-angles). The honest-use gate there is binding.
+- **Set every Advantage+ creative enhancement explicitly.** Opt out of anything that rewrites your words or alters product imagery (`text_optimizations`, `enhance_cta`, overlays, image generation). See [Dynamic & Advantage+ Creative](meta/4-creative.md#dynamic--advantage-creative).
+- **Names are identity.** Ad set names are unique within the campaign and ad names within their ad set. A re-run finds existing objects by exact name. Media paths are relative to the brief and must exist and be readable.
+
+Every cross-field rule is checked **together, before any API call**: one run reports all violations at once, and nothing is created.
+
+### Publish, PAUSED, resumable
+
+```bash
+ads.sh create adbriefs/konnect-meta.yaml --platform meta --dry-run   # zero writes: brief diff + planned objects
+ads.sh create adbriefs/konnect-meta.yaml --platform meta             # publish (add --skip-url-check to bypass the link check)
+```
+
+Publish order: **upload media** (images → hashes, videos → ids) → **campaign** → per ad set **ad set** → per ad **creative** (flexible format: the text pools and media in `asset_feed_spec`, enhancements in `degrees_of_freedom_spec`) → **ad**. Every campaign, ad set, and ad is created **PAUSED**. Nothing spends until you enable it with `/adkit update` (`status` section) or in Ads Manager.
+
+A publish is **resumable**. `adbriefs/<slug>.meta-state.yaml` records each created id **after every successful step**, not only at the end. Re-running the same brief skips anything state already holds. When state lacks an id, it first looks the object up live by exact name under its parent, so a create that succeeded before the state write is adopted, not duplicated. Unchanged media (same file sha256) is not re-uploaded. If more than one live object has that name, the run stops at step `find-existing` and names the duplicates. Clean them up in Ads Manager and re-run.
+
+Envelope: `{ ok, platform: "meta", created: { campaignId, adSets: [...] }, failure: { step, message, code? } | null, briefDiff, briefSynced, stateSynced }`. Exit 1 on failure: `failure.step` names where it stopped. Fix the cause and re-run the same command to continue from there.
+
 ## Execution
 
 ### 0. Prepare the brief from the processed file

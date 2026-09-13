@@ -1,6 +1,6 @@
 ---
-description: "Audit live Google Ads campaigns (read-only) for RSA + extension best practices and impression-share loss, reporting a concrete path to EXCELLENT ad strength per ad. To apply fixes, use /adkit update."
-argument-hint: "[<campaign-name-or-id>] [--customer <10-digit>] [--all] [--no-serving] [--days 14]"
+description: "Audit live Google Ads campaigns (read-only) for RSA + extension best practices and impression-share loss, reporting a concrete path to EXCELLENT ad strength per ad — or, when platform is meta, audit Meta ad sets and ads for learning, fatigue, fragmentation, breakdown waste, exclusions, conversion signal, and creative enhancements. To apply fixes, use /adkit update."
+argument-hint: "[<campaign-name-or-id>] [--customer <10-digit>] [--all] [--no-serving] [--days 14]  (Meta: [--ad-account <act_id>] [--days 7|14|30] [--psi-key <key>])"
 user-invocable: true
 disable-model-invocation: false
 ---
@@ -25,6 +25,7 @@ Mechanics (ads.sh invocation, customer-id resolution, the JSON envelope, credent
 **Before proceeding, read:**
 - [`reference/google/6-analyze.md`](google/6-analyze.md) — STR audit workflow, asset report, quality score diagnostics
 - [`reference/google/4-ad-copy.md`](google/4-ad-copy.md) — headline pool rules (used to judge what's missing)
+- **Meta** (`platform: meta` in `adkit.yaml`, `ADKIT_PLATFORM=meta`, or `--platform meta`): skip the two Google files and everything from *What "EXCELLENT" needs* through *Search-term waste* — jump to the [Meta](#meta) section below.
 
 ## What "EXCELLENT" needs (the four levers Google scores)
 
@@ -136,6 +137,70 @@ Build the dashboard from the same run's JSON — no new queries:
 `ads.sh audit`'s JSON already carries `landingPageHealth` (URL/redirect policy findings + windowed mobile/AMP/speed findings) and `qualityScore` (per-keyword CTR/relevance/landing-page-experience). Per SKILL.md's "use subagents aggressively" rule, **spawn a subagent** to do this analysis in parallel with the rest of the report: hand it [`reference/audit-landing-page.md`](audit-landing-page.md) plus the run's `landingPageHealth` and `qualityScore` slices, and fold its output into the final report as the landing-page-health section. See that file for the full detection table, the Quality-Score-driven prioritization rules, and the write-up format.
 
 **PageSpeed Insights auto-diagnosis (`psi`)**: when any keyword shows a below-average landing-page experience (`landingPageExp = BELOW_AVERAGE`, Google's "≤ 2" bucket) **and** an operator PSI key is available (`--psi-key` or `PAGESPEED_API_KEY`), the audit runs PageSpeed Insights (mobile) once per distinct ad final URL and emits `psi` (`{skipped, results:[{ok, url, lcpMs, renderBlocking[], unusedJs[]} | {ok:false, url, error}]}`) — LCP, render-blocking, and unused-JS signals that close the loop from "your LP score is low" to "here's the exact fix". Without a key, `psi.skipped` names the reason and no external call is made; with no below-average score, PSI is skipped silently. The key is operator-supplied — the audit never creates or deletes a GCP key (a temp create→use→delete key lifecycle, if you want one, is an operator step outside the audit).
+
+## Meta
+
+When the resolved platform is `meta` (`--platform` → `ADKIT_PLATFORM` → `platform` in `adkit.yaml`; absent means Google), `ads.sh audit` audits a Meta ad account instead. The role is unchanged: **read-only**, deterministic checks are the CLI's, judgement and fix copy are yours, and **fixes go through `/adkit update`**. Ad strength, RSA counts, extensions, impression share, Auction Insights, keywords, search terms, and Quality Score are Google concepts — none of those sections apply, and `--customer`, `--manager`, `--all`, `--no-serving`, `--banned`, and `--differentiation-profile` are not Meta flags.
+
+**Before proceeding, read** the playbook each finding links to — at minimum [`reference/meta/1-fundamentals.md`](meta/1-fundamentals.md) (learning phase, conversion tracking) and [`reference/meta/6-analyze.md`](meta/6-analyze.md) (breakdowns, fatigue, attribution).
+
+### Execution — scan (report only)
+
+```bash
+# whole account (adkit.yaml says platform: meta)
+ads.sh audit --ad-account act_1234567890
+# or pick the platform per run, with a 7-day fatigue window
+ads.sh audit --platform meta --ad-account act_1234567890 --days 7
+```
+
+- **Ad account** resolves `--ad-account` → `META_AD_ACCOUNT_ID` → `meta_ad_account_id` in `adkit.yaml` → a one-time prompt on a terminal; `123` and `act_123` both normalise to `act_123`.
+- `--days 7|14|30` (default 14) sets the fatigue window; `--psi-key <key>` (or `PAGESPEED_API_KEY`) works as for Google.
+- Only GETs are made. The audit reads campaigns (objective, status, budgets, bid strategy, special ad categories), ad sets (status, budget, optimization goal, `promoted_object`, `targeting`, `learning_stage_info`, dynamic-creative flag), ads with their creative (`degrees_of_freedom_spec`, `asset_feed_spec`, `object_story_spec`), ad-level insights for **two consecutive `--days` windows** (current vs previous, for fatigue), ad-set insights with `actions` (weekly event volume), and account breakdowns by `publisher_platform,platform_position` and `age,gender`.
+
+JSON → **stdout**, human summary → **stderr** (one `  ! issue: detail` line per finding). The envelope:
+
+```ts
+{ ok: true, platform: "meta", adAccountId, window,
+  campaigns: [{ id, name, status, findings: MetaFinding[] }],
+  landingPageHealth, psi }
+
+type MetaFinding = { level: "campaign" | "adset" | "ad"; entityId: string; entityName: string;
+  issue: MetaIssue; severity: "high" | "medium" | "low"; detail: string;
+  evidence: Record<string, number | string>; fix: string; playbook: string };
+```
+
+Every finding carries the entity id, `severity`, the numbers that tripped it (`evidence`), a one-line `fix`, and `playbook` — the `reference/meta/` section the threshold and fix come from. Read that section before writing up the finding.
+
+### Findings
+
+| issue | fires when | severity | playbook |
+| --- | --- | --- | --- |
+| `learning_limited` | ad set `learning_stage_info.status = FAIL` | high | [1-fundamentals § The Learning Phase](meta/1-fundamentals.md#the-learning-phase) |
+| `still_learning_low_volume` | ad set status `LEARNING` and weekly result events < 50 | medium | [3-account-structure § Consolidation Rules](meta/3-account-structure.md#consolidation-rules) |
+| `fragmented_budget` | campaign has ≥ 3 active ad sets and median weekly events per ad set < 50 | medium | [3-account-structure § Consolidation Rules](meta/3-account-structure.md#consolidation-rules) |
+| `creative_fatigue` | ad frequency ≥ 3.5 and link CTR down ≥ 25% vs the previous window, with spend > 0 | high | [6-analyze § Creative Fatigue](meta/6-analyze.md#creative-fatigue) |
+| `wasted_breakdown_spend` | a placement or age/gender segment takes ≥ 20% of spend with 0 results or cost/result ≥ 2× the account | medium | [6-analyze § Breakdown Report Audit](meta/6-analyze.md#breakdown-report-audit) |
+| `missing_customer_exclusion` | prospecting ad set (no custom audience in its inclusions) with no `excluded_custom_audiences` | medium | [5-exclusions § Existing Customers & Converters](meta/5-exclusions.md#existing-customers--converters) |
+| `weak_conversion_signal` | conversion optimization goal but no `promoted_object.pixel_id`, or < 50 weekly events account-wide | high | [1-fundamentals § Conversion Tracking](meta/1-fundamentals.md#conversion-tracking) |
+| `advantage_creative_enhancements_on` | any `degrees_of_freedom_spec.creative_features_spec.*.enroll_status = OPT_IN` | low | [4-creative § Dynamic & Advantage+ Creative](meta/4-creative.md#dynamic--advantage-creative) |
+
+How to act on them:
+
+- **Most are structural, not creative.** `learning_limited`, `still_learning_low_volume`, and `fragmented_budget` call for consolidating ad sets or moving to a higher-volume event, not new copy. `weak_conversion_signal` is a tracking fix (pixel / Conversions API) the operator does outside adkit. Changing budgets or targeting on an ad set that is still learning resets learning — say so next to any such recommendation.
+- **What `/adkit update` can apply:** budgets (campaign or ad set), pause/enable, customer-audience exclusions on an ad set (`missing_customer_exclusion`), Advantage+ creative enhancement opt-outs (`advantage_creative_enhancements_on`), and replacement text pools (`creative_fatigue` — a new concept, not a reworded twin; see [`reference/meta/4-creative.md`](meta/4-creative.md#persuasion-angles)). Placement or demographic exclusions for `wasted_breakdown_spend` are an Ads Manager step; check [`5-exclusions § Placement Exclusions & Block Lists`](meta/5-exclusions.md#placement-exclusions--block-lists) first, and remember breakdowns describe delivery rather than control it.
+- **Order by severity, then by spend at stake.** Note anything you'd deliberately leave alone (e.g. a fatiguing ad that is still the account's cheapest source of qualified leads — refresh it, don't pause it).
+
+### Report and Visualize — Meta
+
+Surface, per campaign, each finding with severity, the evidence numbers, the fix, and the playbook link; end with **to apply the fixes, run `/adkit update`**. Landing page health works as for Google: the audit collects the unique ad destination links (`asset_feed_spec.link_urls` / `object_story_spec.link_data.link`), and the `landingPageHealth`/`psi` slices go to a subagent with [`reference/audit-landing-page.md`](audit-landing-page.md) (there is no `qualityScore` slice on Meta).
+
+Publish the Artifact dashboard as described in *Visualize*, but built from the Meta envelope — replace the Google panels with:
+
+- **KPI strip** — findings by severity (high/medium/low), ad sets in learning or learning limited, count of fatigued ads, and spend flagged by `wasted_breakdown_spend`.
+- **Findings table** — one row per finding: level, entity, issue, severity badge, key `evidence`, fix, playbook link; sortable by severity.
+- **Learning & consolidation** — per campaign, its ad sets with learning status and weekly events against the 50-event line.
+- **Creative fatigue** — per ad, frequency and link CTR for the current vs previous window.
+- **Breakdown waste** — the flagged placement and age/gender segments with spend share and cost/result vs the account.
 
 ## Notes
 

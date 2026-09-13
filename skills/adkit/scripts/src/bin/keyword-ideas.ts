@@ -17,7 +17,8 @@ import { isMainModule } from "../cli/entry.js";
 import { GoogleAdsApi, enums, type services } from "google-ads-api";
 import { loadConfig } from "../lib/config.js";
 import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
-import { emitJson, sdkErrorMessage } from "../cli/output.js";
+import { emitJson, errorEnvelope, sdkErrorMessage } from "../cli/output.js";
+import { PlatformError, resolvePlatform } from "../cli/platform.js";
 import { formatBulletText } from "../lib/markdown.js";
 import { MAX_KEYWORD_CHARS, type ApiIdea, type Candidate, unionCandidates } from "../lib/merge.js";
 import { competitionLabel } from "../lib/metrics.js";
@@ -277,9 +278,34 @@ export async function generateIdeaRows(
   return (response as { results?: IdeaRow[] } | null)?.results ?? [];
 }
 
+/** The refusal message for a Meta run (plan D10): Meta has no Keyword Planner. */
+export const META_REFUSAL_MESSAGE = "keyword-ideas is Google-only; Meta has no keyword planner equivalent";
+
 /**
- * Entry point. Returns the process exit code (2 on bad args, 1 on SDK error, 0 on
- * success). Faithful to the Python `main`: resolve the customer id, require a
+ * The failure envelope that stops a non-Google run before any work (plan D10), or
+ * `null` when the resolved platform is `google`. An unparseable platform value is
+ * refused the same way, naming the offending tier. Pure over its inputs.
+ */
+export function platformRefusal(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  config: { platform?: string },
+): ReturnType<typeof errorEnvelope> | null {
+  try {
+    return resolvePlatform(argv, env, config) === "meta"
+      ? errorEnvelope(META_REFUSAL_MESSAGE, { step: "platform" })
+      : null;
+  } catch (exc) {
+    if (exc instanceof PlatformError) {
+      return errorEnvelope(exc.message, { step: exc.step });
+    }
+    throw exc;
+  }
+}
+
+/**
+ * Entry point. Returns the process exit code (2 on bad args, 1 on a Meta / invalid
+ * platform or SDK error, 0 on success). Meta is refused before anything else. Faithful to the Python `main`: resolve the customer id, require a
  * seed or page URL, truncate to {@link MAX_SEEDS}, call the SDK, then emit the
  * decorated candidate JSON on stdout with the same stderr narration.
  */
@@ -287,6 +313,11 @@ export async function main(
   argv: readonly string[] = process.argv.slice(2),
   generate: (req: services.IGenerateKeywordIdeasRequest) => Promise<IdeaRow[]> = generateIdeaRows,
 ): Promise<number> {
+  const refusal = platformRefusal(argv, process.env, loadConfig());
+  if (refusal !== null) {
+    emitJson(refusal);
+    return 1;
+  }
   const args = parseArgs(argv);
   // Required to operate: resolves, or asks once on a TTY, or fails loudly. Never guesses.
   let customerId: string;

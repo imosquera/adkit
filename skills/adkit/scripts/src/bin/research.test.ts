@@ -363,6 +363,19 @@ describe("main", () => {
     outSpy.mockClear();
   });
 
+  it("refuses a Meta run with a platform-step envelope before any Keyword Planner call", async () => {
+    const generate = vi.fn(async () => []);
+    const code = await main(["--platform", "meta", "--customer-id", "1234567890", "--competitor", "x"], generate);
+    expect(code).toBe(1);
+    expect(generate).not.toHaveBeenCalled();
+    const envelope: unknown = JSON.parse(String(outSpy.mock.calls[0]?.[0]));
+    expect(envelope).toEqual({
+      ok: false,
+      message: "research is Google-only; Meta has no keyword planner equivalent",
+      step: "platform",
+    });
+  });
+
   it("returns 2 when neither a competitor nor a seed is given", async () => {
     const code = await main(["--customer-id", "1234567890"], async () => []);
     expect(code).toBe(2);

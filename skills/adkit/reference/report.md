@@ -1,5 +1,5 @@
 ---
-description: "Download Google Ads metrics (down to keyword/search-term) for a trailing window or the account's whole history, then write a markdown analysis + a Chart.js HTML dashboard to ads/output/reports/."
+description: "Download Google Ads metrics (down to keyword/search-term) — or Meta Ads metrics (down to ad, placement, age/gender) when platform is meta — for a trailing window or the account's whole history, then write a markdown analysis + a Chart.js HTML dashboard to ads/output/reports/."
 argument-hint: "--customer <id> [--manager <id>] [--days 14] [--all-time] [--include-paused]  (a bare positional <customer> also works; default 14 days; BOTH the customer and the manager/login id are resolved from flag -> env -> adkit.yaml, never defaulted to a placeholder)"
 user-invocable: true
 disable-model-invocation: false
@@ -13,10 +13,12 @@ $ARGUMENTS
 
 **Before proceeding, read:**
 - [`reference/google/6-analyze.md`](google/6-analyze.md) — scaling signals, auction insights, and the three-way STR decision framework
+- **Meta** (`platform: meta` in `adkit.yaml`, `ADKIT_PLATFORM=meta`, or `--platform meta`): [`reference/meta/6-analyze.md`](meta/6-analyze.md) instead — breakdown audit, creative fatigue, attribution windows, scaling signals. Then follow the [Meta](#meta) section below, which overrides steps 1–3.
 
 ## Execution
 
-You are generating a Google Ads performance report. Three steps: pull, analyze,
+You are generating a Google Ads performance report (for a Meta ad account, the
+same three steps apply with the changes in [Meta](#meta)). Three steps: pull, analyze,
 visualize. Do not invent numbers — every figure must come from the pulled report.
 
 ### 1. Pull the data
@@ -176,3 +178,117 @@ conversions). No external CSS/JS beyond the Chart.js CDN tag.
 
 Tell the user the three output paths and a 2–3 sentence summary of the headline
 findings (biggest spender, anything wasting money, best performer).
+
+## Meta
+
+When the resolved platform is `meta` (`--platform` → `ADKIT_PLATFORM` →
+`platform` in `adkit.yaml`; absent means Google), `ads.sh report` pulls from the
+Meta Graph API instead. The three steps and the three output files are the same;
+what changes is below. Everything not mentioned here (no invented numbers, the
+recommendations-first dashboard layout, the report-back step) still applies.
+
+### 1. Pull the data — Meta flags and fields
+
+```bash
+bash ads.sh report $ARGUMENTS                  # adkit.yaml already says platform: meta
+bash ads.sh report --platform meta $ARGUMENTS  # otherwise
+```
+
+- **Ad account.** `--ad-account <id>` → `META_AD_ACCOUNT_ID` →
+  `meta_ad_account_id` in `adkit.yaml` → a one-time prompt on a terminal (saved).
+  `123` and `act_123` are both accepted and normalised to `act_123`; that
+  `act_<digits>` form is the `<customer>` in every output file name. There is no
+  manager: `--manager` does not apply and `manager_id` is always `null`.
+- **`--days`, `--all-time`, `--include-paused`** behave as for Google, with one
+  limit: Meta keeps at most **37 months** of insights, so `--all-time` is clamped
+  and `window.start`/`window.days` report the clamped span — say so in the
+  analysis rather than calling it the account's whole history.
+- **`--result-action <action_type>`** (default `lead`; e.g.
+  `offsite_conversion.fb_pixel_lead`, `complete_registration`) picks which Meta
+  action counts as a conversion. `conversions` is the sum of that action's value;
+  `cost_per_conversion` is spend over it. A different action means different
+  numbers — state which one the run used.
+- **`--attribution <windows>`** (default `7d_click,1d_view`; allowed `1d_click`,
+  `7d_click`, `28d_click`, `1d_view`, `1d_ev`). `7d_view` and `28d_view` were
+  removed by Meta on 2026-01-12 and are **refused** with an error explaining the
+  removal — do not retry with them; pick an allowed window (see
+  [Attribution Windows](meta/6-analyze.md#attribution-windows)).
+
+The raw YAML keeps the Google shape so the same reading applies, with these
+differences:
+
+- Top level adds `platform: meta`, `currency` (money fields are plain decimal
+  amounts in that currency, not micros), `attribution` (the windows used), and
+  `result_action`. `recommendations` is always `[]` — keyword clustering is
+  Google-only.
+- `ad_groups` are **ad sets** (`campaign_id` joins as before). `ads[].type` is
+  `META_AD` and `ads[].ad_strength` is `UNSPECIFIED` — Meta has no ad-strength
+  grade, so ignore the field. `keywords` and `search_terms` are always `[]`.
+- Metric rows in `placements` and `demographics` also carry `reach`,
+  `frequency`, `cpm`, and `link_clicks`.
+- **`placements`** — account-level rows keyed by `publisher_platform`
+  (facebook, instagram, audience_network, messenger) and `platform_position`
+  (feed, story, reels, …).
+- **`demographics`** — account-level rows keyed by `age` bucket and `gender`.
+- `campaign_daily` still runs through `window.partial_day`; mark the trailing
+  day partial exactly as for Google.
+
+### 2. Write the analysis — Meta
+
+Same file name (`<YYYY-MM-DD>-act_<id>-analysis.md`) and header, plus the
+currency, the `result_action`, and the attribution windows. Keep the per-campaign
+table (label it with the result action, e.g. "leads" and "cost/lead").
+
+**Omit** the Google-only sections: Cluster analysis (`promote_keywords`,
+`add_negatives`, `split`), the ad-strength findings, and any keyword/search-term
+findings — the data is empty by construction, so never write "no keywords found".
+
+**Add**, citing specific entities and dollar figures, judged with
+[`reference/meta/6-analyze.md`](meta/6-analyze.md):
+
+- **Placement findings** — placements taking a meaningful share of spend with no
+  results or cost/result well above the account (see
+  [Breakdown Report Audit](meta/6-analyze.md#breakdown-report-audit)). Remember
+  breakdowns describe where Meta delivered, not a lever to micro-manage; exclusions
+  go through [`reference/meta/5-exclusions.md`](meta/5-exclusions.md#placement-exclusions--block-lists).
+- **Demographic findings** — age/gender buckets with outsized spend and weak
+  results, and whether they match the intended buyer.
+- **Frequency** — read `frequency` on `placements`/`demographics` (and on ad
+  set/ad rows when present); high frequency alongside falling link CTR or rising
+  CPM marks
+  [creative fatigue](meta/6-analyze.md#creative-fatigue); for per-ad fatigue
+  run `/adkit audit`, and recommend a new concept, not a recolour.
+- **Attribution note** — one short paragraph: the windows used, that view-through
+  and engage-through credit inflate B2B results, and that Meta's lead count will
+  not match the CRM.
+- **Anomalies** as for Google — ACTIVE campaigns spending nothing (often an ad set
+  stuck in review or [learning](meta/1-fundamentals.md#the-learning-phase)),
+  zero-impression days, spend spikes.
+
+Recommendations stay **3–6** spend moves ranked by dollars at stake; before
+recommending more budget, check the
+[Scaling Signals](meta/6-analyze.md#scaling-signals).
+
+### 3. Build the dashboard — Meta
+
+Same self-contained Chart.js file (`<YYYY-MM-DD>-act_<id>-dashboard.html`) and
+the same pinned **Recommendations & flags** card, with money shown in `currency`.
+
+**Omit** the Top keywords / search terms chart, the Ad strength chart, the
+`ad_strength` badges, and match-type tags. The drill-down tree becomes
+`campaign → ad set → ad` (no keyword level); keep the sortable headers and the
+cost/result colouring.
+
+**Keep** Spend over time and CTR by campaign. **Add**:
+
+- **Placements** — bar chart over `placements` (label
+  `publisher_platform / platform_position`), spend with results or cost/result
+  alongside, top ~15 by spend.
+- **Demographics** — grouped bar chart over `demographics`: x = `age`, one series
+  per `gender`, y = spend (and a second view or tooltip for results).
+- **Frequency** — bar chart of `frequency` by placement and by age/gender bucket
+  (plus per ad set or ad when those rows carry `frequency`), with a reference line
+  at 3.5 — the level `/adkit audit` treats as a fatigue signal.
+- **Attribution note** — a small caption under the summary stats naming the
+  attribution windows and `result_action`, e.g. "Leads counted at 7-day click,
+  1-day view".

@@ -20,6 +20,8 @@ You run the one-time setup that scaffolds the two local config files every other
 | `adkit.yaml` | **committed** | `mcc_customer_id`, `target_customer_id`, `secrets_project`, `read_backend`, `reports_dir`, `briefs_dir`, `ideas_dir` |
 | `.adkit.secrets.yaml` | git-ignored, mode 0600 | `developer_token`, `client_id`, `client_secret`, `refresh_token`, `psi_api_key` |
 
+That table is a **Google** project. A **Meta** project (`platform: meta`) writes the same two files with Meta's fields instead — see [Meta projects](#meta-projects) below.
+
 The preferences are committed because they describe the *project* — a collaborator, a CI job and a git worktree all want the same values, and none of them is a secret. The credentials are per-machine and never committed.
 
 Mechanics (the JSON envelope, credentials, customer-id resolution) are in **`reference/conventions.md`** — read it once if you haven't already.
@@ -30,6 +32,7 @@ Mechanics (the JSON envelope, credentials, customer-id resolution) are in **`ref
 ads.sh init
 ```
 
+- **Platform first**: the very first prompt is `platform (google/meta) [google]`. A blank answer (or `google`) runs the Google scaffold described in the rest of this list, unchanged; `meta` runs the [Meta scaffold](#meta-projects). Only the chosen platform's fields are prompted for and written.
 - **Interactive**: prompts once for each field of the file(s) it is about to write — the Google Ads credentials first (`developer_token`, `client_id`, `client_secret`, `refresh_token`, `psi_api_key`; read without echo, except the public `client_id`), then the non-secret project preferences (`mcc_customer_id`, `target_customer_id`, `secrets_project`, `read_backend`, `reports_dir`, `briefs_dir`, `ideas_dir`). A blank answer keeps the field's default (shown inline in the prompt); a field left blank with no default is simply omitted from the file.
 - **Two files, written separately.** Preferences go to `adkit.yaml` (world-readable, commit it); credentials go to `.adkit.secrets.yaml` at mode 0600. Neither file can pick up the other's fields — the writer emits only the keys that belong to it.
 - **Keeping the credentials out of the repo entirely is the stronger option.** `export ADKIT_CONFIG=~/.config/adkit/<project>.secrets.yaml` before running `init` and the credentials are written there instead: nothing in the tree can commit them, and they survive into git worktrees (which an ignored root file never does). `adkit.yaml` is still written to the repo root.
@@ -40,6 +43,23 @@ ads.sh init
 - **The guardrail**: before writing the credentials, `init` checks that the target path is not committable. A path git does not ignore, or already tracks, is **refused** with an `ok:false` envelope (`step: "secrets-path"`) naming the path, the reason, and the fix — nothing is written and nothing is prompted for. A path inside a tracked directory (a vendored `.agents/skills/adkit`, say) is warned about loudly. See `reference/conventions.md` for the full table.
 - **A legacy `.adkit.yaml`** (the old single combined file) stops the scaffold: `init` leaves it exactly as it is — it still works, and still out-ranks both new files — and prints a deprecation notice naming the two files to create and which fields go in each. The hand-migration is: move the five credential fields into `.adkit.secrets.yaml` (`chmod 600`), the rest into `adkit.yaml`, then delete `.adkit.yaml`. There is no automated migration.
 - Run it from the project root — `adkit.yaml` is written to `process.cwd()`, and `.adkit.secrets.yaml` alongside it unless `ADKIT_CONFIG` moves it.
+
+## Meta projects
+
+Answer `meta` to the platform prompt and `init` scaffolds a Meta project. Every rule above — create-if-missing per file, `.gitignore` retrofit, the `secrets-path` guardrail, `ADKIT_CONFIG`, the legacy `.adkit.yaml` stop — applies unchanged; only the fields differ.
+
+| File | Tracked | Meta contents |
+| --- | --- | --- |
+| `adkit.yaml` | **committed** | `platform: meta`, `meta_ad_account_id`, `meta_page_id`, `meta_pixel_id`, `secrets_project`, `reports_dir`, `briefs_dir`, `ideas_dir` |
+| `.adkit.secrets.yaml` | git-ignored, mode 0600 | `meta_access_token`, `meta_app_id`, `meta_app_secret` |
+
+- **Prompt order**: after `platform`, the Meta credentials (`meta_access_token`, read without echo; `meta_app_id`, optional; `meta_app_secret`, optional and read without echo — it enables `appsecret_proof` on every request), then the preferences (`meta_ad_account_id`, `meta_page_id`, `meta_pixel_id`, `secrets_project`, `reports_dir`, `briefs_dir`, `ideas_dir`). No Google field is asked for, and `read_backend` is Google-only.
+- **`platform: meta` is written to `adkit.yaml`** so every later command takes the Meta path without a flag. A Google project never writes a `platform` key — absent already means `google`.
+- **`meta_access_token`** is a system-user (or long-lived user) access token with `ads_read` and `ads_management`. It is the only required Meta credential.
+- **`meta_ad_account_id`** accepts `1234567890` or `act_1234567890`; it is parsed once into `act_<digits>` and a non-numeric value is rejected naming the field. If you skip it here, the first Meta command that needs it asks once on a terminal and saves it to `adkit.yaml` (off a terminal: `ok:false`, `step: "ad-account"`).
+- **`meta_page_id`** (the Facebook Page ads are published as) is needed by `create`; **`meta_pixel_id`** (the pixel / dataset id) by conversion campaigns. Both are optional here — a Meta brief can set them itself.
+- **Credentials from Secret Manager**: `render-yaml` / `bootstrap-secrets` handle `meta_access_token` and `meta_app_secret` as optional secrets.
+- **Next step**: `ads.sh preflight` (the `platform: meta` in `adkit.yaml` routes it) runs `credentials` → `auth` → `access` → `permissions` and names the first step that fails — an inactive ad account or a missing `ads_read` / `ads_management` permission is reported by name. See [Meta credentials](conventions.md#meta-credentials) and [Meta ad account id](conventions.md#meta-ad-account-id-act_). For the strategy behind the account, start with the [Meta fundamentals](meta/1-fundamentals.md) playbook.
 
 ## After `init`
 
