@@ -172,6 +172,75 @@ describe("parseMetaBrief", () => {
     expect(ok.kind).toBe("ok");
   });
 
+  it.each(["CREDIT", "EMPLOYMENT"])("applies the same restrictions under %s", (category) => {
+    expect(errorOf(brief({}, { specialAdCategories: [category] }))).toMatch(/forbid gender targeting/);
+  });
+
+  it("does not apply audience restrictions to ISSUES_ELECTIONS_POLITICS alone", () => {
+    expect(parseMetaBrief(brief({}, { specialAdCategories: ["ISSUES_ELECTIONS_POLITICS"] }), allFiles).kind).toBe("ok");
+    expect(errorOf(brief({}, { specialAdCategories: ["ISSUES_ELECTIONS_POLITICS", "HOUSING"] }))).toMatch(/forbid gender targeting/);
+  });
+
+  it("requires city radius of at least 15 miles / 25 km under restricted categories", () => {
+    const withCities = (cities: unknown[]) =>
+      brief({ adSets: [adSet({ audience: { cities } })] }, { specialAdCategories: ["EMPLOYMENT"] });
+    const msg = errorOf(
+      withCities([
+        { key: "1", radius: 10, distance_unit: "mile" },
+        { key: "2", radius: 20, distance_unit: "kilometer" },
+      ]),
+    );
+    expect(msg).toMatch(/adSets\.0\.audience\.cities\.0\.radius: .*at least 15 miles \/ 25 km \(got 10 mile\)/);
+    expect(msg).toMatch(/cities\.1\.radius: .*got 20 kilometer/);
+    expect(
+      parseMetaBrief(
+        withCities([
+          { key: "1", radius: 15, distance_unit: "mile" },
+          { key: "2", radius: 25, distance_unit: "kilometer" },
+        ]),
+        allFiles,
+      ).kind,
+    ).toBe("ok");
+    // Without a special ad category a small radius is fine.
+    expect(parseMetaBrief(brief({ adSets: [adSet({ audience: { cities: [{ key: "1", radius: 1, distance_unit: "mile" }] } })] }), allFiles).kind).toBe("ok");
+  });
+
+  it.each<[string, Record<string, unknown>, Record<string, unknown>, RegExp]>([
+    ["unknown objective", {}, { objective: "OUTCOME_APP_PROMOTION" }, /campaign\.objective/],
+    ["headline > 255", { adSets: [adSet({ ads: [ad({ headlines: ["h".repeat(256)] })] })] }, {}, /headlines may be at most 255/],
+    ["description > 255", { adSets: [adSet({ ads: [ad({ descriptions: ["d".repeat(256)] })] })] }, {}, /descriptions may be at most 255/],
+    ["> 5 primaryTexts", { adSets: [adSet({ ads: [ad({ primaryTexts: ["1", "2", "3", "4", "5", "6"] })] })] }, {}, /adSets\.0\.ads\.0\.primaryTexts/],
+    ["> 5 headlines", { adSets: [adSet({ ads: [ad({ headlines: ["1", "2", "3", "4", "5", "6"] })] })] }, {}, /adSets\.0\.ads\.0\.headlines/],
+  ])("rejects %s", (_label, over, campaign, pattern) => {
+    expect(errorOf(brief(over, campaign))).toMatch(pattern);
+  });
+
+  it("reports all of those issues at once", () => {
+    const msg = errorOf(
+      brief(
+        {
+          adSets: [
+            adSet({
+              ads: [ad({ headlines: ["h".repeat(256), "2", "3", "4", "5", "6"], descriptions: ["d".repeat(256)], primaryTexts: ["1", "2", "3", "4", "5", "6"] })],
+            }),
+          ],
+        },
+        { objective: "OUTCOME_APP_PROMOTION" },
+      ),
+    );
+    [/campaign\.objective/, /headlines may be at most 255/, /descriptions may be at most 255/, /primaryTexts/, /headlines: .*5/].forEach((p) =>
+      expect(msg).toMatch(p),
+    );
+  });
+
+  it("allows omitted enhancement keys (left to Meta's default)", () => {
+    expect(valueOf(brief({ adSets: [adSet({ ads: [ad({ enhancements: { image_touchups: "OPT_OUT" } })] })] })).adSets[0].ads[0].enhancements).toEqual({
+      image_touchups: "OPT_OUT",
+    });
+    const { enhancements: _omitted, ...noEnhancements } = ad();
+    expect(valueOf(brief({ adSets: [adSet({ ads: [noEnhancements] })] })).adSets[0].ads[0].enhancements).toEqual({});
+  });
+
   it("requires unique ad set and ad names", () => {
     expect(errorOf(brief({ adSets: [adSet(), adSet()] }))).toMatch(/adSets\[\]\.name must be unique/);
     expect(errorOf(brief({ adSets: [adSet({ ads: [ad(), ad()] })] }))).toMatch(/ads\[\]\.name must be unique/);
@@ -228,6 +297,13 @@ describe("softWarnings", () => {
     const w = softWarnings(long);
     expect(w).toHaveLength(3);
     expect(w[0]).toMatch(/primaryTexts\[0\] is 126 chars \(recommended ≤ 125/);
+  });
+
+  it("warns when exclusions are combined with Advantage+ audience", () => {
+    const audience = { countries: ["US"], excludedCustomAudienceIds: ["23850000000000001"] };
+    expect(softWarnings(valueOf(brief({ adSets: [adSet({ audience })] })))).toEqual([]);
+    const w = softWarnings(valueOf(brief({ adSets: [adSet({ audience: { ...audience, advantageAudience: true } })] })));
+    expect(w).toEqual([expect.stringMatching(/ad set "set-1": .*exclusions may not apply under Advantage\+ audience/)]);
   });
 });
 

@@ -170,7 +170,7 @@ describe("main", () => {
     const { code, client } = await run([path]);
     expect(code).toBe(0);
     const env = emitted();
-    expect(env).toMatchObject({ ok: true, platform: "meta", failure: null, briefSynced: true, stateSynced: true });
+    expect(env).toMatchObject({ ok: true, platform: "meta", failure: null, briefSynced: true, stateSynced: true, warnings: [], orphaned: [] });
     const created = env["created"] as { campaignId: string; adSets: { adSetId: string; ads: { adId: string }[] }[] };
     expect(created.campaignId).toMatch(/^\d+$/);
     expect(created.adSets[0]?.adSetId).toMatch(/^\d+$/);
@@ -220,6 +220,58 @@ describe("main", () => {
     const final = readMetaState(statePath());
     expect(final?.campaign.campaignId).toBe(saved?.campaign.campaignId);
     expect(final?.adSets[0]?.ads.every((a) => a.adId !== null)).toBe(true);
+  });
+
+  it("an account read failure exits 1 before the brief is written", async () => {
+    const path = writeBriefFile(rawBrief());
+    const { code, client } = await run([path], {
+      get: liveGet,
+      failOn: (call) => (call.method === "get" && call.path === "act_111" ? metaApiError(190, "Session has expired") : null),
+    });
+    expect(code).toBe(1);
+    expect(emitted()).toMatchObject({ ok: false, step: "account" });
+    expect(client.calls.filter((c) => c.method !== "get")).toEqual([]);
+    expect(existsSync(stagedPath())).toBe(false);
+    expect(existsSync(statePath())).toBe(false);
+  });
+
+  it("warns about exclusions under Advantage+ audience in stderr and both envelopes", async () => {
+    const path = writeBriefFile(
+      rawBrief({
+        adSets: [
+          {
+            name: "Set A",
+            optimizationGoal: "LINK_CLICKS",
+            audience: { countries: ["US"], advantageAudience: true, excludedCustomAudienceIds: ["2385"] },
+            ads: [ad("Ad 1")],
+          },
+        ],
+      }),
+    );
+    expect((await run([path, "--dry-run"])).code).toBe(0);
+    expect(emitted()["warnings"]).toEqual([expect.stringContaining("exclusions may not apply under Advantage+ audience")]);
+    expect(stderrText()).toContain("warning: ad set \"Set A\": ");
+    expect((await run([path])).code).toBe(0);
+    expect(emitted()["warnings"]).toEqual([expect.stringContaining("exclusions may not apply under Advantage+ audience")]);
+  });
+
+  it("warns about ad sets renamed out of the brief and lists them as orphaned, deleting nothing", async () => {
+    const path = writeBriefFile(rawBrief());
+    expect((await run([path])).code).toBe(0);
+    const before = readMetaState(statePath())!;
+    const renamed = rawBrief({
+      adSets: [{ name: "Set Renamed", optimizationGoal: "LINK_CLICKS", audience: { countries: ["US"] }, ads: [ad("Ad 1"), ad("Ad 2")] }],
+    });
+    writeBriefFile(renamed);
+
+    expect((await run([path, "--dry-run"])).code).toBe(0);
+    expect(emitted()["orphaned"]).toEqual([expect.objectContaining({ kind: "ad-set", name: "Set A", adSetId: before.adSets[0]!.adSetId })]);
+
+    const { code, client } = await run([path]);
+    expect(code).toBe(0);
+    expect(stderrText()).toMatch(/WARNING: ad set "Set A" is no longer in the brief but state holds adSetId \d+/);
+    expect(emitted()["orphaned"]).toEqual([expect.objectContaining({ kind: "ad-set", name: "Set A", adSetId: before.adSets[0]!.adSetId })]);
+    expect(client.calls.filter((c) => c.method === "post").every((c) => !String(c.path).startsWith(before.adSets[0]!.adSetId!))).toBe(true);
   });
 
   it("fails at step page when neither the brief nor the config names a page", async () => {

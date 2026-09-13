@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { parseMetaBrief, type MetaBrief } from "./brief.js";
 import type { Params } from "./client.js";
+import { MetaApiError } from "./errors.js";
 import { fakeMetaClient, metaApiError, type FakeCall } from "./fake-client.js";
-import { ImageHashSchema, MetaAdAccountIdSchema, MetaAdSetIdSchema, MetaCampaignIdSchema, MetaCreativeIdSchema, MetaPageIdSchema, MetaVideoIdSchema } from "./ids.js";
+import { ImageHashSchema, MetaAdAccountIdSchema, MetaAdIdSchema, MetaAdSetIdSchema, MetaCampaignIdSchema, MetaCreativeIdSchema, MetaPageIdSchema, MetaVideoIdSchema } from "./ids.js";
 import {
   adParams,
   adSetParams,
@@ -204,6 +205,12 @@ describe("publishMeta", () => {
       "create-ad act_111/ads",
     ]);
     ps.filter((p) => p.step !== "create-creative").forEach((p) => expect(p.body.status).toBe("PAUSED"));
+    const firstPost = client.calls.findIndex((c) => c.method === "post");
+    const lastUpload = client.calls.map((c) => c.method).lastIndexOf("uploadImage");
+    expect(lastUpload).toBeGreaterThanOrEqual(0);
+    expect(lastUpload).toBeLessThan(firstPost);
+    expect(client.calls[firstPost]).toMatchObject({ path: "act_111/campaigns" });
+    expect(result.orphaned).toEqual([]);
     // 2 media + campaign + 2 ad sets + 3 creatives + 3 ads
     expect(saved).toHaveLength(11);
     expect(result.state).toEqual(saved.at(-1));
@@ -227,7 +234,7 @@ describe("publishMeta", () => {
     const first = recorder();
     const r1 = await publishMeta(failing, ctx, cboBrief, emptyMetaState(cboBrief, account), first.deps);
 
-    expect(r1.failure).toEqual({ step: "create-ad-set", message: "Invalid parameter", code: 100 });
+    expect(r1.failure).toEqual({ step: "create-ad-set", message: "Meta API error 100 at create-ad-set: Invalid parameter", code: 100 });
     expect(r1.state).toEqual(first.saved.at(-1));
     expect(r1.state.adSets[0]!.adSetId).not.toBeNull();
     expect(r1.state.adSets[1]).toEqual({ name: "Set B", adSetId: null, ads: [{ name: "Ad 3", creativeId: null, adId: null }] });
@@ -276,6 +283,121 @@ describe("publishMeta", () => {
     expect(ps).not.toContain("create-ad-set:Set A");
     expect(ps).not.toContain("create-ad:Ad 1");
     expect(ps).toContain("create-ad:Ad 2");
+  });
+
+  it("stops at an expired token (code 190) on an ad set, keeping the failing step and the saved campaign", async () => {
+    const client = fakeMetaClient({
+      get: () => [],
+      failOn: (c) => (c.method === "post" && c.step === "create-ad-set" ? metaApiError(190, "Error validating access token: Session has expired", 463) : null),
+    });
+    const { saved, deps } = recorder();
+    const result = await publishMeta(client, ctx, cboBrief, emptyMetaState(cboBrief, account), deps);
+
+    expect(result.failure).toMatchObject({ step: "create-ad-set", code: 190, subcode: 463 });
+    expect(result.failure?.message).toContain("Session has expired");
+    expect(saved.at(-1)?.campaign.campaignId).not.toBeNull();
+    expect(result.state).toEqual(saved.at(-1));
+    expect(result.state.adSets.every((s) => s.adSetId === null)).toBe(true);
+  });
+
+  it("passes Meta's user title/message, subcode and fbtrace_id through to the failure", async () => {
+    const userMessage = "Your ad set's budget is too low. Please raise it to at least $1.00.";
+    const client = fakeMetaClient({
+      get: () => [],
+      failOn: (c) =>
+        c.method === "post" && c.step === "create-campaign"
+          ? new MetaApiError({
+              step: "create-campaign",
+              code: 100,
+              subcode: 1885272,
+              message: "Invalid parameter",
+              userTitle: "Budget Too Low",
+              userMessage,
+              fbtraceId: "AbCdEf123",
+            })
+          : null,
+    });
+    const result = await publishMeta(client, ctx, cboBrief, emptyMetaState(cboBrief, account), recorder().deps);
+
+    expect(result.failure).toMatchObject({ step: "create-campaign", code: 100, subcode: 1885272, fbtraceId: "AbCdEf123" });
+    expect(result.failure?.message).toContain(`Budget Too Low: ${userMessage}`);
+    expect(result.failure?.message).toContain("fbtrace_id AbCdEf123");
+  });
+
+  it("adopts a live creative by its '<campaign> / <ad>' name when no live ad exists", async () => {
+    const base = emptyMetaState(cboBrief, account);
+    const state: MetaState = {
+      ...base,
+      media: { "./hero.png": { sha256: "same-sha", imageHash: ImageHashSchema.parse("h") }, "./copy-of-hero.png": { sha256: "same-sha", imageHash: ImageHashSchema.parse("h") } },
+      campaign: { ...base.campaign, campaignId: MetaCampaignIdSchema.parse("10") },
+    };
+    const client = fakeMetaClient({
+      get: (path, params) =>
+        path === "act_111/adcreatives" && JSON.stringify(params.filtering).includes("Widget Launch / Ad 1")
+          ? [
+              { id: "30", name: "Widget Launch / Ad 1", status: "ACTIVE" },
+              { id: "31", name: "Widget Launch / Ad 1", status: "DELETED" },
+            ]
+          : [],
+    });
+    const result = await publishMeta(client, ctx, cboBrief, state, recorder().deps);
+
+    expect(result.failure).toBeNull();
+    expect(result.state.adSets[0]!.ads[0]!.creativeId).toBe("30");
+    const ps = posts(client.calls).map((p) => `${p.step}:${String(p.body.name)}`);
+    expect(ps).not.toContain("create-creative:Widget Launch / Ad 1");
+    expect(ps).toContain("create-creative:Widget Launch / Ad 2");
+    expect(posts(client.calls).find((p) => p.step === "create-ad" && p.body.name === "Ad 1")?.body.creative).toEqual({ creative_id: "30" });
+  });
+
+  it("falls back to an unfiltered listing when an edge rejects the name filter (code 100)", async () => {
+    const client = fakeMetaClient({
+      get: (path, params) => {
+        if (path === "act_111/adcreatives" && params.filtering !== undefined) throw metaApiError(100, "Invalid parameter");
+        return path === "act_111/adcreatives" ? [{ id: "30", name: "Widget Launch / Ad 1", status: "ACTIVE" }] : [];
+      },
+    });
+    const result = await publishMeta(client, ctx, cboBrief, emptyMetaState(cboBrief, account), recorder().deps);
+    expect(result.failure).toBeNull();
+    expect(result.state.adSets[0]!.ads[0]!.creativeId).toBe("30");
+  });
+
+  it("fails at find-existing when more than one live creative has the name", async () => {
+    const client = fakeMetaClient({
+      get: (path) =>
+        path === "act_111/adcreatives"
+          ? [
+              { id: "30", name: "Widget Launch / Ad 1" },
+              { id: "31", name: "Widget Launch / Ad 1" },
+            ]
+          : [],
+    });
+    const result = await publishMeta(client, ctx, cboBrief, emptyMetaState(cboBrief, account), recorder().deps);
+    expect(result.failure?.step).toBe("find-existing");
+    expect(result.failure?.message).toContain("ids 30, 31");
+    expect(posts(client.calls).some((p) => p.step === "create-creative")).toBe(false);
+  });
+
+  it("returns ad sets and ads renamed out of the brief as orphaned, without deleting anything", async () => {
+    const base = emptyMetaState(cboBrief, account);
+    const state: MetaState = {
+      ...base,
+      adSets: [
+        { name: "Old Set", adSetId: MetaAdSetIdSchema.parse("70"), ads: [{ name: "Old Ad", creativeId: MetaCreativeIdSchema.parse("71"), adId: null }] },
+        { name: "Never Published", adSetId: null, ads: [{ name: "x", creativeId: null, adId: null }] },
+        { name: "Set B", adSetId: MetaAdSetIdSchema.parse("80"), ads: [{ name: "Ad 3 old", creativeId: MetaCreativeIdSchema.parse("81"), adId: MetaAdIdSchema.parse("82") }] },
+      ],
+    };
+    const client = fakeMetaClient({ get: () => [] });
+    const result = await publishMeta(client, ctx, cboBrief, state, recorder().deps);
+
+    expect(result.failure).toBeNull();
+    expect(result.orphaned).toEqual([
+      { kind: "ad-set", name: "Old Set", adSetId: "70", ads: [{ name: "Old Ad", creativeId: "71", adId: null }] },
+      { kind: "ad", name: "Ad 3 old", adSetName: "Set B", creativeId: "81", adId: "82" },
+    ]);
+    expect(result.state.adSets.map((s) => s.name)).toEqual(["Set A", "Set B"]);
+    expect(client.calls.every((c) => !["70", "71", "81", "82"].includes(c.path))).toBe(true);
   });
 
   it("fails at find-existing when more than one live object has the name", async () => {

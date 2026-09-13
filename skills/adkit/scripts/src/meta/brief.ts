@@ -66,6 +66,21 @@ export const META_OBJECTIVES = [
 export type MetaObjective = (typeof META_OBJECTIVES)[number];
 
 export const SPECIAL_AD_CATEGORIES = ["CREDIT", "EMPLOYMENT", "HOUSING", "ISSUES_ELECTIONS_POLITICS"] as const;
+export type SpecialAdCategory = (typeof SPECIAL_AD_CATEGORIES)[number];
+
+/**
+ * Categories whose audience targeting Meta restricts. Per the Marketing API "Special
+ * Ad Category" doc (developers.facebook.com/docs/marketing-api/audiences/special-ad-category,
+ * checked 2026-09): for housing, employment and credit / financial products ads, age is
+ * fixed to 18–65+, gender cannot be chosen, behaviour/demographic/interest targeting is
+ * limited, and "location selection must include all areas equal or larger than 15 mile
+ * or 25 kilometer radius" (US/CA). ISSUES_ELECTIONS_POLITICS is not audience-restricted
+ * by the `special_ad_categories` label, so it is absent here.
+ */
+export const TARGETING_RESTRICTED_CATEGORIES: ReadonlySet<SpecialAdCategory> = new Set(["HOUSING", "EMPLOYMENT", "CREDIT"]);
+
+/** Minimum city radius under a {@link TARGETING_RESTRICTED_CATEGORIES} category. */
+export const RESTRICTED_MIN_RADIUS = { mile: 15, kilometer: 25 } as const;
 
 export const META_BID_STRATEGIES = ["LOWEST_COST_WITHOUT_CAP", "COST_CAP", "LOWEST_COST_WITH_BID_CAP"] as const;
 export type MetaBidStrategy = (typeof META_BID_STRATEGIES)[number];
@@ -366,7 +381,7 @@ const crossFieldIssues = (b: {
   const { budget, objective, specialAdCategories } = b.campaign;
   const allowedGoals = OBJECTIVE_OPTIMIZATION_GOALS[objective];
   const needsBid = BID_AMOUNT_STRATEGIES.has(budget.bidStrategy);
-  const restricted = specialAdCategories.length > 0;
+  const restricted = specialAdCategories.some((c) => TARGETING_RESTRICTED_CATEGORIES.has(c));
   const names = b.adSets.map((s) => s.name);
 
   const perAdSet = b.adSets.flatMap((s, i): Issue[] => {
@@ -408,6 +423,16 @@ const crossFieldIssues = (b: {
             ...(a.interests.length > 0
               ? [{ message: "special ad categories forbid interest targeting", path: at("audience", "interests") }]
               : []),
+            ...a.cities.flatMap((c, k) =>
+              c.radius !== undefined && c.distance_unit !== undefined && c.radius < RESTRICTED_MIN_RADIUS[c.distance_unit]
+                ? [
+                    {
+                      message: `special ad categories require a city radius of at least ${RESTRICTED_MIN_RADIUS.mile} miles / ${RESTRICTED_MIN_RADIUS.kilometer} km (got ${c.radius} ${c.distance_unit})`,
+                      path: at("audience", "cities", k, "radius"),
+                    },
+                  ]
+                : [],
+            ),
           ]
         : []),
     ];
@@ -483,14 +508,21 @@ export function parseMetaBrief(data: unknown, deps: MetaBriefDeps): Result<MetaB
   return issues.length === 0 && parsed.success ? ok(parsed.data) : err(issues.join("\n"));
 }
 
-/** Pure: recommended-length warnings (Meta truncates beyond these in most placements). */
+/**
+ * Pure: non-blocking warnings — recommended text lengths (Meta truncates beyond these in
+ * most placements) and custom-audience exclusions combined with Advantage+ audience,
+ * which Meta may not honour (spec edge case).
+ */
 export function softWarnings(brief: MetaBrief): string[] {
   const pool = (where: string, label: string, texts: readonly string[], limit: number): string[] =>
     texts.flatMap((t, k) =>
       t.length > limit ? [`${where} ${label}[${k}] is ${t.length} chars (recommended ≤ ${limit}; may be truncated)`] : [],
     );
-  return brief.adSets.flatMap((s) =>
-    s.ads.flatMap((ad) => {
+  return brief.adSets.flatMap((s) => [
+    ...(s.audience.advantageAudience && s.audience.excludedCustomAudienceIds.length > 0
+      ? [`ad set "${s.name}": excludedCustomAudienceIds with advantageAudience: true — exclusions may not apply under Advantage+ audience`]
+      : []),
+    ...s.ads.flatMap((ad) => {
       const where = `ad set "${s.name}" ad "${ad.name}":`;
       return [
         ...pool(where, "primaryTexts", ad.primaryTexts, PRIMARY_TEXT_RECOMMENDED),
@@ -498,5 +530,5 @@ export function softWarnings(brief: MetaBrief): string[] {
         ...pool(where, "descriptions", ad.descriptions, DESCRIPTION_RECOMMENDED),
       ];
     }),
-  );
+  ]);
 }

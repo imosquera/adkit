@@ -13,17 +13,24 @@
  * `create-ad`. `deps.saveState` runs after every step that changed the state, so a
  * crash mid-run leaves a state file that a re-run resumes from. A step whose id is
  * already in state is skipped; before creating an object with no state id, the
- * publisher looks it up live by exact name under its parent, which recovers from
- * "create succeeded, state write failed". The first failure stops the fold and
- * returns the last state that was saved.
+ * publisher looks it up live by exact name under its parent (campaigns and creatives
+ * under the ad account — a creative by its `<campaign> / <ad>` name — ad sets under the
+ * campaign, ads under the ad set; a live ad also yields its creative id), which
+ * recovers from "create succeeded, state write failed". More than one live match fails
+ * with {@link DuplicateNameError}. The first failure stops the fold and returns the last
+ * saved state, or the input re-aligned onto the brief's names when no step saved.
+ *
+ * Ad sets / ads whose names left the brief (renamed or removed) drop out of the aligned
+ * state; their live ids are returned as `orphaned` so the caller can warn. Nothing live
+ * is ever deleted.
  */
 
-import type { z } from "zod";
+import { z } from "zod";
 
 import type { MediaFile, MetaClient, Params } from "./client.js";
 import type { MetaAd, MetaAdSet, MetaBrief } from "./brief.js";
-import { MetaApiError, MetaConfigError } from "./errors.js";
-import { AdSchema, AdSetSchema, CampaignSchema, createdIdSchema } from "./graph.js";
+import { formatMetaError, MetaApiError, MetaConfigError, redactMetaSecrets } from "./errors.js";
+import { AdCreativeSchema, AdSchema, AdSetSchema, CampaignSchema, createdIdSchema } from "./graph.js";
 import {
   MetaAdIdSchema,
   MetaAdSetIdSchema,
@@ -76,12 +83,27 @@ export interface PublishFailure {
   readonly step: string;
   readonly message: string;
   readonly code?: number | "schema";
+  readonly subcode?: number;
+  readonly fbtraceId?: string;
 }
 
+/** A state entry whose name is no longer in the brief, with the live ids it carried. */
+export type OrphanedObject =
+  | { readonly kind: "ad-set"; readonly name: string; readonly adSetId: MetaAdSetId | null; readonly ads: readonly MetaAdState[] }
+  | {
+      readonly kind: "ad";
+      readonly name: string;
+      readonly adSetName: string;
+      readonly creativeId: MetaCreativeId | null;
+      readonly adId: string | null;
+    };
+
 export interface PublishResult {
-  /** The last successfully saved state (the input state when nothing was saved). */
+  /** The last saved state, or the input re-aligned onto the brief's names when no step saved. */
   readonly state: MetaState;
   readonly failure: PublishFailure | null;
+  /** State entries dropped by {@link alignState} that still carried live ids. */
+  readonly orphaned: readonly OrphanedObject[];
 }
 
 /** One object a publish would touch, for the dry-run envelope. */
@@ -265,6 +287,25 @@ export function alignState(brief: MetaBrief, state: MetaState): MetaState {
   };
 }
 
+/**
+ * Pure: the state entries {@link alignState} drops (names no longer in the brief) that
+ * still hold a live id — an ad set with its ads, or a single ad of a kept ad set.
+ */
+export function orphanedEntries(brief: MetaBrief, state: MetaState): OrphanedObject[] {
+  const hasId = (ad: MetaAdState): boolean => ad.adId !== null || ad.creativeId !== null;
+  return state.adSets.flatMap((prev): OrphanedObject[] => {
+    const kept = brief.adSets.find((s) => s.name === prev.name);
+    if (kept === undefined) {
+      return prev.adSetId !== null || prev.ads.some(hasId)
+        ? [{ kind: "ad-set", name: prev.name, adSetId: prev.adSetId, ads: prev.ads.filter(hasId) }]
+        : [];
+    }
+    return prev.ads
+      .filter((ad) => hasId(ad) && !kept.ads.some((a) => a.name === ad.name))
+      .map((ad): OrphanedObject => ({ kind: "ad", name: ad.name, adSetName: prev.name, creativeId: ad.creativeId, adId: ad.adId }));
+  });
+}
+
 /** Pure: the objects a publish of `brief` over `state` would create or skip, in publish order. */
 export function planPublish(brief: MetaBrief, state: MetaState): PlannedObject[] {
   const s = alignState(brief, state);
@@ -306,12 +347,19 @@ const required = <T>(value: T | null | undefined, what: string): T => {
   return value;
 };
 
+/** Pure: a step failure; Meta API errors keep their step, code, subcode, trace id and formatted user text. */
 const failureOf = (step: string, exc: unknown): PublishFailure =>
   exc instanceof MetaApiError
-    ? { step: exc.step, message: exc.message, code: exc.code }
+    ? {
+        step: exc.step,
+        message: formatMetaError(exc),
+        code: exc.code,
+        ...(exc.subcode === undefined ? {} : { subcode: exc.subcode }),
+        ...(exc.fbtraceId === undefined ? {} : { fbtraceId: exc.fbtraceId }),
+      }
     : exc instanceof MetaConfigError || exc instanceof DuplicateNameError
-      ? { step: exc.step, message: exc.message }
-      : { step, message: exc instanceof Error ? exc.message : String(exc) };
+      ? { step: exc.step, message: exc instanceof MetaConfigError ? formatMetaError(exc) : exc.message }
+      : { step, message: exc instanceof Error ? redactMetaSecrets(exc.message) : redactMetaSecrets(String(exc)) };
 
 // ---------- I/O shell ----------
 
@@ -319,8 +367,7 @@ type Step = { readonly name: string; readonly run: (state: MetaState) => Promise
 
 const NON_LIVE = new Set(["DELETED", "ARCHIVED"]);
 
-// Status is filtered client-side only: Meta already omits DELETED/ARCHIVED by default and
-// a `NOT_IN` operator on effective_status is not documented for these edges.
+// Graph omits DELETED/ARCHIVED by default; findByName re-checks status client-side.
 const nameFilter = (name: string): Params => ({
   filtering: [{ field: "name", operator: "EQUAL", value: name }],
 });
@@ -330,6 +377,10 @@ const AdSetLookupSchema = AdSetSchema.pick({ id: true, name: true, effective_sta
 const AdLookupSchema = AdSchema.pick({ id: true, name: true, effective_status: true }).extend({
   creative: AdSchema.shape.creative.pick({ id: true }),
 });
+/** Creatives have `status` (not `effective_status`); normalised so {@link findByName} can filter them. */
+const CreativeLookupSchema = AdCreativeSchema.pick({ id: true })
+  .extend({ name: z.string(), status: z.string().optional() })
+  .transform((c) => ({ id: c.id, name: c.name, effective_status: c.status ?? "ACTIVE" }));
 
 /**
  * Find the single live object named exactly `name` under `parentPath`; `null` when none.
@@ -344,7 +395,15 @@ const findByName = async <T extends { id: string; name: string; effective_status
   schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   kind: string,
 ): Promise<T | null> => {
-  const rows = await client.getAll(parentPath, { fields, ...nameFilter(name) }, schema, { step: "find-existing" });
+  // ponytail: if an edge rejects the name `filtering` param (code 100, e.g. adcreatives), list the
+  // edge unfiltered and match client-side — slower on big accounts, verify live and drop if unneeded.
+  const rows = await client
+    .getAll(parentPath, { fields, ...nameFilter(name) }, schema, { step: "find-existing" })
+    .catch((exc: unknown) =>
+      exc instanceof MetaApiError && exc.code === 100
+        ? client.getAll(parentPath, { fields }, schema, { step: "find-existing" })
+        : Promise.reject(exc),
+    );
   const live = rows.filter((r) => r.name === name && !NON_LIVE.has(r.effective_status));
   if (live.length > 1) {
     throw new DuplicateNameError(
@@ -427,12 +486,12 @@ const adSteps = (client: MetaClient, ctx: PublishContext, brief: MetaBrief, adSe
         if (found !== null) {
           return updateAd(s, adSet.name, ad.name, (a) => ({ ...a, adId: found.id, creativeId: found.creative.id }));
         }
-        const { id } = await client.post(
-          `${ctx.adAccountId}/adcreatives`,
-          creativeParams(brief, ad, ctx.pageId, creativeMedia(s, ad)),
-          createdIdSchema(MetaCreativeIdSchema),
-          { step: "create-creative" },
-        );
+        // No live ad: a creative created before a failed state save is adopted by its exact name.
+        const params = creativeParams(brief, ad, ctx.pageId, creativeMedia(s, ad));
+        const creative = await findByName(client, `${ctx.adAccountId}/adcreatives`, String(params.name), "id,name,status", CreativeLookupSchema, "creative");
+        const id =
+          creative?.id ??
+          (await client.post(`${ctx.adAccountId}/adcreatives`, params, createdIdSchema(MetaCreativeIdSchema), { step: "create-creative" })).id;
         return updateAd(s, adSet.name, ad.name, (a) => ({ ...a, creativeId: id }));
       },
     },
@@ -467,7 +526,8 @@ const publishSteps = (client: MetaClient, ctx: PublishContext, brief: MetaBrief,
 /**
  * Publish `brief` over `state`, saving state after every step that changed it. Never
  * throws for a step failure: the first one stops the run and is returned alongside the
- * last saved state.
+ * last saved state (or the input re-aligned onto the brief's names when no step saved),
+ * plus the {@link orphanedEntries} the alignment dropped.
  */
 export async function publishMeta(
   client: MetaClient,
@@ -479,29 +539,31 @@ export async function publishMeta(
   if (state.adAccountId !== ctx.adAccountId) {
     return {
       state,
+      orphaned: [],
       failure: {
         step: "state",
         message: `state belongs to ad account ${state.adAccountId}, but this publish targets ${ctx.adAccountId}`,
       },
     };
   }
+  const orphaned = orphanedEntries(brief, state);
   const runStep = async (step: Step, s: MetaState): Promise<PublishResult> => {
     const outcome = await step.run(s).then(
       (next) => ({ kind: "ok", next }) as const,
       (exc: unknown) => ({ kind: "err", failure: failureOf(step.name, exc) }) as const,
     );
-    if (outcome.kind === "err") return { state: s, failure: outcome.failure };
+    if (outcome.kind === "err") return { state: s, failure: outcome.failure, orphaned };
     const { next } = outcome;
-    if (next === s) return { state: s, failure: null };
+    if (next === s) return { state: s, failure: null, orphaned };
     return Promise.resolve()
       .then(() => deps.saveState(next))
       .then(
-      (): PublishResult => ({ state: next, failure: null }),
-      (exc: unknown): PublishResult => ({ state: s, failure: failureOf("save-state", exc) }),
-    );
+        (): PublishResult => ({ state: next, failure: null, orphaned }),
+        (exc: unknown): PublishResult => ({ state: s, failure: failureOf("save-state", exc), orphaned }),
+      );
   };
   return publishSteps(client, ctx, brief, deps).reduce<Promise<PublishResult>>(
     (acc, step) => acc.then((r) => (r.failure !== null ? r : runStep(step, r.state))),
-    Promise.resolve({ state: alignState(brief, state), failure: null }),
+    Promise.resolve({ state: alignState(brief, state), failure: null, orphaned }),
   );
 }

@@ -7,19 +7,26 @@
  *
  * 1. `brief` — the brief YAML is parsed once by {@link parseMetaBrief}; every issue
  *    (schema, cross-field, missing media) is reported together and nothing else
- *    runs. Soft length warnings go to stderr.
+ *    runs. {@link softWarnings} (text lengths, exclusions under Advantage+ audience)
+ *    go to stderr as `warning:` lines and into the envelope's `warnings`.
  * 2. `url-check` — every ad `link` must resolve (skipped with `--skip-url-check`).
- * 3. `credentials` / `ad-account` / `page` — the account is the brief's
- *    `adAccountId` or the resolved context's; the page is the brief's `pageId` or
- *    `meta_page_id`.
- * 4. `adbriefs` — a slug collision with a different campaign is refused; the diff
- *    against the staged brief goes to stderr.
- * 5. Dry run: `{ ok, platform, dryRun, briefDiff, planned, willWriteBrief,
- *    willWriteState }`, and zero client calls (not even the currency read).
- * 6. Publish: write the brief, read the account currency, run {@link publishMeta}
- *    (which saves `.meta-state.yaml` after every step), emit
- *    `{ ok, platform, created, failure, briefDiff, briefSynced, stateSynced }`;
- *    exit 1 on failure.
+ * 3. `credentials` / `page` — the account is the brief's `adAccountId` or the
+ *    resolved context's; the page is the brief's `pageId` or `meta_page_id`.
+ * 4. `adbriefs` — the staged path is under `resolveBriefsDir()`; the brief's media
+ *    paths are rebased from the input brief's directory onto the staged copy's. A slug
+ *    collision with a different campaign is refused; the diff against the staged brief
+ *    goes to stderr.
+ * 5. `state` — the existing `.meta-state.yaml` is read (or an empty state built).
+ *    State entries whose names left the brief are `orphaned`: one `WARNING:` line each
+ *    on stderr, listed in the envelope, never deleted.
+ * 6. Dry run: `{ ok, platform, dryRun, adAccountId, pageId, briefPath, briefDiff,
+ *    planned, warnings, orphaned, willWriteBrief, willWriteState }`, and zero client
+ *    calls (not even the currency read).
+ * 7. Publish: build the client and read the account currency (`account`), and only
+ *    then write the brief — so a credentials/account failure leaves adbriefs untouched
+ *    — run {@link publishMeta} (which saves `.meta-state.yaml` after every step), emit
+ *    `{ ok, platform, adAccountId, created, failure, briefPath, statePath, briefDiff,
+ *    briefSynced, stateSynced, warnings, orphaned, note }`; exit 1 on failure.
  *
  * Failures before publish emit the Meta `{ ok: false, message, step }` envelope and
  * exit 1. stdout carries only the envelope; narration goes to stderr.
@@ -45,7 +52,7 @@ import { resolveMetaContextFromProcess, type MetaContext, type MetaContextFlags 
 import { envelopeFailure, formatMetaError, type EnvelopeFailure } from "../errors.js";
 import { AdAccountSchema } from "../graph.js";
 import { err, ok as okResult, type MetaPageId, type Result } from "../ids.js";
-import { planPublish, publishMeta, type LocalMedia, type PublishFailure } from "../publish.js";
+import { orphanedEntries, planPublish, publishMeta, type LocalMedia, type OrphanedObject, type PublishFailure } from "../publish.js";
 import { emptyMetaState, metaStatePath, readMetaState, writeMetaState, type MetaState } from "../state.js";
 
 export const USAGE = "usage: ads.sh create <brief.yaml> [--dry-run] [--skip-url-check]";
@@ -119,6 +126,15 @@ export const createdSummary = (state: MetaState) => ({
     ads: s.ads.map((ad) => ({ name: ad.name, creativeId: ad.creativeId, adId: ad.adId })),
   })),
 });
+
+/** Pure: the stderr line for one orphaned state entry. */
+export const orphanWarning = (o: OrphanedObject): string =>
+  o.kind === "ad-set"
+    ? `ad set "${o.name}" is no longer in the brief but state holds adSetId ${o.adSetId ?? "null"}` +
+      (o.ads.length > 0 ? ` and ads ${o.ads.map((a) => `"${a.name}" (adId ${a.adId ?? "null"}, creativeId ${a.creativeId ?? "null"})`).join(", ")}` : "") +
+      "; the live objects were left untouched (rename it back, or pause/delete them in Ads Manager)"
+    : `ad "${o.name}" in ad set "${o.adSetName}" is no longer in the brief but state holds adId ${o.adId ?? "null"}, creativeId ${o.creativeId ?? "null"}; ` +
+      "the live objects were left untouched (rename it back, or pause/delete them in Ads Manager)";
 
 const diffSummary = (d: BriefDiff) => ({ changed: d.changed, added: d.added, removed: d.removed });
 
@@ -208,7 +224,8 @@ export async function main(
   if (raw.kind === "err") return fail(raw.failure);
   const parsed = parseMetaBrief(raw.value, { fileExists: (p) => isReadable(resolveMediaPath(briefDir, p)) });
   if (parsed.kind === "err") return fail({ step: "brief", message: `brief failed validation:\n${parsed.message}` });
-  softWarnings(parsed.value).forEach((w) => process.stderr.write(`warning: ${w}\n`));
+  const warnings = softWarnings(parsed.value);
+  warnings.forEach((w) => process.stderr.write(`warning: ${w}\n`));
 
   // 2. Every ad destination must resolve.
   if (!skipUrlCheck) {
@@ -231,7 +248,7 @@ export async function main(
   const pageId = resolvePageId(parsed.value, ctx.value);
   if (pageId.kind === "err") return fail({ step: "page", message: pageId.message });
 
-  // 4. Stage against adbriefs/: refuse a foreign slug occupant, show the diff. From here on
+  // 4. Stage under the briefs dir: refuse a foreign slug occupant, show the diff. From here on
   //    the brief's media paths are relative to the staged copy's directory.
   const root = cwd();
   const briefsDir = briefsDirOf();
@@ -251,11 +268,14 @@ export async function main(
       : `adbriefs brief ${adbriefsPath} unchanged\n`,
   );
 
+  // 5. State: resume ids, and warn about entries whose names left the brief.
   const loaded = await runStep("state", () => readMetaState(statePath));
   if (loaded.kind === "err") return fail(loaded.failure);
   const state = loaded.value ?? emptyMetaState(brief, adAccountId);
+  const orphaned = orphanedEntries(brief, state);
+  orphaned.forEach((o) => process.stderr.write(`WARNING: ${orphanWarning(o)}\n`));
 
-  // 5. Dry run: no client is even built.
+  // 6. Dry run: no client is even built.
   if (dryRun) {
     emitJson(
       ok({
@@ -266,6 +286,8 @@ export async function main(
         briefPath: adbriefsPath,
         briefDiff: diffSummary(briefDiff),
         planned: planPublish(brief, state),
+        warnings,
+        orphaned,
         willWriteBrief: adbriefsPath,
         willWriteState: statePath,
       }),
@@ -273,10 +295,7 @@ export async function main(
     return 0;
   }
 
-  // 6. Publish.
-  const written = await runStep("adbriefs", () => writeBrief(root, brief, briefsDir, parseStagedBrief));
-  if (written.kind === "err") return fail(written.failure);
-
+  // 7. Publish. The brief is written only once the account read succeeds.
   const client = await runStep("credentials", () => clientFactory(ctx.value));
   if (client.kind === "err") return fail(client.failure);
 
@@ -284,6 +303,9 @@ export async function main(
     client.value.get(adAccountId, { fields: ["currency"] }, AdAccountSchema.pick({ currency: true }), { step: "account" }),
   );
   if (account.kind === "err") return fail(account.failure);
+
+  const written = await runStep("adbriefs", () => writeBrief(root, brief, briefsDir, parseStagedBrief));
+  if (written.kind === "err") return fail(written.failure);
 
   const outcome = await publishMeta(
     client.value,
@@ -312,6 +334,8 @@ export async function main(
     briefSynced: outcome.failure === null,
     // State is saved after every successful step, so it lags live only when a save failed.
     stateSynced: stateSyncedAfter(outcome.failure),
+    warnings,
+    orphaned: outcome.orphaned,
     note: `Campaign, ad sets and ads created PAUSED. Re-run the same command to resume a partial publish.`,
   });
   return outcome.failure === null ? 0 : 1;
