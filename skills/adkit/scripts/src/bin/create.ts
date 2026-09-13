@@ -45,7 +45,7 @@ import { diffBriefs } from "../adbriefs/diff.js";
 import { buildState, statePathForCampaign, writeState } from "../adbriefs/state.js";
 import { resolveTargetCustomerId } from "../cli/customer-id.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
-import { PlatformError, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
+import { routePlatform } from "../cli/platform.js";
 import {
   DEFAULT_TOP_N,
   MAX_KEYWORDS_PER_THEME,
@@ -299,6 +299,9 @@ function resolveBriefPath(input: string, topN: number): string {
   scaffoldBriefFromProcessed(mdPath, briefPath, topN);
 }
 
+/** The non-flag arguments of `argv`, in order. */
+const positionalsOf = (argv: readonly string[]): string[] => argv.filter((a) => !a.startsWith("--"));
+
 /**
  * True when `input` names a `.yaml`/`.yml` brief whose parsed YAML declares
  * `type: meta` — the brief-driven half of the Meta delegation (plan D1). This only
@@ -456,25 +459,19 @@ export async function main(
   argv: string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
-  let platform: Platform;
-  try {
-    platform = resolvePlatform(argv, env, loadConfig());
-  } catch (exc) {
-    if (exc instanceof PlatformError) {
-      emitJson(errorEnvelope(exc.message, { step: exc.step }));
-      return 1;
-    }
-    throw exc;
+  const route = await routePlatform(argv, env, loadConfig(), () => import("../meta/bin/create.js"), (stripped) => {
+    const first = positionalsOf(stripped)[0];
+    return first !== undefined && briefDeclaresMeta(first);
+  });
+  if (route.kind === "exit") {
+    return route.code;
   }
-  const strippedArgv = stripPlatformFlag(argv);
-  const positionals = strippedArgv.filter((a) => !a.startsWith("--"));
-  if (platform === "meta" || (positionals[0] !== undefined && briefDeclaresMeta(positionals[0]))) {
-    return (await import("../meta/bin/create.js")).main(strippedArgv, env);
-  }
+  const strippedArgv = route.argv;
+  const positionals = positionalsOf(strippedArgv);
 
   try {
     if (positionals.length === 0) {
-      die("usage: ads.sh create <idea-slug|brief.yaml> [--dry-run] [--top-n N]");
+      die("usage: ads.sh create <idea-slug|brief.yaml> [--dry-run] [--top-n N] [--platform google|meta]");
     }
 
     const dryRun = strippedArgv.includes("--dry-run");

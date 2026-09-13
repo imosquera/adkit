@@ -18,7 +18,7 @@
  * Usage:
  *   ads.sh audit --customer 1111111111 [--campaign ID] [--all]
  *                 [--mcc-customer-id MCC] [--banned "VAT,USD,EUR,Portugal"]
- *                 [--differentiation-profile profile.json]
+ *                 [--differentiation-profile profile.json] [--platform google|meta]
  */
 
 import { readFileSync } from "node:fs";
@@ -49,7 +49,7 @@ import {
 } from "../audit/scoring.js";
 import { resolveCustomer, type ResolveCustomerOptions } from "../cli/args.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
-import { PlatformError, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
+import { routePlatform } from "../cli/platform.js";
 import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
 import {
   applyAdGroupNamesQuery,
@@ -1250,22 +1250,13 @@ export async function runAudit(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
   // Platform first (plan D1): a Meta run never reaches Google customer/MCC resolution.
-  let platform: Platform;
-  try {
-    platform = resolvePlatform(argv, env, loadConfig());
-  } catch (exc) {
-    if (exc instanceof PlatformError) {
-      emitJson(errorEnvelope(exc.message, { step: exc.step }));
-      return 1;
-    }
-    throw exc;
-  }
-  if (platform === "meta") {
-    return (await import("../meta/bin/audit.js")).main(stripPlatformFlag(argv), env);
+  const route = await routePlatform(argv, env, loadConfig(), () => import("../meta/bin/audit.js"));
+  if (route.kind === "exit") {
+    return route.code;
   }
 
   // The Google parser is strict, so the platform flag is stripped before it.
-  const args = parseAudarArgs(stripPlatformFlag(argv));
+  const args = parseAudarArgs(route.argv);
   // Required to operate: resolves, or asks once on a TTY, or fails loudly. Never guesses.
   let customer: string;
   try {

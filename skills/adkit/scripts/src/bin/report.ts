@@ -11,7 +11,7 @@
  * shapeRows / recommendations) so it can be unit-tested with canned rows.
  *
  * Usage: adkit-report [--customer <id>] [--manager <id>] [--days 14]
- *                      [--all-time] [--include-paused]
+ *                      [--all-time] [--include-paused] [--platform google|meta]
  *        (a bare positional <customer> is still accepted for back-compat; the
  *         --customer flag wins when both are given. Neither id is defaulted —
  *         both resolve flag -> env -> adkit.yaml.)
@@ -34,7 +34,7 @@ import {
   type ResolvedMcc,
 } from "../cli/args.js";
 import { emitJson, errorEnvelope, sdkErrorMessage } from "../cli/output.js";
-import { PlatformError, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
+import { routePlatform } from "../cli/platform.js";
 import { resolveTargetCustomerId } from "../cli/customer-id.js";
 import { InvalidCustomerIdError, MissingTargetCustomerIdError } from "../lib/customer-id.js";
 import { isManagerMetricsError, managerMetricsHint } from "./audit.js";
@@ -619,21 +619,12 @@ export async function main(
   clientFactory: (login: MccCustomerId) => AdsClient = loadReadClient,
   env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
-  let platform: Platform;
-  try {
-    platform = resolvePlatform(argv, env, loadConfig());
-  } catch (exc) {
-    if (exc instanceof PlatformError) {
-      emitJson(errorEnvelope(exc.message, { step: exc.step }));
-      return 1;
-    }
-    throw exc;
-  }
-  if (platform === "meta") {
-    return (await import("../meta/bin/report.js")).main(stripPlatformFlag(argv), env);
+  const route = await routePlatform(argv, env, loadConfig(), () => import("../meta/bin/report.js"));
+  if (route.kind === "exit") {
+    return route.code;
   }
 
-  const args = parseArgs(stripPlatformFlag(argv));
+  const args = parseArgs(route.argv);
   // Same flag -> env -> yaml -> prompt-and-persist resolution every other
   // entrypoint uses, rather than a placeholder literal. Failure is named and
   // actionable (which tier, which field, which file) instead of surfacing later

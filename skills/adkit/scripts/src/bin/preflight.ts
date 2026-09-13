@@ -11,6 +11,8 @@
  * — `"deps"` / `"auth"` / `"access"`; a customer id that cannot be resolved reports
  * the shared `"customer-id"` step every other entrypoint uses.
  *
+ * Usage: ads.sh preflight [--customer <id>] [--platform google|meta]
+ *
  * **Preflight must construct its client exactly the way the commands it gates do.**
  * It is a precondition check: a client built differently from `create`/`audit`/
  * `report`'s is not checking what preflight claims to check, and can pass or fail
@@ -24,7 +26,7 @@ import { credentialsPath, loadClient, mccCustomerIdFromYaml } from "../lib/auth.
 import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
 import { managerRequiredHint } from "../lib/customer-id.js";
 import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
-import { PlatformError, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
+import { routePlatform } from "../cli/platform.js";
 import { loadConfig } from "../lib/config.js";
 import { secretsReadWarning } from "../lib/secrets-guard.js";
 
@@ -89,18 +91,9 @@ export async function main(
   clientFactory: typeof loadClient = loadClient,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
-  let platform: Platform;
-  try {
-    platform = resolvePlatform(argv, env, loadConfig());
-  } catch (exc) {
-    if (exc instanceof PlatformError) {
-      emitJson(errorEnvelope(exc.message, { step: exc.step }));
-      return 1;
-    }
-    throw exc;
-  }
-  if (platform === "meta") {
-    return (await import("../meta/bin/preflight.js")).main(stripPlatformFlag(argv), env);
+  const route = await routePlatform(argv, env, loadConfig(), () => import("../meta/bin/preflight.js"));
+  if (route.kind === "exit") {
+    return route.code;
   }
 
   // --- simple checks (no SDK import required) ---
@@ -108,7 +101,7 @@ export async function main(
   // operator who answered `init`'s prompts must not also have to export anything.
   let customerId: string;
   try {
-    customerId = await resolveTargetCustomerId(parsePreflightArgs(argv).customer);
+    customerId = await resolveTargetCustomerId(parsePreflightArgs(route.argv).customer);
   } catch (exc) {
     emitJson(customerIdErrorEnvelope(exc));
     return 1;

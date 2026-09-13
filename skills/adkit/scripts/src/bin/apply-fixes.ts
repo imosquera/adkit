@@ -58,7 +58,7 @@
  * warning line + a distinct key in the JSON envelope). The harness/permission layer
  * gates the live-spend action.
  *
- * Usage: ads.sh update plan.yaml [--apply]   (alias: ads.sh apply-fixes)
+ * Usage: ads.sh update plan.yaml [--apply] [--platform google|meta]   (alias: ads.sh apply-fixes)
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -98,7 +98,7 @@ import {
   ENGLISH_LANGUAGE_CONSTANT,
 } from "../ads/entities.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
-import { PlatformError, parsePlatform, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
+import { parsePlatform, routePlatform, runMeta, type MetaLoader } from "../cli/platform.js";
 import { pyRepr, pyStr } from "../cli/py-format.js";
 import {
   addAdGroupsPlan,
@@ -832,10 +832,8 @@ async function removeCampaignAssets(
   }
 }
 
-/** Delegate a run to the Meta update bin (plan D1); dynamic so Google runs never load Meta. */
-async function delegateToMeta(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<number> {
-  return (await import("../meta/bin/update.js")).main(stripPlatformFlag(argv), env);
-}
+/** The Meta update bin a Meta run delegates to (plan D1); dynamic so Google runs never load Meta. */
+const loadMetaUpdate: MetaLoader = () => import("../meta/bin/update.js");
 
 /**
  * Apply a fixes plan. Dry-run by default; `--apply` mutates. Returns a process exit
@@ -851,21 +849,12 @@ export async function main(
   rawArgv: string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
-  let platform: Platform;
-  try {
-    platform = resolvePlatform(rawArgv, env, loadConfig());
-  } catch (exc) {
-    if (exc instanceof PlatformError) {
-      emitJson(errorEnvelope(exc.message, { step: exc.step }));
-      return 1;
-    }
-    throw exc;
+  const route = await routePlatform(rawArgv, env, loadConfig(), loadMetaUpdate);
+  if (route.kind === "exit") {
+    return route.code;
   }
-  if (platform === "meta") {
-    return delegateToMeta(rawArgv, env);
-  }
-  // The Google parser below would otherwise read `--platform <v>`'s value as the plan path.
-  const argv = stripPlatformFlag(rawArgv);
+  // Stripped of `--platform`: the Google parser below would otherwise read its value as the plan path.
+  const argv = route.argv;
   const apply = argv.includes("--apply");
   // `--mcc-customer-id <id>` / `--mcc-customer-id=<id>`. Until this existed, every
   // token starting with `--` other than `--apply` was silently dropped by the
@@ -923,7 +912,7 @@ export async function main(
     return 1;
   }
   if (planPlatform.value === "meta") {
-    return delegateToMeta(rawArgv, env);
+    return runMeta(argv, env, loadMetaUpdate);
   }
   if (!("customerId" in plan) || plan.customerId === undefined) {
     emitJson(errorEnvelope("plan is missing required 'customerId'"));

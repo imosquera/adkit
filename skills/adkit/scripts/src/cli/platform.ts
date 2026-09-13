@@ -1,14 +1,19 @@
 /**
  * Which ad platform a command runs against (plan D1).
  *
- * Every Google bin resolves the platform first and, for `meta`, delegates to the
- * matching `src/meta/bin/*` module with {@link stripPlatformFlag}'d argv. The
- * tiers are `--platform` / `--platform=` > `ADKIT_PLATFORM` > `adkit.yaml
+ * The tiers are `--platform` / `--platform=` > `ADKIT_PLATFORM` > `adkit.yaml
  * platform` > `google`, so an unconfigured project keeps today's Google
- * behaviour.
+ * behaviour. How each command uses the resolved platform:
+ *
+ * - `preflight`, `report`, `audit`, `create` and `apply-fixes` route through
+ *   {@link routePlatform}: `meta` delegates to the matching `src/meta/bin/*`
+ *   module (`apply-fixes` to `meta/bin/update`) with {@link stripPlatformFlag}'d
+ *   argv.
+ * - `research` and `keyword-ideas` refuse a Meta run via {@link googleOnlyRefusal}.
+ * - `bootstrap-secrets` and `render-yaml` branch on the platform in place.
  */
 
-import { errorEnvelope } from "./output.js";
+import { emitJson, errorEnvelope } from "./output.js";
 
 /** The ad platforms adkit can drive. */
 export type Platform = "google" | "meta";
@@ -153,4 +158,56 @@ export function googleOnlyRefusal(
     : platform.value === "meta"
       ? errorEnvelope(`${command} is Google-only; Meta has no keyword planner equivalent`, { step: "platform" })
       : null;
+}
+
+/** The entry point every `src/meta/bin/*` module exports. */
+export type MetaMain = (argv: string[], env: NodeJS.ProcessEnv) => Promise<number>;
+
+/** Lazily loads a Meta bin module, so a Google run never imports Meta code. */
+export type MetaLoader = () => Promise<{ main: MetaMain }>;
+
+/** Where a Google bin goes next: run its own Google path on `argv`, or exit with `code`. */
+export type PlatformRoute = { kind: "google"; argv: string[] } | { kind: "exit"; code: number };
+
+/**
+ * Load and run a Meta bin on `argv` with `--platform` stripped, returning its exit
+ * code. A throw escaping the Meta main (or its import) is unexpected — Meta bins
+ * envelope their own failures — so it becomes a redacted `{ ok: false, step }`
+ * envelope (step `unexpected` unless it is a Meta error carrying its own) and exit
+ * 1, rather than falling into the calling Google bin's Google-specific handlers.
+ */
+export async function runMeta(argv: readonly string[], env: NodeJS.ProcessEnv, loadMeta: MetaLoader): Promise<number> {
+  try {
+    return await (await loadMeta()).main(stripPlatformFlag(argv), env);
+  } catch (exc) {
+    const { envelopeFailure } = await import("../meta/errors.js");
+    const failure = envelopeFailure(exc, "unexpected");
+    emitJson(errorEnvelope(failure.message, { step: failure.step }));
+    return 1;
+  }
+}
+
+/**
+ * Resolve the platform for a Google bin (plan D1). An unparseable platform emits a
+ * `step: "platform"` envelope and exits 1; `meta` — or `google` when
+ * `declaresMeta(strippedArgv)` says the input itself is a Meta one (create's
+ * `type: meta` brief) — runs the Meta bin via {@link runMeta} and exits with its
+ * code; otherwise the Google path continues on the stripped argv.
+ */
+export async function routePlatform(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  config: { platform?: string },
+  loadMeta: MetaLoader,
+  declaresMeta: (strippedArgv: readonly string[]) => boolean = () => false,
+): Promise<PlatformRoute> {
+  const platform = platformResult(argv, env, config);
+  if (platform.kind === "err") {
+    emitJson(errorEnvelope(platform.message, { step: "platform" }));
+    return { kind: "exit", code: 1 };
+  }
+  const stripped = stripPlatformFlag(argv);
+  return platform.value === "meta" || declaresMeta(stripped)
+    ? { kind: "exit", code: await runMeta(stripped, env, loadMeta) }
+    : { kind: "google", argv: stripped };
 }

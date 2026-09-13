@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { PlatformError, googleOnlyRefusal, parsePlatform, resolvePlatform, stripPlatformFlag } from "./platform.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  PlatformError,
+  googleOnlyRefusal,
+  parsePlatform,
+  resolvePlatform,
+  routePlatform,
+  runMeta,
+  stripPlatformFlag,
+} from "./platform.js";
 
 describe("parsePlatform", () => {
   it("defaults undefined, null and blank to google", () => {
@@ -119,5 +127,64 @@ describe("googleOnlyRefusal", () => {
       step: "platform",
       message: expect.stringMatching(/requires a value/),
     });
+  });
+});
+
+describe("routePlatform / runMeta", () => {
+  let stdout: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const envelope = (): Record<string, unknown> =>
+    JSON.parse(stdout.mock.calls.map((c) => String(c[0])).join("")) as Record<string, unknown>;
+
+  it("continues on the Google path with --platform stripped, never loading Meta", async () => {
+    const load = vi.fn(async () => ({ main: async () => 0 }));
+    expect(await routePlatform(["--platform", "google", "x"], {}, {}, load)).toEqual({ kind: "google", argv: ["x"] });
+    expect(load).not.toHaveBeenCalled();
+    expect(stdout).not.toHaveBeenCalled();
+  });
+
+  it("runs the Meta main on stripped argv and exits with its code", async () => {
+    const main = vi.fn(async () => 3);
+    const env = { ADKIT_PLATFORM: "meta" };
+    expect(await routePlatform(["--platform=meta", "a"], env, {}, async () => ({ main }))).toEqual({ kind: "exit", code: 3 });
+    expect(main).toHaveBeenCalledWith(["a"], env);
+  });
+
+  it("delegates when the input itself declares Meta, passing it the stripped argv", async () => {
+    const main = vi.fn(async () => 0);
+    const declares = vi.fn((argv: readonly string[]) => argv[0] === "meta-brief.yaml");
+    expect(await routePlatform(["--platform", "google", "meta-brief.yaml"], {}, {}, async () => ({ main }), declares)).toEqual({
+      kind: "exit",
+      code: 0,
+    });
+    expect(declares).toHaveBeenCalledWith(["meta-brief.yaml"]);
+    expect(main).toHaveBeenCalledWith(["meta-brief.yaml"], {});
+  });
+
+  it("emits a platform-step envelope and exits 1 on an unknown platform", async () => {
+    const load = vi.fn(async () => ({ main: async () => 0 }));
+    expect(await routePlatform([], { ADKIT_PLATFORM: "bing" }, {}, load)).toEqual({ kind: "exit", code: 1 });
+    expect(load).not.toHaveBeenCalled();
+    expect(envelope()).toMatchObject({ ok: false, step: "platform" });
+  });
+
+  it("turns a throw from the Meta main into a redacted unexpected-step envelope, exit 1", async () => {
+    const main = async (): Promise<number> => {
+      throw new TypeError("boom at https://graph.facebook.com/v1?access_token=EAABsecret&x=1");
+    };
+    expect(await runMeta(["--platform", "meta"], {}, async () => ({ main }))).toBe(1);
+    const out = envelope();
+    expect(out).toMatchObject({ ok: false, step: "unexpected" });
+    expect(String(out["message"])).toContain("TypeError: boom");
+    expect(String(out["message"])).not.toContain("EAABsecret");
+    expect(String(out["message"])).toContain("access_token=[REDACTED]");
   });
 });
