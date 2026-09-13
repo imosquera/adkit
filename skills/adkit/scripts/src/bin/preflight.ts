@@ -24,6 +24,8 @@ import { credentialsPath, loadClient, mccCustomerIdFromYaml } from "../lib/auth.
 import { customerIdErrorEnvelope, resolveTargetCustomerId } from "../cli/customer-id.js";
 import { managerRequiredHint } from "../lib/customer-id.js";
 import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
+import { PlatformError, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
+import { loadConfig } from "../lib/config.js";
 import { secretsReadWarning } from "../lib/secrets-guard.js";
 
 /**
@@ -75,13 +77,32 @@ function bareCustomerId(resourceName: string): string {
  * Run the preflight checks and emit the JSON envelope on stdout. Returns the
  * process exit code (0 on success, 1 on any failed check).
  *
+ * The platform is resolved first (plan D1): `meta` delegates to the Meta preflight
+ * with `--platform` stripped from argv, loaded by dynamic import so a Google run
+ * never loads a Meta module; an unknown platform fails with step `"platform"`.
+ *
  * `clientFactory` is injectable so tests can assert on HOW the client is built
  * (which login-customer-id argument it receives) without a live account.
  */
 export async function main(
   argv: readonly string[] = process.argv.slice(2),
   clientFactory: typeof loadClient = loadClient,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
+  let platform: Platform;
+  try {
+    platform = resolvePlatform(argv, env, loadConfig());
+  } catch (exc) {
+    if (exc instanceof PlatformError) {
+      emitJson(errorEnvelope(exc.message, { step: exc.step }));
+      return 1;
+    }
+    throw exc;
+  }
+  if (platform === "meta") {
+    return (await import("../meta/bin/preflight.js")).main(stripPlatformFlag(argv), env);
+  }
+
   // --- simple checks (no SDK import required) ---
   // Same flag -> env -> yaml tiering as every other command (conventions.md): an
   // operator who answered `init`'s prompts must not also have to export anything.

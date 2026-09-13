@@ -5,6 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { checkCredentialsExist, main, parsePreflightArgs } from "./preflight.js";
 import { KEEP_YAML_MCC, mccCustomerIdFromYaml, resolveMccHeader, type AdsClient } from "../lib/auth.js";
 
+/**
+ * The Meta preflight, mocked. `loaded` flips when the factory runs — i.e. when
+ * something actually imports the module — so a Google run can prove it never did.
+ */
+const meta = vi.hoisted(() => ({ loaded: false, main: vi.fn(async () => 0) }));
+vi.mock("../meta/bin/preflight.js", () => {
+  meta.loaded = true;
+  return { main: meta.main };
+});
+
 describe("checkCredentialsExist", () => {
   it("passes when the file exists", () => {
     expect(checkCredentialsExist("/some/.adkit.yaml", () => true)).toBeNull();
@@ -175,5 +185,70 @@ describe("preflight builds its client the way the commands it gates do", () => {
     const emitted = stdout.mock.calls.map((c) => String(c[0])).join("");
     expect(emitted).toContain("mcc_customer_id");
     expect(emitted).toContain("directly-accessible");
+  });
+});
+
+/**
+ * Platform delegation (plan D1). The Google-path test runs first on purpose: the
+ * mocked Meta module's factory runs once per file, on first import, so `loaded`
+ * is only meaningful before any Meta run in this file has imported it.
+ */
+describe("preflight platform delegation", () => {
+  let dir: string;
+  let prevConfig: string | undefined;
+  let stdout: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "adkit-preflight-platform-"));
+    prevConfig = process.env["ADKIT_CONFIG"];
+    process.env["ADKIT_CONFIG"] = join(dir, ".adkit.yaml");
+    writeFileSync(process.env["ADKIT_CONFIG"], 'developer_token: "t"\ntarget_customer_id: "1234567890"\n');
+    stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    meta.main.mockClear();
+  });
+
+  afterEach(() => {
+    if (prevConfig === undefined) {
+      delete process.env["ADKIT_CONFIG"];
+    } else {
+      process.env["ADKIT_CONFIG"] = prevConfig;
+    }
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const probingFactory = (): AdsClient =>
+    ({ search: async () => [{ customer: { id: "1234567890" } }] }) as unknown as AdsClient;
+
+  it("runs the Google checks without importing the Meta module when no platform is set", async () => {
+    expect(await main([], probingFactory as never, {})).toBe(0);
+    expect(await main(["--platform", "google"], probingFactory as never, {})).toBe(0);
+    expect(meta.loaded).toBe(false);
+    expect(meta.main).not.toHaveBeenCalled();
+  });
+
+  it("delegates --platform meta to the Meta preflight with the flag stripped and env passed through", async () => {
+    const env = { META_ACCESS_TOKEN: "tok" };
+    const factory = vi.fn(probingFactory);
+    expect(await main(["--platform", "meta", "--ad-account", "act_1"], factory as never, env)).toBe(0);
+    expect(meta.main).toHaveBeenCalledWith(["--ad-account", "act_1"], env);
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("delegates when ADKIT_PLATFORM=meta and returns the Meta exit code", async () => {
+    meta.main.mockResolvedValueOnce(1);
+    expect(await main([], probingFactory as never, { ADKIT_PLATFORM: "meta" })).toBe(1);
+    expect(meta.main).toHaveBeenCalledWith([], { ADKIT_PLATFORM: "meta" });
+  });
+
+  it("fails with step 'platform' on an unknown platform, before any check", async () => {
+    const factory = vi.fn(probingFactory);
+    expect(await main(["--platform", "tiktok"], factory as never, {})).toBe(1);
+    expect(factory).not.toHaveBeenCalled();
+    expect(meta.main).not.toHaveBeenCalled();
+    const envelope = JSON.parse(stdout.mock.calls.map((c) => String(c[0])).join("")) as Record<string, unknown>;
+    expect(envelope["ok"]).toBe(false);
+    expect(envelope["step"]).toBe("platform");
+    expect(String(envelope["message"])).toContain("tiktok");
   });
 });
