@@ -84,10 +84,10 @@ Build **two crops per concept, 4:5 and 9:16**, and let placement asset customiza
 | Visual touch-ups (`image_touchups`)          | Opt in      | Crops/resizes for placement. Low brand risk.                                   |
 | Text improvements (`text_optimizations`)     | **Opt out** | Swaps text between fields. Can reorder claims or surface a description as the headline. |
 | Add overlays (`add_text_overlay`) / image templates (`image_templates`) | **Opt out** | Generated overlays and frames can collide with product UI and brand type. |
-| Image animation / expansion / background generation (`image_animation`, `image_background_gen`) | **Opt out** | AI-altered product screenshots misrepresent the UI. |
-| Music (`music_generation`)                   | **Opt out** | Stock music on a product demo reads as consumer, not B2B.                     |
+| Image animation / expansion / background generation (`image_animation`, `image_uncrop`, `image_background_gen`) | **Opt out** | AI-altered product screenshots misrepresent the UI. |
+| Music (`music`, set via `asset_feed_spec`, not `creative_features_spec`) | **Opt out** | Stock music on a product demo reads as consumer, not B2B.                     |
 | Relevant comments (`inline_comment`)         | Opt out     | Surfaces public comments under the ad. You don't control which.                |
-| Translation / generated CTAs (`text_translation`, `generate_cta`) | **Opt out** | Unreviewed copy in your name.                        |
+| Translation / generated CTAs (`text_translation`, `enhance_cta`) | **Opt out** | Unreviewed copy in your name.                        |
 
 **Rule:** only opt in to what doesn't rewrite your words or alter your product imagery. Revisit an opt-out only after you've previewed its output in Ads Manager and approved it.
 
