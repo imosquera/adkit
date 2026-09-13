@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AdkitConfig } from "../lib/config.js";
+import { loadConfig, projectConfigPath, writeConfigField, type AdkitConfig } from "../lib/config.js";
 import { MetaConfigError } from "./errors.js";
 import { AD_ACCOUNT_PROMPT, resolveMetaContext, type MetaContextDeps } from "./config.js";
 
@@ -136,5 +139,39 @@ describe("resolveMetaContext", () => {
       resolveMetaContext({}, {}, {}, { isTty: false, prompt: async () => "", save: () => undefined }),
     );
     expect(error.message).toContain(".adkit.secrets.yaml");
+  });
+});
+
+// The TTY save path as `resolveMetaContextFromProcess` wires it: writeConfigField into
+// a Google-shaped adkit.yaml. The "won't be asked again" promise holds only if the
+// account actually lands there.
+describe("saving the prompted ad account into a Google-shaped adkit.yaml (temp cwd)", () => {
+  let dir: string;
+  let cwd: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "adkit-meta-save-"));
+    cwd = process.cwd();
+    process.chdir(dir);
+    delete process.env["ADKIT_CONFIG"];
+  });
+
+  afterEach(() => {
+    process.chdir(cwd);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("persists the account so the next run resolves it without prompting", async () => {
+    writeFileSync(projectConfigPath(), 'target_customer_id: "1234567890"\n');
+    const save = (field: string, value: string): void => writeConfigField(field as keyof AdkitConfig, value);
+    const first = deps({ isTty: true, prompt: vi.fn(async () => "555"), save });
+    await resolveMetaContext({}, {}, { ...loadConfig(), meta_access_token: "t" }, first);
+    expect(first.prompt).toHaveBeenCalledTimes(1);
+    expect(readFileSync(projectConfigPath(), "utf8")).toContain('target_customer_id: "1234567890"');
+
+    const second = deps({ isTty: true, prompt: vi.fn(async () => "999"), save });
+    const ctx = await resolveMetaContext({}, {}, { ...loadConfig(), meta_access_token: "t" }, second);
+    expect(ctx.adAccountId).toBe("act_555");
+    expect(second.prompt).not.toHaveBeenCalled();
   });
 });

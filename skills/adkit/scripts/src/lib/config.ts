@@ -124,8 +124,8 @@ export const PREFERENCE_FIELDS: readonly ConfigField[] = [
 export const CONFIG_FIELDS: readonly ConfigField[] = [...CREDENTIAL_FIELDS, ...PREFERENCE_FIELDS];
 
 /**
- * The `platform` preference. Not in any prompt list — `init` asks for it first,
- * on its own — but part of the Meta project shape so `platform: meta` is written.
+ * The `platform` preference. Never prompted for — `init` resolves it from
+ * `--platform` / `ADKIT_PLATFORM` / `adkit.yaml` — but part of the Meta project shape so `platform: meta` is written.
  * A Google project never writes it: absence already means `google`.
  */
 export const PLATFORM_FIELD: ConfigField = { key: "platform", label: "platform (google/meta)", default: "google", sensitive: false };
@@ -163,7 +163,7 @@ export function credentialFieldsFor(platform: Platform): readonly ConfigField[] 
 /**
  * The preference fields `init` prompts for on `platform`. `google` is exactly
  * {@link PREFERENCE_FIELDS}. `platform` itself is never in the list — it is
- * prompted separately — but {@link projectYamlShapeFor}`("meta")` writes it, so the
+ * resolved, not prompted — but {@link projectYamlShapeFor}`("meta")` writes it, so the
  * caller puts `platform -> "meta"` into the value map.
  */
 export function preferenceFieldsFor(platform: Platform): readonly ConfigField[] {
@@ -508,9 +508,12 @@ export function writeYamlAtomic(target: string, body: string, mode: number): voi
  *
  * The read-modify-write is deliberate: this is called on a config that may have
  * been edited since it was loaded, and it must never drop a field it doesn't know
- * about the way a blind overwrite would. The shape follows the file's own
- * `platform` key, so a Meta project's `platform` and `meta_*` fields survive the
- * rewrite; a file without it (every Google project) keeps today's shape exactly. Used by the prompt-and-persist path in
+ * about the way a blind overwrite would. The shape is {@link shapeKeepingFields}:
+ * the file's own shape (the `platform` key's, or the combined one for a legacy
+ * file) extended with every known field already in the file plus `key`, so neither
+ * a Meta field in a Google-shaped file nor a Google field in a Meta file is ever
+ * dropped, and the saved key is always written. A Google file holding only Google
+ * keys keeps today's shape exactly. Used by the prompt-and-persist path in
  * `lib/customer-id.ts` — see the note there about a read-only command writing this
  * file.
  */
@@ -521,9 +524,39 @@ export function writeConfigField(key: keyof AdkitConfig, value: string): void {
     assertWritableSecretsPath(target);
   }
   const current = readConfigFile(target);
-  const shape = isLegacy ? COMBINED_YAML_SHAPE : projectYamlShapeFor(filePlatform(current));
+  const shape = shapeKeepingFields(
+    isLegacy ? COMBINED_YAML_SHAPE : projectYamlShapeFor(filePlatform(current)),
+    current,
+    key,
+  );
   const merged = withConfigField(current, key, value);
   writeYamlAtomic(target, buildConfigYamlBody(configToValueMap(merged, shape.fields), shape), isLegacy ? 0o600 : 0o644);
+}
+
+/** Every field any shape knows, in a stable order: the Google set, then `platform`, then the Meta sets. */
+const ALL_KNOWN_FIELDS: readonly ConfigField[] = [
+  ...CONFIG_FIELDS,
+  PLATFORM_FIELD,
+  ...META_PREFERENCE_FIELDS,
+  ...META_CREDENTIAL_FIELDS,
+].filter((field, index, all) => all.findIndex((other) => other.key === field.key) === index);
+
+/**
+ * `shape` extended with every known field that `config` carries or that is `key`,
+ * appended after the shape's own fields in {@link ALL_KNOWN_FIELDS} order. Pure.
+ *
+ * This is what lets {@link writeConfigField} persist a field outside the file's
+ * platform shape (say `meta_ad_account_id` into a Google-shaped `adkit.yaml`)
+ * without losing it or anything else already there. A config holding only the
+ * shape's own fields gets `shape` back unchanged, fields and order alike. Keys no
+ * field describes are still not emitted — the emitter only ever walks fields.
+ */
+export function shapeKeepingFields(shape: ConfigYamlShape, config: AdkitConfig, key: keyof AdkitConfig): ConfigYamlShape {
+  const own = new Set(shape.fields.map((field) => field.key));
+  const extra = ALL_KNOWN_FIELDS.filter(
+    (field) => !own.has(field.key) && (field.key === key || config[field.key] !== undefined),
+  );
+  return extra.length === 0 ? shape : { ...shape, fields: [...shape.fields, ...extra] };
 }
 
 /** The platform a preferences file declares; an absent or unrecognised value is `google`, so no Google file changes shape. */

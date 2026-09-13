@@ -42,6 +42,7 @@ import {
   resolveMetaSetting,
   resolveReportsDir,
   resolveTier,
+  shapeKeepingFields,
   withConfigField,
   writeConfigField,
 } from "./config.js";
@@ -334,6 +335,61 @@ describe("writeConfigField (temp cwd)", () => {
         PROJECT_YAML_SHAPE,
       ),
     );
+  });
+
+  // A Google-shaped file (no platform key) saving a Meta field: the key must land,
+  // or the prompt that saved it would repeat on every run.
+  it("writes a Meta field into a Google-shaped adkit.yaml without dropping the Google fields", () => {
+    writeFileSync(projectConfigPath(), 'target_customer_id: "1234567890"\nsecrets_project: "proj-x"\n');
+    writeConfigField("meta_ad_account_id", "act_42");
+    expect(readFileSync(projectConfigPath(), "utf8")).toBe(
+      [
+        ...PROJECT_YAML_SHAPE.header,
+        'target_customer_id: "1234567890"',
+        'secrets_project: "proj-x"',
+        'meta_ad_account_id: "act_42"',
+      ].join("\n") + "\n",
+    );
+    expect(loadConfig().meta_ad_account_id).toBe("act_42");
+  });
+
+  it("writes a Google field into a Meta adkit.yaml without erasing the Meta fields", () => {
+    writeFileSync(projectConfigPath(), 'platform: "meta"\nmeta_ad_account_id: "act_42"\nmeta_page_id: "123"\n');
+    writeConfigField("target_customer_id", "1234567890");
+    const written = readFileSync(projectConfigPath(), "utf8");
+    expect(written).toBe(
+      [
+        ...META_PROJECT_YAML_SHAPE.header,
+        'platform: "meta"',
+        'meta_ad_account_id: "act_42"',
+        'meta_page_id: "123"',
+        'target_customer_id: "1234567890"',
+      ].join("\n") + "\n",
+    );
+  });
+
+  it("keeps a previously saved foreign field on the next write", () => {
+    writeFileSync(projectConfigPath(), 'secrets_project: "proj-x"\nmeta_ad_account_id: "act_42"\n');
+    writeConfigField("target_customer_id", "1234567890");
+    const written = readFileSync(projectConfigPath(), "utf8");
+    expect(written).toContain('meta_ad_account_id: "act_42"');
+    expect(written).toContain('target_customer_id: "1234567890"');
+    expect(written).toContain('secrets_project: "proj-x"');
+  });
+
+  it("rewrites a Google file holding only Google keys byte-identically", () => {
+    const body = buildConfigYamlBody(
+      new Map([
+        ["mcc_customer_id", "4444444444"],
+        ["target_customer_id", "1234567890"],
+        ["secrets_project", "proj-x"],
+        ["read_backend", "sdk"],
+      ]),
+      PROJECT_YAML_SHAPE,
+    );
+    writeFileSync(projectConfigPath(), body);
+    writeConfigField("target_customer_id", "1234567890");
+    expect(readFileSync(projectConfigPath(), "utf8")).toBe(body);
   });
 
   it("keeps writing the legacy combined file on an unmigrated project", () => {
@@ -690,5 +746,22 @@ describe("resolveMetaSetting", () => {
     expect(resolveMetaSetting("meta_app_id", { META_APP_ID: "  " }, { meta_app_id: "42" })).toBe("42");
     expect(resolveMetaSetting("meta_app_secret", {}, { meta_app_secret: "s" })).toBe("s");
     expect(resolveMetaSetting("meta_app_secret", {}, {})).toBeUndefined();
+  });
+});
+
+describe("shapeKeepingFields", () => {
+  it("returns the shape itself when the config holds only its own fields", () => {
+    expect(shapeKeepingFields(PROJECT_YAML_SHAPE, { secrets_project: "p" }, "target_customer_id")).toBe(PROJECT_YAML_SHAPE);
+  });
+
+  it("appends the written key and every foreign field present, once, after the shape's own", () => {
+    const shape = shapeKeepingFields(PROJECT_YAML_SHAPE, { platform: "google", meta_page_id: "1" }, "meta_ad_account_id");
+    expect(shape.fields.map((f) => f.key)).toEqual([
+      ...PROJECT_YAML_SHAPE.fields.map((f) => f.key),
+      "platform",
+      "meta_ad_account_id",
+      "meta_page_id",
+    ]);
+    expect(shape.header).toEqual(PROJECT_YAML_SHAPE.header);
   });
 });

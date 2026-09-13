@@ -1,5 +1,5 @@
 /**
- * Pull the Google Ads API credentials from GCP Secret Manager into
+ * Pull the ad-platform API credentials from GCP Secret Manager into
  * `.adkit.secrets.yaml`.
  *
  * Faithful port of `ads_skill/bin/render_yaml.py`'s secret-fetching, retargeted at
@@ -16,8 +16,9 @@
  * an optional field is never blanked by a re-render.
  *
  * Required secrets that are missing abort (the `gcloud` call throws); optional ones
- * are skipped when absent. Which secrets are required follows the project's
- * platform (`platform` in `adkit.yaml`, see {@link secretSpecsFor}): a Google project
+ * are skipped when absent. Which secrets are required follows the resolved platform
+ * (`--platform` > `ADKIT_PLATFORM` > `platform` in `adkit.yaml` > `google`, see
+ * {@link secretSpecsFor}): a Google project
  * requires the four Google Ads credentials and treats `psi_api_key` and the Meta
  * fields as optional, exactly as before; a Meta project requires only
  * `meta_access_token`, so absent Google secrets never abort it. The file is written atomically
@@ -78,25 +79,32 @@ export const SECRETS: readonly SecretSpec[] = [
   // Optional: not every operator has PSI access, and audit's PSI diagnosis
   // degrades gracefully (skips with a reason) without it.
   { field: "psi_api_key", secret: "google-pagespeed-api-key", required: false },
-  // Optional on Google: only a Meta project has these, so their absence must never
-  // abort a Google-only render. {@link secretSpecsFor} makes the token required on
-  // Meta. Fetched values land via {@link withMetaCredentials}.
+];
+
+/**
+ * The Meta credential fields, in fetch order after {@link SECRETS}. Optional by
+ * default — only a Meta project has them, so their absence must never abort a
+ * Google-only render; {@link secretSpecsFor} makes the token required on Meta.
+ * Fetched values land via {@link withMetaCredentials}.
+ */
+export const META_SECRETS: readonly SecretSpec[] = [
   { field: "meta_access_token", secret: "meta-access-token", required: false },
   { field: "meta_app_secret", secret: "meta-app-secret", required: false },
 ];
 
 /**
- * {@link SECRETS} with requiredness for `platform`. Pure.
+ * Every secret render-yaml fetches for `platform`, with its requiredness. Pure.
  *
- * `google` is {@link SECRETS} itself, so a Google render is unchanged. `meta`
- * requires `meta_access_token` alone — every Meta command needs it — and makes the
- * Google credentials optional, so a Meta-only project whose Secret Manager holds no
- * Google secrets still renders.
+ * `google` is {@link SECRETS} unchanged followed by the optional
+ * {@link META_SECRETS}, so a Google render requires exactly what it did before.
+ * `meta` fetches the same secrets but requires `meta_access_token` alone — every
+ * Meta command needs it, even though `bootstrap-secrets` lets a blank answer skip
+ * seeding it — and makes the Google credentials optional, so a Meta-only project
+ * whose Secret Manager holds no Google secrets still renders.
  */
 export function secretSpecsFor(platform: Platform): readonly SecretSpec[] {
-  return platform === "google"
-    ? SECRETS
-    : SECRETS.map((spec) => ({ ...spec, required: spec.field === "meta_access_token" }));
+  const all = [...SECRETS, ...META_SECRETS];
+  return platform === "google" ? all : all.map((spec) => ({ ...spec, required: spec.field === "meta_access_token" }));
 }
 
 /**

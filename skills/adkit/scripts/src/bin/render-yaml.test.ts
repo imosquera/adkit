@@ -9,8 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const execFileSync = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ execFileSync }));
 
-import { CONFIG_FIELDS, SECRETS_YAML_SHAPE } from "../lib/config.js";
-import { accessSecretArgs, main, mergeSecretsIntoConfig, SECRETS, secretSpecsFor, withMetaCredentials } from "./render-yaml.js";
+import { CONFIG_FIELDS } from "../lib/config.js";
+import { accessSecretArgs, main, mergeSecretsIntoConfig, SECRETS } from "./render-yaml.js";
+import { SECRETS_YAML_SHAPE } from "../lib/config.js";
+import { META_SECRETS, secretSpecsFor, withMetaCredentials } from "./render-yaml.js";
 
 // The guardrail shells out to git through the same `node:child_process` the mock
 // above replaces. `createRequire` goes through Node's own loader, which vitest's
@@ -25,8 +27,6 @@ describe("SECRETS", () => {
       ["client_secret", "google-ads-client-secret", true],
       ["refresh_token", "google-ads-refresh-token", true],
       ["psi_api_key", "google-pagespeed-api-key", false],
-      ["meta_access_token", "meta-access-token", false],
-      ["meta_app_secret", "meta-app-secret", false],
     ]);
   });
 
@@ -39,18 +39,22 @@ describe("SECRETS", () => {
 
   // Secret Manager names follow one kebab-case convention across platforms.
   it("names every secret in kebab-case", () => {
-    expect(SECRETS.filter((s) => !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(s.secret))).toEqual([]);
+    expect(secretSpecsFor("meta").filter((s) => !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(s.secret))).toEqual([]);
   });
 });
 
 describe("secretSpecsFor", () => {
-  it("is SECRETS unchanged on google", () => {
-    expect(secretSpecsFor("google")).toEqual(SECRETS);
+  it("is SECRETS unchanged, then the optional Meta secrets, on google", () => {
+    expect(secretSpecsFor("google")).toEqual([...SECRETS, ...META_SECRETS]);
+    expect(META_SECRETS.map((s) => [s.field, s.secret, s.required])).toEqual([
+      ["meta_access_token", "meta-access-token", false],
+      ["meta_app_secret", "meta-app-secret", false],
+    ]);
   });
 
   it("requires only the Meta access token on meta, fetching the same secrets in the same order", () => {
     const specs = secretSpecsFor("meta");
-    expect(specs.map((s) => s.secret)).toEqual(SECRETS.map((s) => s.secret));
+    expect(specs.map((s) => s.secret)).toEqual(secretSpecsFor("google").map((s) => s.secret));
     expect(specs.filter((s) => s.required).map((s) => s.field)).toEqual(["meta_access_token"]);
   });
 
@@ -216,8 +220,7 @@ describe("render-yaml writes only the credentials file", () => {
   // A Google-only project has no Meta secrets: they are skipped, not fatal, and the
   // file is exactly what the Google credentials alone produce.
   it("skips absent Meta secrets and writes no Meta keys", () => {
-    const google = new Set(SECRETS.filter((s) => !s.field.startsWith("meta_")).map((s) => s.secret));
-    gcloudServing(google);
+    gcloudServing(CREDENTIAL_SECRETS);
     expect(main()).toBe(0);
     const written = secretsFile();
     expect(written).toContain('psi_api_key: "google-pagespeed-api-key-value"');
@@ -226,7 +229,7 @@ describe("render-yaml writes only the credentials file", () => {
   });
 
   it("writes fetched Meta secrets into the credentials file", () => {
-    gcloudServing(CREDENTIAL_SECRETS);
+    gcloudServing(new Set([...CREDENTIAL_SECRETS, ...META_SECRETS.map((s) => s.secret)]));
     expect(main()).toBe(0);
     const written = secretsFile();
     expect(written).toContain('meta_access_token: "meta-access-token-value"');

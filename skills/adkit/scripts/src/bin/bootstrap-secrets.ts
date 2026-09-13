@@ -4,10 +4,13 @@
  * Faithful port of `ads_skill/bin/bootstrap_secrets.py`. Prompts for each secret
  * (sensitive values read without echo), creates the secret if it does not yet
  * exist, then adds a new version with the entered value — shelling out to `gcloud`
- * for all three operations. Only the project's platform (`platform` in `adkit.yaml`,
- * default `google`) is prompted for — see {@link secretsFor}: a Google project sees
- * the Google Ads secrets, a Meta project only the Meta ones, where a blank answer
- * skips the secret entirely. The project defaults to `your-project-prod`,
+ * for all three operations. Only the resolved platform's secrets are prompted for
+ * (`--platform` > `ADKIT_PLATFORM` > `platform` in `adkit.yaml` > `google`; see
+ * {@link secretsFor}): a Google project sees the Google Ads secrets, a Meta project
+ * only the Meta ones. A blank Meta answer skips that secret entirely — nothing is
+ * created or versioned — including `meta-access-token`; note that `render-yaml`
+ * still requires `meta-access-token` on a Meta project, so skipping it here only
+ * defers the failure to the render. The project defaults to `your-project-prod`,
  * overridable via the `GOOGLE_ADS_SECRETS_PROJECT` env var.
  *
  * The IO (child_process, terminal prompts) is isolated at the edges; the argv
@@ -30,7 +33,7 @@ export const PROJECT = resolveTier(null, process.env["GOOGLE_ADS_SECRETS_PROJECT
  * render-yaml. Only real credentials belong here: the target/MCC customer ids are
  * account numbers and live in the committed `adkit.yaml` instead (`ads.sh init`).
  */
-const GOOGLE_SECRETS: readonly string[] = [
+export const SECRETS: readonly string[] = [
   "google-ads-developer-token",
   "google-ads-client-id",
   "google-ads-client-secret",
@@ -43,13 +46,14 @@ const GOOGLE_SECRETS: readonly string[] = [
 
 /**
  * The Meta project's secret names, in prompt order (render-yaml maps them to
- * `meta_access_token` / `meta_app_secret`). A blank answer is skipped.
+ * `meta_access_token` / `meta_app_secret`). A blank answer is skipped here, but
+ * render-yaml requires `meta-access-token` on a Meta project.
  */
 const META_SECRETS: readonly string[] = ["meta-access-token", "meta-app-secret"];
 
-/** The secret names to seed for `platform`, in prompt order. Pure. */
+/** The secret names to seed for `platform`, in prompt order: `google` is exactly {@link SECRETS}. Pure. */
 export function secretsFor(platform: Platform): readonly string[] {
-  return platform === "google" ? GOOGLE_SECRETS : META_SECRETS;
+  return platform === "google" ? SECRETS : META_SECRETS;
 }
 
 /** Secrets whose blank answer is skipped (no create, no version) rather than stored empty. */

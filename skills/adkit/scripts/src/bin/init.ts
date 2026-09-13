@@ -11,9 +11,11 @@
  *    git-ignored. `ADKIT_CONFIG` moves it out of the repo entirely, which is the
  *    stronger placement.
  *
- * The first prompt is the platform (`google/meta`, blank → `google`); only that
- * platform's fields are asked for after it, and a Google run writes exactly what it
- * did before the platform existed.
+ * The platform is resolved, never prompted for: `--platform` > `ADKIT_PLATFORM` >
+ * `platform` in an existing `adkit.yaml` > `google` (an invalid value is refused
+ * with an `ok:false` envelope, step `platform`). Only that platform's fields are
+ * asked for, and a Google run prompts and writes exactly what it did before the
+ * platform existed.
  *
  * Create-if-missing per file, mirroring `bootstrap-secrets.ts`: an existing file is
  * never clobbered, and only the fields belonging to a file that is actually being
@@ -36,7 +38,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isMainModule } from "../cli/entry.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
-import { parsePlatform, type Platform } from "../cli/platform.js";
+import { platformResult, type Platform } from "../cli/platform.js";
 import {
   buildConfigYamlBody,
   type ConfigField,
@@ -46,6 +48,7 @@ import {
   legacyConfigExists,
   legacyConfigPath,
   legacyDeprecationNotice,
+  loadConfig,
   PLATFORM_FIELD,
   preferenceFieldsFor,
   projectConfigExists,
@@ -117,90 +120,54 @@ function muteEcho(rl: Interface, promptText: string): () => void {
   };
 }
 
-/** One answer read from the terminal: the trimmed line, or `""` once input is exhausted. */
-type Ask = (text: string, sensitive: boolean) => Promise<string>;
-
 /**
- * Build an {@link Ask} over one readline `Interface`. Sensitive answers
- * (credentials) are read without echo.
+ * Prompt for each of `fields`, falling back to its default on a blank answer.
+ * Sensitive fields (credentials) are read without echo. Returns a
+ * `field -> value` map with only non-blank fields present, in the same shape
+ * {@link buildConfigYamlBody} expects.
  *
- * Reads answers via the interface's async iterator rather than chained
- * `rl.question()` calls: over a piped (non-TTY) stdin that delivers all its lines
- * in one chunk, a second `question()` issued after the first has already resolved
- * never gets a callback — the interface has nothing left to hand it. Iterating
- * the same interface consumes exactly one line per prompt and does not lose data
- * either way. For the same reason every prompt of a run (platform included)
- * shares the one interface: a second interface would miss lines the first had
- * already buffered.
- */
-function askVia(rl: Interface): Ask {
-  const lines = rl[Symbol.asyncIterator]();
-  return async (text, sensitive) => {
-    process.stdout.write(text);
-    const unmute = sensitive ? muteEcho(rl, text) : null;
-    const { value, done } = await lines.next();
-    unmute?.();
-    if (sensitive) {
-      process.stdout.write("\n");
-    }
-    return (done ? "" : String(value)).trim();
-  };
-}
-
-/** The line printed when the platform answer does not parse, before asking again. Pure. */
-export function invalidPlatformLine(message: string): string {
-  return `${message}\n`;
-}
-
-/**
- * Ask which platform to scaffold for (blank means `google`), parsing the answer
- * with {@link parsePlatform}; an unknown answer is reported and asked again.
- * Exhausted input reads as blank, so this cannot loop forever.
- */
-async function promptPlatform(ask: Ask): Promise<Platform> {
-  const parsed = parsePlatform(await ask(promptFor(PLATFORM_FIELD.label, PLATFORM_FIELD.default), false), "platform answer");
-  if (parsed.kind === "ok") {
-    return parsed.value;
-  }
-  process.stderr.write(invalidPlatformLine(parsed.message));
-  return promptPlatform(ask);
-}
-
-/**
- * Prompt for each of `fields` in order, falling back to its default on a blank
- * answer. Returns a `field -> value` map with only non-blank fields present, in
- * the same shape {@link buildConfigYamlBody} expects.
- */
-async function promptFields(ask: Ask, fields: readonly ConfigField[]): Promise<Map<string, string>> {
-  const entries = await fields.reduce<Promise<ReadonlyArray<readonly [string, string]>>>(async (soFar, field) => {
-    const done = await soFar;
-    const resolved = (await ask(promptFor(field.label, field.default), field.sensitive)) || field.default;
-    return resolved ? [...done, [field.key, resolved] as const] : done;
-  }, Promise.resolve([]));
-  return new Map(entries);
-}
-
-/**
- * The whole interactive session: the platform first, then the fields `select`
- * returns for it. `select` is given exactly the halves about to be written, so
- * rerunning init after deleting one file asks only for that file's half.
+ * `fields` is exactly the set belonging to the files about to be written, so
+ * rerunning init after deleting one file asks only for that file's half. The
+ * platform is never prompted for — `main` resolves it from `--platform` /
+ * `ADKIT_PLATFORM` / `adkit.yaml` before this runs.
  *
- * For `meta` the map also carries `platform -> "meta"` so the Meta project shape
- * writes it; a Google map never does, keeping Google output byte-identical.
+ * Reads answers via the readline `Interface`'s async iterator rather than
+ * chained `rl.question()` calls: over a piped (non-TTY) stdin that delivers all
+ * its lines in one chunk, a second `question()` issued after the first has
+ * already resolved never gets a callback — the interface has nothing left to
+ * hand it. Iterating the same interface consumes exactly one line per field and
+ * does not lose data either way.
  */
-export async function promptAll(
-  select: (platform: Platform) => readonly ConfigField[],
-): Promise<{ platform: Platform; values: Map<string, string> }> {
+export async function promptAll(fields: readonly ConfigField[]): Promise<Map<string, string>> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const ask = askVia(rl);
-    const platform = await promptPlatform(ask);
-    const fields = await promptFields(ask, select(platform));
-    const values = platform === "meta" ? new Map<string, string>([[PLATFORM_FIELD.key, platform], ...fields]) : fields;
-    return { platform, values };
+    const lines = rl[Symbol.asyncIterator]();
+    const entries = await fields.reduce<Promise<ReadonlyArray<readonly [string, string]>>>(async (soFar, field) => {
+      const done = await soFar;
+      const text = promptFor(field.label, field.default);
+      process.stdout.write(text);
+      const unmute = field.sensitive ? muteEcho(rl, text) : null;
+      const next = await lines.next();
+      unmute?.();
+      if (field.sensitive) {
+        process.stdout.write("\n");
+      }
+      const resolved = (next.done ? "" : String(next.value)).trim() || field.default;
+      return resolved ? [...done, [field.key, resolved] as const] : done;
+    }, Promise.resolve([]));
+    return new Map(entries);
   } finally {
     rl.close();
   }
+}
+
+/**
+ * The value map as written for `platform`: a Meta map also carries
+ * `platform -> "meta"` so the Meta project shape writes it; a Google map is
+ * returned as-is, keeping Google output byte-identical. Pure.
+ */
+export function withPlatformValue(values: ReadonlyMap<string, string>, platform: Platform): Map<string, string> {
+  return platform === "meta" ? new Map([[PLATFORM_FIELD.key, platform], ...values]) : new Map(values);
 }
 
 /**
@@ -208,12 +175,21 @@ export async function promptAll(
  * code (0 on success, whether that means it wrote a file or left existing ones in
  * place; 1 when the guardrail refuses the credentials path).
  */
-export async function main(): Promise<number> {
+export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   const repoDir = process.cwd();
   const added = ensureGitignored(repoDir);
   if (added.length > 0) {
     process.stdout.write(gitignoredLine(added, join(repoDir, ".gitignore")));
   }
+
+  // The platform is resolved, never prompted for: --platform > ADKIT_PLATFORM >
+  // adkit.yaml > google. A bad value stops here, before any prompt is shown.
+  const resolved = platformResult(argv, process.env, loadConfig());
+  if (resolved.kind === "err") {
+    emitJson(errorEnvelope(resolved.message, { step: "platform" }));
+    return 1;
+  }
+  const platform = resolved.value;
 
   // An unmigrated project holds both halves in one file: leave it exactly as it is
   // (it still wins over both new files) and say what to create by hand.
@@ -254,10 +230,13 @@ export async function main(): Promise<number> {
     }
   }
 
-  const { platform, values } = await promptAll((chosen) => [
-    ...(needSecrets ? credentialFieldsFor(chosen) : []),
-    ...(needProject ? preferenceFieldsFor(chosen) : []),
-  ]);
+  const values = withPlatformValue(
+    await promptAll([
+      ...(needSecrets ? credentialFieldsFor(platform) : []),
+      ...(needProject ? preferenceFieldsFor(platform) : []),
+    ]),
+    platform,
+  );
 
   if (needProject) {
     writeYamlAtomic(project, buildConfigYamlBody(values, projectYamlShapeFor(platform)), 0o644);
