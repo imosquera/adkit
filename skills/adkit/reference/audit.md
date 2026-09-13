@@ -154,22 +154,29 @@ ads.sh audit --platform meta --ad-account act_1234567890 --days 7
 ```
 
 - **Ad account** resolves `--ad-account` → `META_AD_ACCOUNT_ID` → `meta_ad_account_id` in `adkit.yaml` → a one-time prompt on a terminal; `123` and `act_123` both normalise to `act_123`.
-- `--days 7|14|30` (default 14) sets the fatigue window; `--psi-key <key>` (or `PAGESPEED_API_KEY`) works as for Google.
+- `--days 7|14|30` (default 14) sets the fatigue window (any other value is refused at step `args`); `--result-action <action_type>` (default `lead`) picks which insights action counts as a result for event volume and cost/result; `--psi-key <key>` (or `PAGESPEED_API_KEY`, or `psi_api_key` in `.adkit.secrets.yaml`) works as for Google.
+- **Active entities only.** Campaigns, ad sets, and ads are read with an `effective_status IN [ACTIVE]` filter, and every insights read is filtered to `campaign.effective_status IN [ACTIVE]`. Paused, archived, in-review, or disapproved objects are never scored, so a paused ad that is fatigued or an ad set stuck in review does not appear. Say so when the operator asks about something that isn't live.
 - Only GETs are made. The audit reads campaigns (objective, status, budgets, bid strategy, special ad categories), ad sets (status, budget, optimization goal, `promoted_object`, `targeting`, `learning_stage_info`, dynamic-creative flag), ads with their creative (`degrees_of_freedom_spec`, `asset_feed_spec`, `object_story_spec`), ad-level insights for **two consecutive `--days` windows** (current vs previous, for fatigue), ad-set insights with `actions` (weekly event volume), and account breakdowns by `publisher_platform,platform_position` and `age,gender`.
 
-JSON → **stdout**, human summary → **stderr** (one `  ! issue: detail` line per finding). The envelope:
+JSON → **stdout**, human summary → **stderr** (one `  ! issue: detail` line per finding). Exit 0 on success. On failure the exit code is 1 and stdout carries `{ ok: false, message, step }`, where `step` is `args`, `credentials`, or the read that failed (`audit-campaigns`, `audit-adsets`, `audit-ads`, `audit-insights-*`). The success envelope:
 
 ```ts
-{ ok: true, platform: "meta", adAccountId, window,
+{ ok: true, platform: "meta", adAccountId,
+  window: { start, end, days, previous: { start, end } },   // complete days ending yesterday (UTC)
+  resultAction,
   campaigns: [{ id, name, status, findings: MetaFinding[] }],
-  landingPageHealth, psi }
+  account: MetaFinding[],          // account-wide findings, attributed to no single campaign
+  landingPageHealth,               // campaign id → [{ url, issue: "slow_mobile_lcp", detail, lcpMs }]; clean campaigns omitted
+  psi: { skipped: string | null, results: PsiResult[] } }
 
-type MetaFinding = { level: "campaign" | "adset" | "ad"; entityId: string; entityName: string;
+type MetaFinding = { level: "account" | "campaign" | "adset" | "ad"; entityId: string; entityName: string;
   issue: MetaIssue; severity: "high" | "medium" | "low"; detail: string;
   evidence: Record<string, number | string>; fix: string; playbook: string };
 ```
 
 Every finding carries the entity id, `severity`, the numbers that tripped it (`evidence`), a one-line `fix`, and `playbook` — the `reference/meta/` section the threshold and fix come from. Read that section before writing up the finding.
+
+**Read `account` as well as `campaigns`.** Findings that belong to no single campaign are **not** in any `campaigns[].findings`: every `wasted_breakdown_spend` (the breakdowns are account-level) and the account-wide low-volume `weak_conversion_signal` (`entityId: "account"`) land in the top-level `account` list, sorted high → low severity like each campaign's list. A report that walks only `campaigns` silently drops them.
 
 ### Findings
 
@@ -179,10 +186,10 @@ Every finding carries the entity id, `severity`, the numbers that tripped it (`e
 | `still_learning_low_volume` | ad set status `LEARNING` and weekly result events < 50 | medium | [3-account-structure § Consolidation Rules](meta/3-account-structure.md#consolidation-rules) |
 | `fragmented_budget` | campaign has ≥ 3 active ad sets and median weekly events per ad set < 50 | medium | [3-account-structure § Consolidation Rules](meta/3-account-structure.md#consolidation-rules) |
 | `creative_fatigue` | ad frequency ≥ 3.5 and link CTR down ≥ 25% vs the previous window, with spend > 0 | high | [6-analyze § Creative Fatigue](meta/6-analyze.md#creative-fatigue) |
-| `wasted_breakdown_spend` | a placement or age/gender segment takes ≥ 20% of spend with 0 results or cost/result ≥ 2× the account | medium | [6-analyze § Breakdown Report Audit](meta/6-analyze.md#breakdown-report-audit) |
+| `wasted_breakdown_spend` | a placement or age/gender segment takes ≥ 20% of spend with 0 results or cost/result ≥ 2× the account (`account`-level; skipped when the account itself has no results) | medium | [6-analyze § Breakdown Report Audit](meta/6-analyze.md#breakdown-report-audit) |
 | `missing_customer_exclusion` | prospecting ad set (no custom audience in its inclusions) with no `excluded_custom_audiences` | medium | [5-exclusions § Existing Customers & Converters](meta/5-exclusions.md#existing-customers--converters) |
-| `weak_conversion_signal` | conversion optimization goal but no `promoted_object.pixel_id`, or < 50 weekly events account-wide | high | [1-fundamentals § Conversion Tracking](meta/1-fundamentals.md#conversion-tracking) |
-| `advantage_creative_enhancements_on` | any `degrees_of_freedom_spec.creative_features_spec.*.enroll_status = OPT_IN` | low | [4-creative § Dynamic & Advantage+ Creative](meta/4-creative.md#dynamic--advantage-creative) |
+| `weak_conversion_signal` | conversion optimization goal but no `promoted_object.pixel_id` (ad set level), or < 50 weekly events account-wide while any active ad set optimizes for a conversion (one `account`-level finding) | high | [1-fundamentals § Conversion Tracking](meta/1-fundamentals.md#conversion-tracking) |
+| `advantage_creative_enhancements_on` | any `degrees_of_freedom_spec.creative_features_spec.*.enroll_status = OPT_IN` other than `image_touchups` (exempt: visual touch-ups only crop/resize, so opting in is the B2B default and not a finding) | low | [4-creative § Dynamic & Advantage+ Creative](meta/4-creative.md#dynamic--advantage-creative) |
 
 How to act on them:
 
@@ -192,11 +199,11 @@ How to act on them:
 
 ### Report and Visualize — Meta
 
-Surface, per campaign, each finding with severity, the evidence numbers, the fix, and the playbook link; end with **to apply the fixes, run `/adkit update`**. Landing page health works as for Google: the audit collects the unique ad destination links (`asset_feed_spec.link_urls` / `object_story_spec.link_data.link`), and the `landingPageHealth`/`psi` slices go to a subagent with [`reference/audit-landing-page.md`](audit-landing-page.md) (there is no `qualityScore` slice on Meta).
+Surface, per campaign, each finding with severity, the evidence numbers, the fix, and the playbook link, then the top-level `account` findings in their own section; end with **to apply the fixes, run `/adkit update`**. Landing page health works as for Google: the audit collects the destination links of **every** audited (active) ad (`asset_feed_spec.link_urls[].website_url` and `object_story_spec.link_data.link`), dedupes them across the whole account, and runs PageSpeed Insights **once per unique URL** (no key → `psi.skipped` carries the reason and nothing is fetched; a per-URL PSI failure is an `ok: false` result, not a run failure). Issues are then mapped back to every campaign whose ads use that URL in `landingPageHealth`. The `landingPageHealth`/`psi` slices go to a subagent with [`reference/audit-landing-page.md`](audit-landing-page.md) (there is no `qualityScore` slice on Meta).
 
 Publish the Artifact dashboard as described in *Visualize*, but built from the Meta envelope — replace the Google panels with:
 
-- **KPI strip** — findings by severity (high/medium/low), ad sets in learning or learning limited, count of fatigued ads, and spend flagged by `wasted_breakdown_spend`.
+- **KPI strip** — findings by severity (high/medium/low, counting `campaigns[].findings` and `account`), ad sets in learning or learning limited, count of fatigued ads, and spend flagged by `wasted_breakdown_spend`.
 - **Findings table** — one row per finding: level, entity, issue, severity badge, key `evidence`, fix, playbook link; sortable by severity.
 - **Learning & consolidation** — per campaign, its ad sets with learning status and weekly events against the 50-event line.
 - **Creative fatigue** — per ad, frequency and link CTR for the current vs previous window.

@@ -214,6 +214,15 @@ bash ads.sh report --platform meta $ARGUMENTS  # otherwise
   removal — do not retry with them; pick an allowed window (see
   [Attribution Windows](meta/6-analyze.md#attribution-windows)).
 
+**Errors.** On success the report path is the only thing on stdout (exit 0). On
+any failure (bad flags, credentials, a Graph API error, or no campaigns with
+activity in the window, in which case nothing is written) the Meta report exits 1
+and writes a JSON envelope **on stdout**, not free text on stderr:
+`{ "ok": false, "message": "...", "step": "..." }`. `step` names where it stopped
+(`args`, `credentials`, `report-account`, a `report-*` insights read, `report`
+for the zero-campaign case, or `write`). Stop and relay `message`; do not
+fabricate a report.
+
 The raw YAML keeps the Google shape so the same reading applies, with these
 differences:
 
@@ -224,14 +233,26 @@ differences:
 - `ad_groups` are **ad sets** (`campaign_id` joins as before). `ads[].type` is
   `META_AD` and `ads[].ad_strength` is `UNSPECIFIED` — Meta has no ad-strength
   grade, so ignore the field. `keywords` and `search_terms` are always `[]`.
-- Metric rows in `placements` and `demographics` also carry `reach`,
-  `frequency`, `cpm`, and `link_clicks`.
+- **Every** metric row (`campaigns`, `campaign_daily`, `ad_groups`, `ads`, `geo`,
+  `geo_regions`, `placements`, `demographics`) also carries `reach`,
+  `frequency`, `cpm`, and `link_clicks`. `ctr` is a fraction (clicks /
+  impressions) as for Google, not Meta's percentage.
+- **`geo`** — account-level rows from Meta's `country` breakdown. The ISO 3166-1
+  alpha-2 code (e.g. `US`) sits in `country_criterion_id` (the Google field name,
+  kept so the same tooling reads it) **and** is repeated as `country`; it is not a
+  Google criterion id, so don't look it up as one. Sorted by spend.
+- **`geo_regions`** — account-level rows from Meta's `region` breakdown, keyed by
+  `region` name (e.g. `California`). Sorted by spend.
 - **`placements`** — account-level rows keyed by `publisher_platform`
   (facebook, instagram, audience_network, messenger) and `platform_position`
   (feed, story, reels, …).
 - **`demographics`** — account-level rows keyed by `age` bucket and `gender`.
-- `campaign_daily` still runs through `window.partial_day`; mark the trailing
-  day partial exactly as for Google.
+- A breakdown value Meta left blank is keyed `(unknown)`.
+- `campaign_daily` **ends at `window.end` (yesterday), not today**: unlike
+  Google, the Meta daily rows cover the same complete days as the aggregates and
+  have no partial trailing day. `window.partial_day` is still set (today's date)
+  but no row carries it, so don't mark a trailing day partial and don't use
+  `campaign_daily` to judge whether the account is serving right now.
 
 ### 2. Write the analysis — Meta
 
@@ -253,8 +274,11 @@ findings — the data is empty by construction, so never write "no keywords foun
   go through [`reference/meta/5-exclusions.md`](meta/5-exclusions.md#placement-exclusions--block-lists).
 - **Demographic findings** — age/gender buckets with outsized spend and weak
   results, and whether they match the intended buyer.
-- **Frequency** — read `frequency` on `placements`/`demographics` (and on ad
-  set/ad rows when present); high frequency alongside falling link CTR or rising
+- **Geo findings** — countries (`geo[].country`) or regions (`geo_regions`)
+  taking spend outside the intended market, or with cost/result well above the
+  account.
+- **Frequency** — read `frequency` on `placements`/`demographics` and on the ad
+  set (`ad_groups`) and `ads` rows; high frequency alongside falling link CTR or rising
   CPM marks
   [creative fatigue](meta/6-analyze.md#creative-fatigue); for per-ad fatigue
   run `/adkit audit`, and recommend a new concept, not a recolour.
@@ -287,7 +311,7 @@ cost/result colouring.
 - **Demographics** — grouped bar chart over `demographics`: x = `age`, one series
   per `gender`, y = spend (and a second view or tooltip for results).
 - **Frequency** — bar chart of `frequency` by placement and by age/gender bucket
-  (plus per ad set or ad when those rows carry `frequency`), with a reference line
+  (plus per ad set or ad from `ad_groups` / `ads`), with a reference line
   at 3.5 — the level `/adkit audit` treats as a fatigue signal.
 - **Attribution note** — a small caption under the summary stats naming the
   attribution windows and `result_action`, e.g. "Leads counted at 7-day click,
