@@ -54,6 +54,16 @@ vi.mock("../adbriefs/store.js", async (importOriginal) => {
   };
 });
 
+/**
+ * The Meta update bin, mocked. `loaded` flips when the factory runs — i.e. when
+ * `main` dynamically imports it — so the Google path can prove it never does.
+ */
+const meta = vi.hoisted(() => ({ loaded: false, main: vi.fn(async () => 0) }));
+vi.mock("../meta/bin/update.js", () => {
+  meta.loaded = true;
+  return { main: meta.main };
+});
+
 const { main, loadPlan, livePositiveKeywords, liveNegatives, rsaUpdateOp } = await import("./apply-fixes.js");
 const { validate } = await import("../fixes/plan.js");
 
@@ -2235,5 +2245,109 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
     const op = mutations.flatMap((m) => m.operations).find((o) => o.entity === "campaign");
     expect(op).toBeDefined();
     expect((op!.resource as Record<string, unknown>).target_cpa).toEqual({ target_cpa_micros: 15_000_000 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Platform delegation (plan D1). A resolved `meta` platform, or a plan file whose
+// top-level `platform` is `meta`, hands the run to the Meta update bin; Google runs
+// never import it. The mocked Meta module's factory runs once per file, so `loaded`
+// is only meaningful before any Meta run in this block has imported it.
+// ---------------------------------------------------------------------------
+
+describe("update platform delegation", () => {
+  let prevCwd: string;
+  let prevConfig: string | undefined;
+
+  beforeEach(() => {
+    prevCwd = process.cwd();
+    process.chdir(dir);
+    prevConfig = process.env["ADKIT_CONFIG"];
+    process.env["ADKIT_CONFIG"] = join(dir, ".adkit.yaml");
+    writeFileSync(process.env["ADKIT_CONFIG"], "developer_token: t\n");
+    currentClient = {
+      async search() {
+        return [];
+      },
+      async searchStructured() {
+        return [];
+      },
+      async mutate(): Promise<MutateResult> {
+        return { results: [] };
+      },
+    };
+    meta.main.mockClear();
+  });
+
+  afterEach(() => {
+    process.chdir(prevCwd);
+    if (prevConfig === undefined) {
+      delete process.env["ADKIT_CONFIG"];
+    } else {
+      process.env["ADKIT_CONFIG"] = prevConfig;
+    }
+  });
+
+  function writePlan(name: string, body: string): string {
+    const p = join(dir, name);
+    writeFileSync(p, body);
+    return p;
+  }
+
+  it("runs the Google update without importing the Meta module when no platform or google is set", async () => {
+    const planPath = writePlan("google.yaml", 'customerId: "1111111111"\n');
+    const cap = captureStdout();
+    expect(await main([planPath], {})).toBe(0);
+    // `--platform google` is stripped before the positional filter, so its value
+    // is not mistaken for the plan path.
+    expect(await main(["--platform", "google", planPath], {})).toBe(0);
+    expect(cap.text()).not.toContain("plan file not found");
+    expect(meta.loaded).toBe(false);
+    expect(meta.main).not.toHaveBeenCalled();
+  });
+
+  it("delegates --platform meta to the Meta update with the flag stripped and env passed through", async () => {
+    const env = { META_ACCESS_TOKEN: "tok" };
+    expect(await main(["--platform", "meta", "plan.yaml", "--apply"], env)).toBe(0);
+    expect(meta.main).toHaveBeenCalledWith(["plan.yaml", "--apply"], env);
+    expect(seenLogin).toBeUndefined();
+  });
+
+  it("delegates when ADKIT_PLATFORM=meta and returns the Meta exit code", async () => {
+    meta.main.mockResolvedValueOnce(1);
+    expect(await main(["plan.yaml"], { ADKIT_PLATFORM: "meta" })).toBe(1);
+    expect(meta.main).toHaveBeenLastCalledWith(["plan.yaml"], { ADKIT_PLATFORM: "meta" });
+    expect(seenLogin).toBeUndefined();
+  });
+
+  it("delegates when the plan file has top-level platform: meta, before any customer resolution", async () => {
+    // No customerId: the Google path would exit 2 on it, so a 0 proves delegation
+    // happened first.
+    const planPath = writePlan("meta.yaml", "platform: meta\nadAccountId: act_1\n");
+    meta.main.mockResolvedValueOnce(0);
+    expect(await main([planPath, "--apply"], {})).toBe(0);
+    expect(meta.main).toHaveBeenCalledWith([planPath, "--apply"], {});
+    expect(seenLogin).toBeUndefined();
+  });
+
+  it("fails with step 'platform' on an unknown --platform, before reading the plan", async () => {
+    const cap = captureStdout();
+    expect(await main(["--platform", "tiktok", "missing.yaml"], {})).toBe(1);
+    expect(meta.main).not.toHaveBeenCalled();
+    const envelope = JSON.parse(cap.text()) as Record<string, unknown>;
+    expect(envelope["ok"]).toBe(false);
+    expect(envelope["step"]).toBe("platform");
+    expect(String(envelope["message"])).toContain("tiktok");
+  });
+
+  it("fails with step 'platform' on an unknown plan-file platform, before any client work", async () => {
+    const planPath = writePlan("bad.yaml", 'platform: tiktok\ncustomerId: "1111111111"\n');
+    const cap = captureStdout();
+    expect(await main([planPath], {})).toBe(1);
+    expect(meta.main).not.toHaveBeenCalled();
+    expect(seenLogin).toBeUndefined();
+    const envelope = JSON.parse(cap.text()) as Record<string, unknown>;
+    expect(envelope["step"]).toBe("platform");
+    expect(String(envelope["message"])).toContain("tiktok");
   });
 });

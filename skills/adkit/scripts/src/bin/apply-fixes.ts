@@ -98,6 +98,7 @@ import {
   ENGLISH_LANGUAGE_CONSTANT,
 } from "../ads/entities.js";
 import { emitJson, errorEnvelope, ok } from "../cli/output.js";
+import { PlatformError, parsePlatform, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
 import { pyRepr, pyStr } from "../cli/py-format.js";
 import {
   addAdGroupsPlan,
@@ -831,14 +832,40 @@ async function removeCampaignAssets(
   }
 }
 
+/** Delegate a run to the Meta update bin (plan D1); dynamic so Google runs never load Meta. */
+async function delegateToMeta(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<number> {
+  return (await import("../meta/bin/update.js")).main(stripPlatformFlag(argv), env);
+}
+
 /**
  * Apply a fixes plan. Dry-run by default; `--apply` mutates. Returns a process exit
  * code: 0 on success (incl. dry-run), 1 on validation failure, 2 on bad args.
+ *
+ * Platform (plan D1): a resolved `meta` platform (flag / `ADKIT_PLATFORM` /
+ * `adkit.yaml`) delegates to the Meta update bin before any argument parsing; a
+ * plan file whose top-level `platform` is `meta` delegates right after the plan is
+ * read, before any Google customer resolution. An unknown platform in either place
+ * fails with step `platform`, exit 1.
  */
 export async function main(
-  argv: string[] = process.argv.slice(2),
+  rawArgv: string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
+  let platform: Platform;
+  try {
+    platform = resolvePlatform(rawArgv, env, loadConfig());
+  } catch (exc) {
+    if (exc instanceof PlatformError) {
+      emitJson(errorEnvelope(exc.message, { step: exc.step }));
+      return 1;
+    }
+    throw exc;
+  }
+  if (platform === "meta") {
+    return delegateToMeta(rawArgv, env);
+  }
+  // The Google parser below would otherwise read `--platform <v>`'s value as the plan path.
+  const argv = stripPlatformFlag(rawArgv);
   const apply = argv.includes("--apply");
   // `--mcc-customer-id <id>` / `--mcc-customer-id=<id>`. Until this existed, every
   // token starting with `--` other than `--apply` was silently dropped by the
@@ -889,6 +916,14 @@ export async function main(
       return 2;
     }
     throw exc;
+  }
+  const planPlatform = parsePlatform(plan?.platform, `plan platform (${planPath})`);
+  if (planPlatform.kind === "err") {
+    emitJson(errorEnvelope(planPlatform.message, { step: "platform" }));
+    return 1;
+  }
+  if (planPlatform.value === "meta") {
+    return delegateToMeta(rawArgv, env);
   }
   if (!("customerId" in plan) || plan.customerId === undefined) {
     emitJson(errorEnvelope("plan is missing required 'customerId'"));
