@@ -33,9 +33,9 @@ Meta's six outcome-based (ODAX) objectives map to `OUTCOME_*` values in the API:
 | **Engagement**    | `OUTCOME_ENGAGEMENT`    | Video views to build retargeting pools. Cheap, but not a lead source.                            |
 | **App promotion** | `OUTCOME_APP_PROMOTION` | Only if the product is a mobile app. Skip for web SaaS.                                          |
 
-**Instant forms vs. website conversions:** instant forms (`destination_type: ON_AD`) are frictionless and cheap per lead, but quality is usually lower — add qualifying questions and sync CRM outcomes back so Meta can optimize for conversion leads. Website conversions (Pixel + CAPI, `OFFSITE_CONVERSIONS`) cost more per lead but reuse your own form, enrichment, and routing. **Optimize for the event closest to revenue that still fires ~50 times a week.**
+**Instant forms vs. website conversions:** instant forms (`destination_type: ON_AD`) are frictionless and cheap per lead, but quality is usually lower — add qualifying questions and sync CRM outcomes back so Meta can optimize for conversion leads. Website conversions (Pixel + CAPI, `destination_type: WEBSITE` with `optimization_goal: OFFSITE_CONVERSIONS`) cost more per lead but reuse your own form, enrichment, and routing. **Optimize for the event closest to revenue that still fires ~50 times a week.**
 
-Leads and Sales campaigns become **Advantage+ leads / sales campaigns** (API `advantage_state`) when Advantage+ campaign budget, Advantage+ audience, and Advantage+ placements are all on. Turning off any of the three makes it a manual campaign.
+Leads and Sales campaigns become **Advantage+ leads / sales campaigns** (API `advantage_state_info.advantage_state`: `ADVANTAGE_PLUS_LEADS` / `ADVANTAGE_PLUS_SALES`) when Advantage+ campaign budget, Advantage+ audience, and Advantage+ placements are all on. Turning off any of the three makes it a manual campaign.
 
 ---
 
