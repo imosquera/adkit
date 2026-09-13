@@ -8,7 +8,12 @@
  * for *filling in* the brief; the completed brief lands in adbriefs/. Read live state
  * with /adkit audit; revise live ads with ads.sh update.
  *
- * Run: ads.sh create <idea-slug|brief-path.yaml> [--dry-run] [--top-n N]
+ * Run: ads.sh create <idea-slug|brief-path.yaml> [--dry-run] [--top-n N] [--platform google|meta]
+ *
+ * A Meta run (plan D1) — `--platform meta` / `ADKIT_PLATFORM` / `adkit.yaml platform`,
+ * or a brief YAML declaring `type: meta` — is delegated to `../meta/bin/create.js`
+ * before any Google parsing; the Meta module is imported dynamically so a Google
+ * run never loads it.
  *
  * Style note: pure scaffold-building (`buildSkeleton`) and pure arg parsing
  * (`parseTopN`) are isolated from the filesystem/network shell (`resolveBriefPath`,
@@ -35,11 +40,12 @@ import {
   loadBriefIfExists,
   writeBrief,
 } from "../adbriefs/store.js";
-import { resolveBriefsDir } from "../lib/config.js";
+import { loadConfig, resolveBriefsDir } from "../lib/config.js";
 import { diffBriefs } from "../adbriefs/diff.js";
 import { buildState, statePathForCampaign, writeState } from "../adbriefs/state.js";
 import { resolveTargetCustomerId } from "../cli/customer-id.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
+import { PlatformError, resolvePlatform, stripPlatformFlag, type Platform } from "../cli/platform.js";
 import {
   DEFAULT_TOP_N,
   MAX_KEYWORDS_PER_THEME,
@@ -293,6 +299,25 @@ function resolveBriefPath(input: string, topN: number): string {
   scaffoldBriefFromProcessed(mdPath, briefPath, topN);
 }
 
+/**
+ * True when `input` names a `.yaml`/`.yml` brief whose parsed YAML declares
+ * `type: meta` — the brief-driven half of the Meta delegation (plan D1). Mirrors
+ * `isMetaBriefData` in `meta/brief.ts`, inlined so a Google run never loads the
+ * Meta modules. A missing or unparseable file is not Meta: {@link readBrief}
+ * reports it on the Google path.
+ */
+function briefDeclaresMeta(input: string): boolean {
+  if (!(input.endsWith(".yaml") || input.endsWith(".yml")) || !existsSync(input)) {
+    return false;
+  }
+  try {
+    const data: unknown = yamlParse(readFileSync(input, "utf8"));
+    return data !== null && typeof data === "object" && (data as { type?: unknown }).type === "meta";
+  } catch {
+    return false;
+  }
+}
+
 // ---------- core orchestration ----------
 
 /**
@@ -424,18 +449,38 @@ export function parseTopN(argv: string[]): number {
  * Scaffold/validate/publish the brief named by `argv`. Returns a process exit code:
  * 0 on success (incl. dry-run), 1 on a publish failure. Dies (via {@link ExitError})
  * on bad args / validation / URL failures, which this catches and turns into a code.
+ * A Meta platform or `type: meta` brief returns the delegated Meta create's code; an
+ * unknown platform emits a `step: "platform"` envelope and returns 1.
  */
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
+  let platform: Platform;
   try {
-    const positionals = argv.filter((a) => !a.startsWith("--"));
+    platform = resolvePlatform(argv, env, loadConfig());
+  } catch (exc) {
+    if (exc instanceof PlatformError) {
+      emitJson(errorEnvelope(exc.message, { step: exc.step }));
+      return 1;
+    }
+    throw exc;
+  }
+  const strippedArgv = stripPlatformFlag(argv);
+  const positionals = strippedArgv.filter((a) => !a.startsWith("--"));
+  if (platform === "meta" || (positionals[0] !== undefined && briefDeclaresMeta(positionals[0]))) {
+    return (await import("../meta/bin/create.js")).main(strippedArgv, env);
+  }
+
+  try {
     if (positionals.length === 0) {
       die("usage: ads.sh create <idea-slug|brief.yaml> [--dry-run] [--top-n N]");
     }
 
-    const dryRun = argv.includes("--dry-run");
-    const archiveExisting = argv.includes("--archive-existing");
-    const skipUrlCheck = argv.includes("--skip-url-check");
-    const topN = parseTopN(argv);
+    const dryRun = strippedArgv.includes("--dry-run");
+    const archiveExisting = strippedArgv.includes("--archive-existing");
+    const skipUrlCheck = strippedArgv.includes("--skip-url-check");
+    const topN = parseTopN(strippedArgv);
 
     const briefPath = resolveBriefPath(positionals[0]!, topN);
     const brief = readBrief(briefPath);

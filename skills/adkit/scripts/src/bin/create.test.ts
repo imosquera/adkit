@@ -12,6 +12,12 @@ vi.mock("../lib/auth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/auth.js")>();
   return { ...actual, loadClient: () => ({}) };
 });
+// The Meta create a `meta` platform / `type: meta` brief delegates to; `loaded` records the dynamic import.
+const meta = vi.hoisted(() => ({ loaded: false, main: vi.fn(async () => 0) }));
+vi.mock("../meta/bin/create.js", () => {
+  meta.loaded = true;
+  return { main: meta.main };
+});
 
 import {
   buildSkeleton,
@@ -489,5 +495,88 @@ describe("create wires the adbriefs/ persist + diff gate (main)", () => {
     expect(out.briefSynced).toBe(false);
     // The brief was written before publish, so it stays on disk as the intended state.
     expect(existsSync(join(root, ...SLUG_PATH))).toBe(true);
+  });
+});
+
+/**
+ * Platform delegation (plan D1). The Google-path test runs first on purpose: the
+ * mocked Meta module's factory runs once per file, on first import, so `loaded`
+ * is only meaningful before any Meta run in this file has imported it.
+ */
+describe("create platform delegation", () => {
+  let dir: string;
+  let cwd: string;
+  let prevConfig: string | undefined;
+  let stdout: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "adkit-create-platform-"));
+    cwd = process.cwd();
+    process.chdir(dir);
+    prevConfig = process.env["ADKIT_CONFIG"];
+    process.env["ADKIT_CONFIG"] = join(dir, ".adkit.yaml");
+    writeFileSync(process.env["ADKIT_CONFIG"], "developer_token: t\n");
+    stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    meta.main.mockClear();
+  });
+
+  afterEach(() => {
+    process.chdir(cwd);
+    if (prevConfig === undefined) {
+      delete process.env["ADKIT_CONFIG"];
+    } else {
+      process.env["ADKIT_CONFIG"] = prevConfig;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const writeFile = (name: string, body: string): string => {
+    const path = join(dir, name);
+    writeFileSync(path, body);
+    return path;
+  };
+
+  it("runs a Google brief without importing the Meta module, with --platform google stripped", async () => {
+    const brief = writeFile("brief.yaml", validBriefYaml());
+    writeFile("adkit.yaml", 'target_customer_id: "1234567890"\n');
+    expect(await main([brief, "--dry-run", "--skip-url-check"], {})).toBe(0);
+    // `google` is stripped with its flag, so it is never mistaken for the brief positional.
+    expect(await main(["--platform", "google", brief, "--dry-run", "--skip-url-check"], {})).toBe(0);
+    const envelopes = stdout.mock.calls
+      .map((c) => String(c[0]))
+      .join("")
+      .trim()
+      .split(/\n(?=\{)/)
+      .map((text) => JSON.parse(text) as Record<string, unknown>);
+    expect(envelopes.map((e) => e["dryRun"])).toEqual([true, true]);
+    expect(meta.loaded).toBe(false);
+    expect(meta.main).not.toHaveBeenCalled();
+  });
+
+  it("delegates --platform meta to the Meta create with the flag stripped and env passed through", async () => {
+    const env = { META_ACCESS_TOKEN: "tok" };
+    expect(await main(["--platform", "meta", "brief.yaml", "--dry-run"], env)).toBe(0);
+    expect(meta.main).toHaveBeenCalledWith(["brief.yaml", "--dry-run"], env);
+  });
+
+  it("delegates when ADKIT_PLATFORM=meta and returns the Meta exit code", async () => {
+    meta.main.mockResolvedValueOnce(1);
+    expect(await main(["brief.yaml"], { ADKIT_PLATFORM: "meta" })).toBe(1);
+    expect(meta.main).toHaveBeenLastCalledWith(["brief.yaml"], { ADKIT_PLATFORM: "meta" });
+  });
+
+  it("delegates a `type: meta` brief without any platform flag, env or config", async () => {
+    const brief = writeFile("meta-brief.yml", "type: meta\nname: spring-sale\n");
+    expect(await main([brief, "--skip-url-check"], {})).toBe(0);
+    expect(meta.main).toHaveBeenCalledWith([brief, "--skip-url-check"], {});
+  });
+
+  it("fails with step 'platform' on an unknown platform, before reading the brief", async () => {
+    expect(await main(["--platform", "tiktok", "brief.yaml"], {})).toBe(1);
+    expect(meta.main).not.toHaveBeenCalled();
+    const envelope = JSON.parse(stdout.mock.calls.map((c) => String(c[0])).join("")) as Record<string, unknown>;
+    expect(envelope["ok"]).toBe(false);
+    expect(envelope["step"]).toBe("platform");
+    expect(String(envelope["message"])).toContain("tiktok");
   });
 });
