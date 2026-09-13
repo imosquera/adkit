@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const execFileSync = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ execFileSync }));
 
-import { CONFIG_FIELDS } from "../lib/config.js";
-import { accessSecretArgs, main, mergeSecretsIntoConfig, SECRETS } from "./render-yaml.js";
+import { CONFIG_FIELDS, SECRETS_YAML_SHAPE } from "../lib/config.js";
+import { accessSecretArgs, main, mergeSecretsIntoConfig, SECRETS, withMetaCredentials } from "./render-yaml.js";
 
 // The guardrail shells out to git through the same `node:child_process` the mock
 // above replaces. `createRequire` goes through Node's own loader, which vitest's
@@ -25,6 +25,8 @@ describe("SECRETS", () => {
       ["client_secret", "google-ads-client-secret", true],
       ["refresh_token", "google-ads-refresh-token", true],
       ["psi_api_key", "google-pagespeed-api-key", false],
+      ["meta_access_token", "META_ACCESS_TOKEN", false],
+      ["meta_app_secret", "META_APP_SECRET", false],
     ]);
   });
 
@@ -33,6 +35,21 @@ describe("SECRETS", () => {
   it("does not fetch either customer id", () => {
     expect(SECRETS.map((s) => s.field)).not.toContain("mcc_customer_id");
     expect(SECRETS.map((s) => s.field)).not.toContain("target_customer_id");
+  });
+});
+
+describe("withMetaCredentials", () => {
+  it("appends the Meta credential fields after the shape's own, once", () => {
+    const widened = withMetaCredentials(SECRETS_YAML_SHAPE);
+    expect(widened.fields.map((f) => f.key)).toEqual([
+      ...SECRETS_YAML_SHAPE.fields.map((f) => f.key),
+      "meta_access_token",
+      "meta_app_id",
+      "meta_app_secret",
+    ]);
+    expect(withMetaCredentials(widened).fields).toHaveLength(widened.fields.length);
+    expect(widened.header).toEqual(SECRETS_YAML_SHAPE.header);
+    expect(widened.trailer).toEqual(SECRETS_YAML_SHAPE.trailer);
   });
 });
 
@@ -167,6 +184,35 @@ describe("render-yaml writes only the credentials file", () => {
     // Absent is a legitimate state: neither id is invented, neither aborts the run.
     expect(written).not.toContain("target_customer_id");
     expect(written).not.toContain("mcc_customer_id");
+  });
+
+  // A Google-only project has no Meta secrets: they are skipped, not fatal, and the
+  // file is exactly what the Google credentials alone produce.
+  it("skips absent Meta secrets and writes no Meta keys", () => {
+    const google = new Set(SECRETS.filter((s) => !s.field.startsWith("meta_")).map((s) => s.secret));
+    gcloudServing(google);
+    expect(main()).toBe(0);
+    const written = secretsFile();
+    expect(written).toContain('psi_api_key: "google-pagespeed-api-key-value"');
+    expect(written).not.toContain("meta_");
+    expect(written.endsWith("use_proto_plus: true\n")).toBe(true);
+  });
+
+  it("writes fetched Meta secrets into the credentials file", () => {
+    gcloudServing(CREDENTIAL_SECRETS);
+    expect(main()).toBe(0);
+    const written = secretsFile();
+    expect(written).toContain('meta_access_token: "META_ACCESS_TOKEN-value"');
+    expect(written).toContain('meta_app_secret: "META_APP_SECRET-value"');
+  });
+
+  it("keeps a Meta credential already in the file when its secret is absent", () => {
+    writeFileSync(join(dir, ".adkit.secrets.yaml"), 'meta_app_id: "123"\nmeta_access_token: "kept-token"\n');
+    gcloudServing(new Set(["google-ads-developer-token", "google-ads-client-id", "google-ads-client-secret", "google-ads-refresh-token"]));
+    expect(main()).toBe(0);
+    const written = secretsFile();
+    expect(written).toContain('meta_access_token: "kept-token"');
+    expect(written).toContain('meta_app_id: "123"');
   });
 
   it("writes the credentials file 0600", () => {

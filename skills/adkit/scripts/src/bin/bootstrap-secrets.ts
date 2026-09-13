@@ -4,7 +4,8 @@
  * Faithful port of `ads_skill/bin/bootstrap_secrets.py`. Prompts for each secret
  * (sensitive values read without echo), creates the secret if it does not yet
  * exist, then adds a new version with the entered value — shelling out to `gcloud`
- * for all three operations. The project defaults to `your-project-prod`,
+ * for all three operations. The Meta secrets are optional: a blank answer skips
+ * them entirely, so a Google-only project creates nothing it did not before. The project defaults to `your-project-prod`,
  * overridable via the `GOOGLE_ADS_SECRETS_PROJECT` env var.
  *
  * The IO (child_process, terminal prompts) is isolated at the edges; the argv
@@ -35,7 +36,27 @@ export const SECRETS: readonly string[] = [
   // answer here still creates/updates the secret with an empty value; render-yaml
   // treats it as an optional field.
   "google-pagespeed-api-key",
+  // Optional — a Meta project's credentials (render-yaml maps them to
+  // `meta_access_token` / `meta_app_secret`). A blank answer is skipped.
+  "META_ACCESS_TOKEN",
+  "META_APP_SECRET",
 ];
+
+/** Secrets whose blank answer is skipped (no create, no version) rather than stored empty. */
+const SKIP_WHEN_BLANK = new Set(["META_ACCESS_TOKEN", "META_APP_SECRET"]);
+
+/**
+ * True when `value` for `name` should be skipped: an optional (Meta) secret left
+ * blank. Other secrets keep today's behaviour of storing whatever was entered. Pure.
+ */
+export function shouldSkip(name: string, value: string): boolean {
+  return SKIP_WHEN_BLANK.has(name) && value.trim() === "";
+}
+
+/** The line printed when an optional secret is skipped. Pure. */
+export function skippedLine(name: string): string {
+  return `  - ${name} skipped (blank)\n`;
+}
 
 /**
  * The non-sensitive secrets: their prompt echoes (they are public identifiers, not
@@ -137,6 +158,10 @@ function prompt(text: string, sensitive: boolean): Promise<string> {
 export async function main(): Promise<number> {
   for (const name of SECRETS) {
     const value = await prompt(promptFor(name), isSensitive(name));
+    if (shouldSkip(name, value)) {
+      process.stdout.write(skippedLine(name));
+      continue;
+    }
     if (!secretExists(name)) {
       createSecret(name);
     }

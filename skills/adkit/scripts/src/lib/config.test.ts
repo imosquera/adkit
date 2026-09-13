@@ -8,6 +8,7 @@ import {
   CONFIG_FIELDS,
   configToValueMap,
   CREDENTIAL_FIELDS,
+  credentialFieldsFor,
   ensureGitignoreEntries,
   ensureGitignoreEntry,
   GITIGNORE_ENTRIES,
@@ -17,18 +18,28 @@ import {
   legacyDeprecationNotice,
   loadConfig,
   mergeConfigs,
+  META_CREDENTIAL_FIELDS,
+  META_ENV_OVERRIDES,
+  META_PREFERENCE_FIELDS,
+  META_PROJECT_YAML_SHAPE,
+  META_SECRETS_YAML_SHAPE,
   parseConfig,
+  PLATFORM_FIELD,
+  preferenceFieldsFor,
   preferencesPath,
   PREFERENCE_FIELDS,
   PROJECT_YAML_SHAPE,
+  projectYamlShapeFor,
   projectConfigExists,
   projectConfigPath,
   SECRETS_GITIGNORE_ENTRY,
   SECRETS_YAML_SHAPE,
   secretsExist,
+  secretsYamlShapeFor,
   secretsPath,
   resolveBriefsDir,
   resolveIdeasDir,
+  resolveMetaSetting,
   resolveReportsDir,
   resolveTier,
   withConfigField,
@@ -293,6 +304,38 @@ describe("writeConfigField (temp cwd)", () => {
     expect(readFileSync(secretsPath(), "utf8")).toBe('developer_token: "dev-tok"\n');
   });
 
+  it("keeps a Meta project's platform and meta_* fields when writing a preference", () => {
+    writeFileSync(projectConfigPath(), 'platform: "meta"\nmeta_page_id: "123"\nreports_dir: "r"\n');
+    writeFileSync(secretsPath(), 'meta_access_token: "EAAB-secret"\n');
+    writeConfigField("meta_ad_account_id", "act_42");
+    expect(readFileSync(projectConfigPath(), "utf8")).toBe(
+      buildConfigYamlBody(
+        new Map([
+          ["platform", "meta"],
+          ["meta_ad_account_id", "act_42"],
+          ["meta_page_id", "123"],
+          ["reports_dir", "r"],
+        ]),
+        META_PROJECT_YAML_SHAPE,
+      ),
+    );
+    expect(readFileSync(projectConfigPath(), "utf8")).not.toContain("EAAB-secret");
+  });
+
+  it("writes a Google project (no platform key) byte-identically to the Google shape", () => {
+    writeFileSync(projectConfigPath(), 'secrets_project: "proj-x"\n');
+    writeConfigField("target_customer_id", "1234567890");
+    expect(readFileSync(projectConfigPath(), "utf8")).toBe(
+      buildConfigYamlBody(
+        new Map([
+          ["target_customer_id", "1234567890"],
+          ["secrets_project", "proj-x"],
+        ]),
+        PROJECT_YAML_SHAPE,
+      ),
+    );
+  });
+
   it("keeps writing the legacy combined file on an unmigrated project", () => {
     writeFileSync(legacyConfigPath(), 'developer_token: "dev-tok"\nmcc_customer_id: "4444444444"\n');
     writeConfigField("target_customer_id", "1234567890");
@@ -521,5 +564,131 @@ describe("resolveReportsDir / resolveBriefsDir / resolveIdeasDir", () => {
     expect(promptDefault("reports_dir")).toBe(resolveReportsDir(null, {}));
     expect(promptDefault("briefs_dir")).toBe(resolveBriefsDir(null, {}));
     expect(promptDefault("ideas_dir")).toBe(resolveIdeasDir(null, {}));
+  });
+});
+
+// Meta parity (plan D2): the Meta fields are a separate set selected by platform;
+// every un-suffixed constant and the `google` selectors are exactly today's Google set.
+describe("platform-scoped fields and shapes", () => {
+  const everything = new Map([
+    ["developer_token", "dev-tok"],
+    ["psi_api_key", "psi"],
+    ["mcc_customer_id", "4444444444"],
+    ["read_backend", "sdk"],
+    ["reports_dir", "ads/reports"],
+    ["platform", "meta"],
+    ["meta_access_token", "EAAB-token"],
+    ["meta_app_id", "999"],
+    ["meta_app_secret", "app-secret"],
+    ["meta_ad_account_id", "act_123"],
+    ["meta_page_id", "555"],
+    ["meta_pixel_id", "777"],
+  ]);
+
+  it("google selectors return exactly the existing constants (same references)", () => {
+    expect(credentialFieldsFor("google")).toBe(CREDENTIAL_FIELDS);
+    expect(preferenceFieldsFor("google")).toBe(PREFERENCE_FIELDS);
+    expect(secretsYamlShapeFor("google")).toBe(SECRETS_YAML_SHAPE);
+    expect(projectYamlShapeFor("google")).toBe(PROJECT_YAML_SHAPE);
+  });
+
+  it("the Google sets carry no Meta field and no platform key", () => {
+    const googleKeys = [...CONFIG_FIELDS, ...PROJECT_YAML_SHAPE.fields, ...SECRETS_YAML_SHAPE.fields].map((f) => f.key);
+    expect(googleKeys.filter((k) => k === "platform" || k.startsWith("meta_"))).toEqual([]);
+  });
+
+  it("Google yaml output is byte-identical even when Meta values are in the map", () => {
+    expect(buildConfigYamlBody(everything, PROJECT_YAML_SHAPE)).toBe(
+      [
+        "# Written by adkit init. Project preferences — safe to commit.",
+        "# Credentials live in the git-ignored .adkit.secrets.yaml, never here.",
+        "# Explicit flags and env vars still override these values at run time.",
+        'mcc_customer_id: "4444444444"',
+        'read_backend: "sdk"',
+        'reports_dir: "ads/reports"',
+      ].join("\n") + "\n",
+    );
+    expect(buildConfigYamlBody(everything, SECRETS_YAML_SHAPE)).toBe(
+      [
+        "# Written by adkit init/render-yaml. CREDENTIALS — never commit this file.",
+        "# Project preferences live in the committed adkit.yaml, not here.",
+        'developer_token: "dev-tok"',
+        'psi_api_key: "psi"',
+        "use_proto_plus: true",
+      ].join("\n") + "\n",
+    );
+  });
+
+  it("meta credential fields are the token (sensitive), app id, app secret (sensitive) and the shared PSI key (sensitive)", () => {
+    expect(credentialFieldsFor("meta")).toBe(META_CREDENTIAL_FIELDS);
+    expect(META_CREDENTIAL_FIELDS.map((f) => [f.key, f.sensitive])).toEqual([
+      ["meta_access_token", true],
+      ["meta_app_id", false],
+      ["meta_app_secret", true],
+      ["psi_api_key", true],
+    ]);
+  });
+
+  it("meta preference prompts carry the ids and shared dirs, but not platform or Google-only fields", () => {
+    const keys = preferenceFieldsFor("meta").map((f) => f.key);
+    expect(preferenceFieldsFor("meta")).toBe(META_PREFERENCE_FIELDS);
+    expect(keys).toEqual(["meta_ad_account_id", "meta_page_id", "meta_pixel_id", "secrets_project", "reports_dir", "briefs_dir", "ideas_dir"]);
+    expect(PLATFORM_FIELD).toMatchObject({ key: "platform", default: "google", sensitive: false });
+  });
+
+  it("the Meta project shape writes platform first and never a credential", () => {
+    expect(projectYamlShapeFor("meta")).toBe(META_PROJECT_YAML_SHAPE);
+    const body = buildConfigYamlBody(everything, META_PROJECT_YAML_SHAPE);
+    expect(body).toBe(
+      [
+        ...PROJECT_YAML_SHAPE.header,
+        'platform: "meta"',
+        'meta_ad_account_id: "act_123"',
+        'meta_page_id: "555"',
+        'meta_pixel_id: "777"',
+        'reports_dir: "ads/reports"',
+      ].join("\n") + "\n",
+    );
+    expect(body).not.toContain("EAAB-token");
+    expect(body).not.toContain("app-secret");
+    expect(body).not.toContain("mcc_customer_id");
+  });
+
+  it("the Meta secrets shape writes only the Meta credentials, without use_proto_plus", () => {
+    expect(secretsYamlShapeFor("meta")).toBe(META_SECRETS_YAML_SHAPE);
+    const body = buildConfigYamlBody(everything, META_SECRETS_YAML_SHAPE);
+    expect(body).toBe(
+      [
+        ...SECRETS_YAML_SHAPE.header,
+        'meta_access_token: "EAAB-token"',
+        'meta_app_id: "999"',
+        'meta_app_secret: "app-secret"',
+        'psi_api_key: "psi"',
+      ].join("\n") + "\n",
+    );
+    expect(body).not.toContain("act_123");
+    expect(body).not.toContain("developer_token");
+  });
+});
+
+describe("resolveMetaSetting", () => {
+  it("maps each Meta field to its env var", () => {
+    expect(META_ENV_OVERRIDES).toEqual({
+      meta_access_token: "META_ACCESS_TOKEN",
+      meta_ad_account_id: "META_AD_ACCOUNT_ID",
+      meta_app_id: "META_APP_ID",
+      meta_app_secret: "META_APP_SECRET",
+    });
+  });
+
+  it("prefers the env var over the yaml value", () => {
+    expect(resolveMetaSetting("meta_access_token", { META_ACCESS_TOKEN: "env-tok" }, { meta_access_token: "yaml-tok" })).toBe("env-tok");
+    expect(resolveMetaSetting("meta_ad_account_id", { META_AD_ACCOUNT_ID: "act_1" }, { meta_ad_account_id: "act_2" })).toBe("act_1");
+  });
+
+  it("falls back to yaml when the env var is blank or absent, else undefined", () => {
+    expect(resolveMetaSetting("meta_app_id", { META_APP_ID: "  " }, { meta_app_id: "42" })).toBe("42");
+    expect(resolveMetaSetting("meta_app_secret", {}, { meta_app_secret: "s" })).toBe("s");
+    expect(resolveMetaSetting("meta_app_secret", {}, {})).toBeUndefined();
   });
 });

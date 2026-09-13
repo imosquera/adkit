@@ -16,7 +16,8 @@
  * an optional field is never blanked by a re-render.
  *
  * Required secrets that are missing abort (the `gcloud` call throws); the optional
- * `psi_api_key` field is skipped when absent. The file is written atomically
+ * `psi_api_key` and Meta (`meta_access_token`, `meta_app_secret`) fields are
+ * skipped when absent, so a Google-only project renders exactly as before. The file is written atomically
  * (temp file + rename) with 0600 perms so the plaintext credentials never briefly
  * exist world-readable, and only after the guardrail in `lib/secrets-guard.ts`
  * confirms the target path is not committable.
@@ -36,7 +37,9 @@ import {
   buildConfigYamlBody,
   configToValueMap,
   CREDENTIAL_FIELDS,
+  type ConfigYamlShape,
   isLegacyConfigFile,
+  META_CREDENTIAL_FIELDS,
   COMBINED_YAML_SHAPE,
   type ConfigField,
   loadConfig,
@@ -71,7 +74,24 @@ export const SECRETS: readonly SecretSpec[] = [
   // Optional: not every operator has PSI access, and audit's PSI diagnosis
   // degrades gracefully (skips with a reason) without it.
   { field: "psi_api_key", secret: "google-pagespeed-api-key", required: false },
+  // Optional: only a Meta project has these, so their absence must never abort a
+  // Google-only render. Fetched values land via {@link withMetaCredentials}.
+  { field: "meta_access_token", secret: "META_ACCESS_TOKEN", required: false },
+  { field: "meta_app_secret", secret: "META_APP_SECRET", required: false },
 ];
+
+/**
+ * `shape` widened to also admit the Meta credential fields. Pure.
+ *
+ * The file shapes themselves stay per-platform; render-yaml alone widens them so a
+ * fetched Meta secret is written (and one already in the file survives) instead of
+ * being filtered out. A Google-only project has no Meta values, and blank fields
+ * are never emitted, so its output is byte-identical to the unwidened shape.
+ */
+export function withMetaCredentials(shape: ConfigYamlShape): ConfigYamlShape {
+  const present = new Set(shape.fields.map((f) => f.key));
+  return { ...shape, fields: [...shape.fields, ...META_CREDENTIAL_FIELDS.filter((f) => !present.has(f.key))] };
+}
 
 /**
  * Build the `gcloud secrets versions access latest` argument vector for `secret`
@@ -151,7 +171,7 @@ export function main(): number {
   }
   // A legacy `.adkit.yaml` target keeps its combined shape: both halves live in that
   // one file, so writing only the credentials would delete the operator's preferences.
-  const shape = isLegacyConfigFile(target) ? COMBINED_YAML_SHAPE : SECRETS_YAML_SHAPE;
+  const shape = withMetaCredentials(isLegacyConfigFile(target) ? COMBINED_YAML_SHAPE : SECRETS_YAML_SHAPE);
   // Only the target file is re-read — never the merged config — so a preference
   // from adkit.yaml can never be written back into the credentials file.
   const merged = mergeSecretsIntoConfig(readConfigFile(target), readAllSecrets(), shape.fields);

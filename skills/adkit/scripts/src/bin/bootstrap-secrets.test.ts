@@ -7,6 +7,8 @@ import {
   isSensitive,
   promptFor,
   SECRETS,
+  shouldSkip,
+  skippedLine,
   updatedLine,
 } from "./bootstrap-secrets.js";
 
@@ -18,6 +20,8 @@ describe("SECRETS", () => {
       "google-ads-client-secret",
       "google-ads-refresh-token",
       "google-pagespeed-api-key",
+      "META_ACCESS_TOKEN",
+      "META_APP_SECRET",
     ]);
   });
 
@@ -42,6 +46,31 @@ describe("isSensitive", () => {
 
   it("treats the PSI API key as sensitive (issue #40)", () => {
     expect(isSensitive("google-pagespeed-api-key")).toBe(true);
+  });
+});
+
+describe("optional Meta secrets", () => {
+  it("treats both Meta secrets as sensitive", () => {
+    expect(isSensitive("META_ACCESS_TOKEN")).toBe(true);
+    expect(isSensitive("META_APP_SECRET")).toBe(true);
+  });
+
+  it("skips a blank Meta answer so a Google-only project creates nothing new", () => {
+    expect(shouldSkip("META_ACCESS_TOKEN", "")).toBe(true);
+    expect(shouldSkip("META_APP_SECRET", "   ")).toBe(true);
+  });
+
+  it("stores a non-blank Meta answer", () => {
+    expect(shouldSkip("META_ACCESS_TOKEN", "EAAB-token")).toBe(false);
+  });
+
+  it("keeps today's behaviour for the Google secrets, blank or not", () => {
+    expect(shouldSkip("google-pagespeed-api-key", "")).toBe(false);
+    expect(shouldSkip("google-ads-developer-token", "")).toBe(false);
+  });
+
+  it("formats the skip line", () => {
+    expect(skippedLine("META_APP_SECRET")).toBe("  - META_APP_SECRET skipped (blank)\n");
   });
 });
 

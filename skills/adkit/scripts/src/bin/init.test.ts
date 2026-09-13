@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { doneLine, existsLine, gitignoredLine, main, promptFor } from "./init.js";
+import { doneLine, existsLine, gitignoredLine, invalidPlatformLine, main, promptFor } from "./init.js";
 
 /** Collect what `main` writes to stdout (the JSON envelope, the notices) for the duration of one call. */
 function captureStdout(): { text: () => string; restore: () => void } {
@@ -36,6 +36,7 @@ describe("messages", () => {
     expect(gitignoredLine(["/.adkit.secrets.yaml", "/.adkit.yaml"], "/a/.gitignore")).toBe(
       "added /.adkit.secrets.yaml, /.adkit.yaml to /a/.gitignore\n",
     );
+    expect(invalidPlatformLine("platform answer: unknown platform")).toBe("platform answer: unknown platform\n");
   });
 });
 
@@ -82,14 +83,14 @@ describe("main (temp cwd)", () => {
     );
   }
 
-  /** Answers for every field: 5 credentials then 7 preferences. */
-  const ALL_BLANK = ["", "", "", "", "", "", "", "", "", "", "", ""];
+  /** Answers for a Google run: the platform (blank → google), 5 credentials, then 7 preferences. */
+  const ALL_BLANK = ["", "", "", "", "", "", "", "", "", "", "", "", ""];
 
   it("writes the preferences to adkit.yaml and the credentials to .adkit.secrets.yaml", async () => {
-    // developer_token, client_id, client_secret, refresh_token, psi_api_key,
+    // platform, developer_token, client_id, client_secret, refresh_token, psi_api_key,
     // mcc_customer_id, target_customer_id, secrets_project, read_backend,
     // reports_dir, briefs_dir, ideas_dir
-    mockAnswers(["dev-tok", "cid", "csecret", "rtok", "", "1234567890", "", "proj-x", "", "", "", ""]);
+    mockAnswers(["", "dev-tok", "cid", "csecret", "rtok", "", "1234567890", "", "proj-x", "", "", "", ""]);
     const code = await main();
     expect(code).toBe(0);
 
@@ -116,6 +117,73 @@ describe("main (temp cwd)", () => {
     expect(secrets).not.toContain("reports_dir");
   });
 
+  it("writes no platform key for a Google run, even when google is typed explicitly", async () => {
+    mockAnswers(["google", "dev-tok", "", "", "", "", "", "", "", "", "", "", ""]);
+    expect(await main()).toBe(0);
+    expect(readFileSync(join(dir, "adkit.yaml"), "utf8")).not.toContain("platform");
+    expect(readFileSync(join(dir, ".adkit.secrets.yaml"), "utf8")).toContain('developer_token: "dev-tok"');
+  });
+
+  // Meta (plan D9): after the platform prompt, only the Meta fields are asked for.
+  // meta_access_token, meta_app_id, meta_app_secret, psi_api_key,
+  // meta_ad_account_id, meta_page_id, meta_pixel_id, secrets_project, reports_dir, briefs_dir, ideas_dir
+  const META_ANSWERS = ["meta", "EAAB-token", "999", "app-secret", "psi-meta", "act_123", "555", "", "proj-m", "", "", ""];
+
+  it("meta: the token lands only in the secrets file, platform and the account id only in adkit.yaml", async () => {
+    mockAnswers(META_ANSWERS);
+    expect(await main()).toBe(0);
+
+    const project = readFileSync(join(dir, "adkit.yaml"), "utf8");
+    const secrets = readFileSync(join(dir, ".adkit.secrets.yaml"), "utf8");
+    expect(project).toContain('platform: "meta"');
+    expect(project).toContain('meta_ad_account_id: "act_123"');
+    expect(project).toContain('meta_page_id: "555"');
+    expect(project).toContain('secrets_project: "proj-m"');
+    expect(project).toContain('reports_dir: "ads/output/reports"');
+    expect(project).not.toContain("meta_pixel_id");
+    expect(project).not.toContain("EAAB-token");
+    expect(project).not.toContain("app-secret");
+    expect(project).not.toContain("read_backend");
+    expect(project).not.toContain("mcc_customer_id");
+
+    expect(secrets).toContain('meta_access_token: "EAAB-token"');
+    expect(secrets).toContain('meta_app_id: "999"');
+    expect(secrets).toContain('meta_app_secret: "app-secret"');
+    expect(secrets).toContain('psi_api_key: "psi-meta"');
+    expect(secrets).not.toContain("platform");
+    expect(secrets).not.toContain("act_123");
+    expect(secrets).not.toContain("developer_token");
+    expect(secrets).not.toContain("use_proto_plus");
+
+    expect(statSync(join(dir, ".adkit.secrets.yaml")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(dir, "adkit.yaml")).mode & 0o777).toBe(0o644);
+  });
+
+  it("meta: prompts only the missing preferences half, still writing platform", async () => {
+    writeFileSync(join(dir, ".adkit.secrets.yaml"), 'meta_access_token: "already-here"\n');
+    mockAnswers(["meta", "act_42", "", "", "", "", "", ""]);
+    expect(await main()).toBe(0);
+    const project = readFileSync(join(dir, "adkit.yaml"), "utf8");
+    expect(project).toContain('platform: "meta"');
+    expect(project).toContain('meta_ad_account_id: "act_42"');
+    expect(readFileSync(join(dir, ".adkit.secrets.yaml"), "utf8")).toBe('meta_access_token: "already-here"\n');
+  });
+
+  it("an unknown platform answer is reported and asked again", async () => {
+    mockAnswers(["tiktok", ...META_ANSWERS]);
+    const out = captureStdout();
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const code = await main();
+    out.restore();
+    const errText = stderr.mock.calls.map((call) => String(call[0])).join("");
+    stderr.mockRestore();
+    expect(code).toBe(0);
+    expect(errText).toContain('unknown platform "tiktok"');
+    expect(out.text().match(/platform \(google\/meta\) \[google\]: /g)).toHaveLength(2);
+    expect(readFileSync(join(dir, "adkit.yaml"), "utf8")).toContain('platform: "meta"');
+    expect(readFileSync(join(dir, ".adkit.secrets.yaml"), "utf8")).toContain('meta_access_token: "EAAB-token"');
+  });
+
   it("writes the credentials file 0600 and the committed file world-readable", async () => {
     mockAnswers(ALL_BLANK);
     await main();
@@ -124,7 +192,7 @@ describe("main (temp cwd)", () => {
   });
 
   it("writes psi_api_key to the secrets file when answered (issue #40)", async () => {
-    mockAnswers(["dev-tok", "cid", "csecret", "rtok", "psi-key-value", "1234567890", "", "proj-x", "", "", "", ""]);
+    mockAnswers(["", "dev-tok", "cid", "csecret", "rtok", "psi-key-value", "1234567890", "", "proj-x", "", "", "", ""]);
     expect(await main()).toBe(0);
     expect(readFileSync(join(dir, ".adkit.secrets.yaml"), "utf8")).toContain('psi_api_key: "psi-key-value"');
     expect(readFileSync(join(dir, "adkit.yaml"), "utf8")).not.toContain("psi_api_key");
@@ -133,7 +201,7 @@ describe("main (temp cwd)", () => {
   it("ADKIT_CONFIG moves the credentials out of the repo, leaving adkit.yaml at the root", async () => {
     const outside = mkdtempSync(join(tmpdir(), "adkit-outside-"));
     process.env["ADKIT_CONFIG"] = join(outside, "proj.secrets.yaml");
-    mockAnswers(["dev-tok", "cid", "csecret", "rtok", "", "", "", "proj-x", "", "", "", ""]);
+    mockAnswers(["", "dev-tok", "cid", "csecret", "rtok", "", "", "", "proj-x", "", "", "", ""]);
     expect(await main()).toBe(0);
     expect(readFileSync(join(outside, "proj.secrets.yaml"), "utf8")).toContain('developer_token: "dev-tok"');
     expect(readFileSync(join(dir, "adkit.yaml"), "utf8")).toContain('secrets_project: "proj-x"');
@@ -143,9 +211,9 @@ describe("main (temp cwd)", () => {
 
   it("prompts only for the missing half when one file already exists", async () => {
     writeFileSync(join(dir, ".adkit.secrets.yaml"), 'developer_token: "already-here"\n');
-    // Seven answers: the preferences only. A credential prompt would consume one of
-    // these and shift every value, so the assertions below pin the field order too.
-    mockAnswers(["1234567890", "", "proj-x", "", "", "", ""]);
+    // The platform, then seven answers: the preferences only. A credential prompt would
+    // consume one of these and shift every value, so the assertions below pin the field order too.
+    mockAnswers(["", "1234567890", "", "proj-x", "", "", "", ""]);
     expect(await main()).toBe(0);
     const project = readFileSync(join(dir, "adkit.yaml"), "utf8");
     expect(project).toContain('mcc_customer_id: "1234567890"');

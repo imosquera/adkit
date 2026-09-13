@@ -3,12 +3,17 @@
  * {@link "../lib/config.js"}), across the two files it now lives in:
  *
  *  - `adkit.yaml` — the non-secret project preferences (the two customer ids, the
- *    Secret Manager project, the read backend, the three output dirs). **Committed**:
+ *    Secret Manager project, the read backend, the three output dirs; for a Meta
+ *    project `platform: meta` and the ad account / page / pixel ids instead). **Committed**:
  *    it describes the project, so a collaborator, a CI job, and a git worktree all
  *    get the same values without rediscovering them.
- *  - `.adkit.secrets.yaml` — the Google Ads credentials, written 0600 and
+ *  - `.adkit.secrets.yaml` — the platform's credentials, written 0600 and
  *    git-ignored. `ADKIT_CONFIG` moves it out of the repo entirely, which is the
  *    stronger placement.
+ *
+ * The first prompt is the platform (`google/meta`, blank → `google`); only that
+ * platform's fields are asked for after it, and a Google run writes exactly what it
+ * did before the platform existed.
  *
  * Create-if-missing per file, mirroring `bootstrap-secrets.ts`: an existing file is
  * never clobbered, and only the fields belonging to a file that is actually being
@@ -31,22 +36,24 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isMainModule } from "../cli/entry.js";
 import { emitJson, errorEnvelope } from "../cli/output.js";
+import { parsePlatform, type Platform } from "../cli/platform.js";
 import {
   buildConfigYamlBody,
   type ConfigField,
-  CREDENTIAL_FIELDS,
+  credentialFieldsFor,
   ensureGitignoreEntries,
   GITIGNORE_ENTRIES,
   legacyConfigExists,
   legacyConfigPath,
   legacyDeprecationNotice,
-  PREFERENCE_FIELDS,
-  PROJECT_YAML_SHAPE,
+  PLATFORM_FIELD,
+  preferenceFieldsFor,
   projectConfigExists,
   projectConfigPath,
-  SECRETS_YAML_SHAPE,
+  projectYamlShapeFor,
   secretsExist,
   secretsPath,
+  secretsYamlShapeFor,
   writeYamlAtomic,
 } from "../lib/config.js";
 import { assertWritableSecretsPath, SecretsPathError } from "../lib/secrets-guard.js";
@@ -110,43 +117,87 @@ function muteEcho(rl: Interface, promptText: string): () => void {
   };
 }
 
+/** One answer read from the terminal: the trimmed line, or `""` once input is exhausted. */
+type Ask = (text: string, sensitive: boolean) => Promise<string>;
+
 /**
- * Prompt for each of `fields`, falling back to its default on a blank answer.
- * Sensitive fields (credentials) are read without echo. Returns a
- * `field -> value` map with only non-blank fields present, in the same shape
- * {@link buildConfigYamlBody} expects.
+ * Build an {@link Ask} over one readline `Interface`. Sensitive answers
+ * (credentials) are read without echo.
  *
- * `fields` is exactly the set belonging to the files about to be written, so
+ * Reads answers via the interface's async iterator rather than chained
+ * `rl.question()` calls: over a piped (non-TTY) stdin that delivers all its lines
+ * in one chunk, a second `question()` issued after the first has already resolved
+ * never gets a callback — the interface has nothing left to hand it. Iterating
+ * the same interface consumes exactly one line per prompt and does not lose data
+ * either way. For the same reason every prompt of a run (platform included)
+ * shares the one interface: a second interface would miss lines the first had
+ * already buffered.
+ */
+function askVia(rl: Interface): Ask {
+  const lines = rl[Symbol.asyncIterator]();
+  return async (text, sensitive) => {
+    process.stdout.write(text);
+    const unmute = sensitive ? muteEcho(rl, text) : null;
+    const { value, done } = await lines.next();
+    unmute?.();
+    if (sensitive) {
+      process.stdout.write("\n");
+    }
+    return (done ? "" : String(value)).trim();
+  };
+}
+
+/** The line printed when the platform answer does not parse, before asking again. Pure. */
+export function invalidPlatformLine(message: string): string {
+  return `${message}\n`;
+}
+
+/**
+ * Ask which platform to scaffold for (blank means `google`), parsing the answer
+ * with {@link parsePlatform}; an unknown answer is reported and asked again.
+ * Exhausted input reads as blank, so this cannot loop forever.
+ */
+async function promptPlatform(ask: Ask): Promise<Platform> {
+  const parsed = parsePlatform(await ask(promptFor(PLATFORM_FIELD.label, PLATFORM_FIELD.default), false), "platform answer");
+  if (parsed.kind === "ok") {
+    return parsed.value;
+  }
+  process.stderr.write(invalidPlatformLine(parsed.message));
+  return promptPlatform(ask);
+}
+
+/**
+ * Prompt for each of `fields` in order, falling back to its default on a blank
+ * answer. Returns a `field -> value` map with only non-blank fields present, in
+ * the same shape {@link buildConfigYamlBody} expects.
+ */
+async function promptFields(ask: Ask, fields: readonly ConfigField[]): Promise<Map<string, string>> {
+  const entries = await fields.reduce<Promise<ReadonlyArray<readonly [string, string]>>>(async (soFar, field) => {
+    const done = await soFar;
+    const resolved = (await ask(promptFor(field.label, field.default), field.sensitive)) || field.default;
+    return resolved ? [...done, [field.key, resolved] as const] : done;
+  }, Promise.resolve([]));
+  return new Map(entries);
+}
+
+/**
+ * The whole interactive session: the platform first, then the fields `select`
+ * returns for it. `select` is given exactly the halves about to be written, so
  * rerunning init after deleting one file asks only for that file's half.
  *
- * Reads answers via the readline `Interface`'s async iterator rather than
- * chained `rl.question()` calls: over a piped (non-TTY) stdin that delivers all
- * its lines in one chunk, a second `question()` issued after the first has
- * already resolved never gets a callback — the interface has nothing left to
- * hand it. Iterating `for await` over the same interface consumes exactly one
- * line per field and does not lose data either way.
+ * For `meta` the map also carries `platform -> "meta"` so the Meta project shape
+ * writes it; a Google map never does, keeping Google output byte-identical.
  */
-export async function promptAll(fields: readonly ConfigField[]): Promise<Map<string, string>> {
+export async function promptAll(
+  select: (platform: Platform) => readonly ConfigField[],
+): Promise<{ platform: Platform; values: Map<string, string> }> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const lines = rl[Symbol.asyncIterator]();
-    const entries: Array<[string, string]> = [];
-    for (const field of fields) {
-      const text = promptFor(field.label, field.default);
-      process.stdout.write(text);
-      const unmute = field.sensitive ? muteEcho(rl, text) : null;
-      const { value, done } = await lines.next();
-      unmute?.();
-      if (field.sensitive) {
-        process.stdout.write("\n");
-      }
-      const answer = (done ? "" : value).trim();
-      const resolved = answer || field.default;
-      if (resolved) {
-        entries.push([field.key, resolved]);
-      }
-    }
-    return new Map(entries);
+    const ask = askVia(rl);
+    const platform = await promptPlatform(ask);
+    const fields = await promptFields(ask, select(platform));
+    const values = platform === "meta" ? new Map<string, string>([[PLATFORM_FIELD.key, platform], ...fields]) : fields;
+    return { platform, values };
   } finally {
     rl.close();
   }
@@ -203,17 +254,17 @@ export async function main(): Promise<number> {
     }
   }
 
-  const values = await promptAll([
-    ...(needSecrets ? CREDENTIAL_FIELDS : []),
-    ...(needProject ? PREFERENCE_FIELDS : []),
+  const { platform, values } = await promptAll((chosen) => [
+    ...(needSecrets ? credentialFieldsFor(chosen) : []),
+    ...(needProject ? preferenceFieldsFor(chosen) : []),
   ]);
 
   if (needProject) {
-    writeYamlAtomic(project, buildConfigYamlBody(values, PROJECT_YAML_SHAPE), 0o644);
+    writeYamlAtomic(project, buildConfigYamlBody(values, projectYamlShapeFor(platform)), 0o644);
     process.stdout.write(doneLine(project));
   }
   if (needSecrets) {
-    writeYamlAtomic(secrets, buildConfigYamlBody(values, SECRETS_YAML_SHAPE), 0o600);
+    writeYamlAtomic(secrets, buildConfigYamlBody(values, secretsYamlShapeFor(platform)), 0o600);
     process.stdout.write(doneLine(secrets));
   }
   return 0;

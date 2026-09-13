@@ -26,6 +26,11 @@
  * halves — keeps behaving exactly as it did. Per-setting precedence (flag -> env ->
  * yaml -> default, {@link resolveTier}) is unchanged.
  *
+ * A Meta project (`platform: meta` in `adkit.yaml`) swaps the Google fields for
+ * the Meta ones — see {@link credentialFieldsFor} / {@link projectYamlShapeFor}.
+ * The un-suffixed constants (`CREDENTIAL_FIELDS`, `PROJECT_YAML_SHAPE`, …) keep
+ * meaning the Google set, so every Google writer's output is byte-identical.
+ *
  * Written by `ads.sh init` ({@link "../bin/init.js"}, both files) and `ads.sh
  * render-yaml` (the secrets file only). Every field is optional — absent files
  * resolve to `{}`.
@@ -34,6 +39,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { parsePlatform, type Platform } from "../cli/platform.js";
 import { assertWritableSecretsPath } from "./secrets-guard.js";
 
 /** The project config `init`/`render-yaml` write and every entrypoint may read. */
@@ -52,6 +58,17 @@ export interface AdkitConfig {
   reports_dir?: string;
   briefs_dir?: string;
   ideas_dir?: string;
+  /** `google` (the default when absent) or `meta`; written only for Meta projects. Parsed by `cli/platform.ts`. */
+  platform?: string;
+  /** Meta ad account id (`act_<digits>`) — an account number, a committed preference. */
+  meta_ad_account_id?: string;
+  meta_page_id?: string;
+  meta_pixel_id?: string;
+  /** Meta system-user / long-lived access token — a credential. */
+  meta_access_token?: string;
+  meta_app_id?: string;
+  /** Meta app secret; when present requests carry `appsecret_proof` — a credential. */
+  meta_app_secret?: string;
 }
 
 /**
@@ -105,6 +122,76 @@ export const PREFERENCE_FIELDS: readonly ConfigField[] = [
 
 /** Every config field, in yaml-emit and prompt order: credentials first, then preferences (the customer ids leading them). */
 export const CONFIG_FIELDS: readonly ConfigField[] = [...CREDENTIAL_FIELDS, ...PREFERENCE_FIELDS];
+
+/**
+ * The `platform` preference. Not in any prompt list — `init` asks for it first,
+ * on its own — but part of the Meta project shape so `platform: meta` is written.
+ * A Google project never writes it: absence already means `google`.
+ */
+export const PLATFORM_FIELD: ConfigField = { key: "platform", label: "platform (google/meta)", default: "google", sensitive: false };
+
+/** The Meta credential fields — the only ones written to a Meta project's secrets file. `psi_api_key` is shared with Google. */
+export const META_CREDENTIAL_FIELDS: readonly ConfigField[] = [
+  { key: "meta_access_token", label: "Meta access token (system user or long-lived user token)", default: "", sensitive: true },
+  { key: "meta_app_id", label: "Meta app id (optional)", default: "", sensitive: false },
+  { key: "meta_app_secret", label: "Meta app secret (optional — enables appsecret_proof; leave blank to skip)", default: "", sensitive: true },
+  // The Meta audit runs the same PageSpeed Insights landing-page diagnosis as Google's.
+  { key: "psi_api_key", label: "PageSpeed Insights API key (optional — enables `audit`'s PSI landing-page diagnosis; leave blank to skip)", default: "", sensitive: true },
+];
+
+/**
+ * The Meta project-preference fields `init` prompts for (after `platform`).
+ * The ad account, page and pixel ids are account numbers, not credentials, so
+ * they live in the committed `adkit.yaml`. The output directories and the
+ * Secret Manager project are shared with Google; `read_backend` is Google-only.
+ */
+export const META_PREFERENCE_FIELDS: readonly ConfigField[] = [
+  { key: "meta_ad_account_id", label: "Meta ad account id — act_ followed by digits", default: "", sensitive: false },
+  { key: "meta_page_id", label: "Facebook Page id (optional — needed to create ads)", default: "", sensitive: false },
+  { key: "meta_pixel_id", label: "Meta pixel / dataset id (optional — needed for conversion campaigns)", default: "", sensitive: false },
+  { key: "secrets_project", label: "GCP Secret Manager project", default: "your-project-prod", sensitive: false },
+  { key: "reports_dir", label: "Reports output directory", default: DEFAULT_REPORTS_DIR, sensitive: false },
+  { key: "briefs_dir", label: "Brief output directory", default: DEFAULT_BRIEFS_DIR, sensitive: false },
+  { key: "ideas_dir", label: "Processed-ideas directory", default: DEFAULT_IDEAS_DIR, sensitive: false },
+];
+
+/** The credential fields `init` prompts for and the secrets file carries on `platform`. `google` is exactly {@link CREDENTIAL_FIELDS}. */
+export function credentialFieldsFor(platform: Platform): readonly ConfigField[] {
+  return platform === "meta" ? META_CREDENTIAL_FIELDS : CREDENTIAL_FIELDS;
+}
+
+/**
+ * The preference fields `init` prompts for on `platform`. `google` is exactly
+ * {@link PREFERENCE_FIELDS}. `platform` itself is never in the list — it is
+ * prompted separately — but {@link projectYamlShapeFor}`("meta")` writes it, so the
+ * caller puts `platform -> "meta"` into the value map.
+ */
+export function preferenceFieldsFor(platform: Platform): readonly ConfigField[] {
+  return platform === "meta" ? META_PREFERENCE_FIELDS : PREFERENCE_FIELDS;
+}
+
+/**
+ * Env vars that override a Meta config field (env > yaml). Google's env handling
+ * lives with its own resolvers and is unchanged.
+ */
+export const META_ENV_OVERRIDES = {
+  meta_access_token: "META_ACCESS_TOKEN",
+  meta_ad_account_id: "META_AD_ACCOUNT_ID",
+  meta_app_id: "META_APP_ID",
+  meta_app_secret: "META_APP_SECRET",
+} as const satisfies Partial<Record<keyof AdkitConfig, string>>;
+
+/** A Meta field with an env override. */
+export type MetaEnvField = keyof typeof META_ENV_OVERRIDES;
+
+/**
+ * One Meta setting through env -> yaml ({@link resolveTier}); `undefined` when both
+ * are blank. Pure: `env` and `config` are passed in. The result is still raw text —
+ * `meta/config.ts` parses it.
+ */
+export function resolveMetaSetting(field: MetaEnvField, env: NodeJS.ProcessEnv, config: AdkitConfig): string | undefined {
+  return resolveTier(null, env[META_ENV_OVERRIDES[field]], config[field]);
+}
 
 /** The committed project-preferences file, at the repo root. */
 export const PROJECT_CONFIG_FILENAME = "adkit.yaml";
@@ -296,6 +383,30 @@ export const PROJECT_YAML_SHAPE: ConfigYamlShape = {
   trailer: [],
 };
 
+/** A Meta project's git-ignored credentials file: the Meta credential fields only. No `use_proto_plus` — that key is for the google-ads client libraries. */
+export const META_SECRETS_YAML_SHAPE: ConfigYamlShape = {
+  fields: META_CREDENTIAL_FIELDS,
+  header: SECRETS_YAML_SHAPE.header,
+  trailer: [],
+};
+
+/** A Meta project's committed preferences file: `platform` first, then the Meta preference fields. */
+export const META_PROJECT_YAML_SHAPE: ConfigYamlShape = {
+  fields: [PLATFORM_FIELD, ...META_PREFERENCE_FIELDS],
+  header: PROJECT_YAML_SHAPE.header,
+  trailer: [],
+};
+
+/** The secrets-file shape for `platform`. `google` is exactly {@link SECRETS_YAML_SHAPE}. */
+export function secretsYamlShapeFor(platform: Platform): ConfigYamlShape {
+  return platform === "meta" ? META_SECRETS_YAML_SHAPE : SECRETS_YAML_SHAPE;
+}
+
+/** The committed-preferences shape for `platform`. `google` is exactly {@link PROJECT_YAML_SHAPE}. */
+export function projectYamlShapeFor(platform: Platform): ConfigYamlShape {
+  return platform === "meta" ? META_PROJECT_YAML_SHAPE : PROJECT_YAML_SHAPE;
+}
+
 /**
  * Serialize resolved field values into the yaml body text (trailing newline
  * included), emitting only the fields `shape` admits. Pure: fields absent from
@@ -397,19 +508,28 @@ export function writeYamlAtomic(target: string, body: string, mode: number): voi
  *
  * The read-modify-write is deliberate: this is called on a config that may have
  * been edited since it was loaded, and it must never drop a field it doesn't know
- * about the way a blind overwrite would. Used by the prompt-and-persist path in
+ * about the way a blind overwrite would. The shape follows the file's own
+ * `platform` key, so a Meta project's `platform` and `meta_*` fields survive the
+ * rewrite; a file without it (every Google project) keeps today's shape exactly. Used by the prompt-and-persist path in
  * `lib/customer-id.ts` — see the note there about a read-only command writing this
  * file.
  */
 export function writeConfigField(key: keyof AdkitConfig, value: string): void {
   const target = preferencesPath();
   const isLegacy = isLegacyConfigFile(target);
-  const shape = isLegacy ? COMBINED_YAML_SHAPE : PROJECT_YAML_SHAPE;
   if (isLegacy) {
     assertWritableSecretsPath(target);
   }
-  const merged = withConfigField(readConfigFile(target), key, value);
+  const current = readConfigFile(target);
+  const shape = isLegacy ? COMBINED_YAML_SHAPE : projectYamlShapeFor(filePlatform(current));
+  const merged = withConfigField(current, key, value);
   writeYamlAtomic(target, buildConfigYamlBody(configToValueMap(merged, shape.fields), shape), isLegacy ? 0o600 : 0o644);
+}
+
+/** The platform a preferences file declares; an absent or unrecognised value is `google`, so no Google file changes shape. */
+function filePlatform(config: AdkitConfig): Platform {
+  const parsed = parsePlatform(config.platform, PROJECT_CONFIG_FILENAME);
+  return parsed.kind === "ok" ? parsed.value : "google";
 }
 
 /**
