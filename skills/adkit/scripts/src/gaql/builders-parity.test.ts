@@ -7,6 +7,8 @@ import {
   applyBudgetsQuery,
   applyCampaignStatusesQuery,
   applyHeadlinesQuery,
+  applyGeoQuery,
+  applyGeoTargetTypesQuery,
   applyLanguagesQuery,
   applyNegativesQuery,
   applyPositiveKeywordsQuery,
@@ -155,6 +157,23 @@ const CASES: ReadonlyArray<[string, string]> = [
     "SELECT campaign.id, campaign_criterion.resource_name, campaign_criterion.language.language_constant FROM campaign_criterion WHERE campaign.id IN (12345,67890) AND campaign_criterion.type = LANGUAGE AND campaign_criterion.status != 'REMOVED'",
   ],
   [
+    toGaql(applyGeoQuery(IDS)),
+    "SELECT campaign.id, campaign_criterion.resource_name, campaign_criterion.location.geo_target_constant, " +
+      "campaign_criterion.proximity.radius, campaign_criterion.proximity.radius_units, " +
+      "campaign_criterion.proximity.geo_point.latitude_in_micro_degrees, " +
+      "campaign_criterion.proximity.geo_point.longitude_in_micro_degrees, " +
+      "campaign_criterion.proximity.address.street_address, campaign_criterion.proximity.address.city_name, " +
+      "campaign_criterion.proximity.address.province_code, campaign_criterion.proximity.address.postal_code, " +
+      "campaign_criterion.proximity.address.country_code FROM campaign_criterion WHERE campaign.id IN (12345,67890) " +
+      "AND campaign_criterion.type IN ('LOCATION', 'PROXIMITY') AND campaign_criterion.negative = FALSE " +
+      "AND campaign_criterion.status != 'REMOVED'",
+  ],
+  [
+    toGaql(applyGeoTargetTypesQuery(IDS)),
+    "SELECT campaign.id, campaign.geo_target_type_setting.positive_geo_target_type FROM campaign " +
+      "WHERE campaign.id IN (12345,67890)",
+  ],
+  [
     toGaql(applyHeadlinesQuery(IDS)),
     "SELECT ad_group_ad.ad.id, ad_group_ad.ad.responsive_search_ad.headlines FROM ad_group_ad WHERE ad_group_ad.ad.id IN (12345,67890)",
   ],
@@ -170,6 +189,6 @@ describe("builder GAQL parity (toGaql reproduces the pre-refactor strings)", () 
   });
 
   it("covers every builder family (report, audit, apply-fixes)", () => {
-    expect(CASES.length).toBe(29);
+    expect(CASES.length).toBe(31);
   });
 });

@@ -226,10 +226,13 @@ export const LocationSchema = z
     message: 'use a geo target id ("1014221") or a canonical name ("Chicago,Illinois,United States")',
   });
 
-/** Campaign `locations`: omit for the default US + Canada; otherwise 1+ unique locations. */
+/**
+ * Campaign `locations`: omit for the default US + Canada; an explicit `[]` means "no
+ * location criteria at all" (the whole world, or radius-only targeting — `resolveLocations`
+ * already treats an empty list that way). Otherwise 1+ unique locations.
+ */
 const locationsField = z
   .array(LocationSchema)
-  .min(1)
   .refine((ls) => new Set(ls).size === ls.length, { message: "locations: no duplicates" })
   .optional();
 
@@ -258,7 +261,9 @@ export const RadiusTargetSchema = z
     latitude: z.number().gte(-90).lte(90).optional(),
     longitude: z.number().gte(-180).lte(180).optional(),
     radius: z.number().gt(0),
-    units: z.enum(["miles", "kilometers"]),
+    // Case-insensitive: a plan/brief may write MILES or miles (Google's own enum is
+    // upper-case), and the parsed value is always the lower-case form.
+    units: z.preprocess((v) => (typeof v === "string" ? v.toLowerCase() : v), z.enum(["miles", "kilometers"])),
   })
   .strict()
   .superRefine((r, ctx) => {
@@ -280,6 +285,16 @@ export type RadiusTarget = z.infer<typeof RadiusTargetSchema>;
 
 /** Campaign `radiusTargets`: omit for none. With radius targets and no `locations`, there is no US + Canada default. */
 const radiusTargetsField = z.array(RadiusTargetSchema).min(1).optional();
+
+/**
+ * Who a targeted location reaches. PRESENCE = only people physically inside it;
+ * PRESENCE_OR_INTEREST (Google's own default) also reaches people *searching for* it
+ * from elsewhere — a parent researching a local program from an out-of-town office.
+ * Omitted => PRESENCE, which is what every campaign `/adkit create` publishes uses.
+ */
+export const GEO_TARGET_TYPES = ["PRESENCE", "PRESENCE_OR_INTEREST"] as const;
+export type GeoTargetType = (typeof GEO_TARGET_TYPES)[number];
+const geoTargetTypeField = z.enum(GEO_TARGET_TYPES).optional();
 
 export const NETWORK_SETTINGS = ["search-only", "search-partners-display"] as const;
 export const DEVICES = ["computer", "mobile", "tablet", "tv"] as const;
@@ -306,6 +321,7 @@ export const CampaignSchema = z
     // Geo targeting. Undefined => US + Canada, unless radiusTargets are given (then none).
     locations: locationsField,
     radiusTargets: radiusTargetsField,
+    geoTargetType: geoTargetTypeField,
     // Campaign-level negative keywords — shared across all ad groups.
     negativeKeywords: z.array(KeywordSchema).default([]),
     targetCpaMicros: z.number().int().gt(0).optional(),
@@ -627,6 +643,7 @@ export const DisplayCampaignSchema = z
     devices: z.array(z.enum(DEVICES)).min(1).optional(),
     locations: locationsField, // undefined => US + Canada, unless radiusTargets are given
     radiusTargets: radiusTargetsField,
+    geoTargetType: geoTargetTypeField,
   })
   .strict()
   .refine((c) => c.cpcBidCeilingMicros === undefined || c.bidStrategy === "maximize-clicks", {
@@ -663,6 +680,44 @@ export function parseAnyBrief(data: unknown): AnyBrief {
   const type = data !== null && typeof data === "object" ? (data as { type?: unknown }).type : undefined;
   return type === "display" ? DisplayBriefSchema.parse(data) : BriefSchema.parse(data);
 }
+
+/**
+ * One `geo` block on an `/adkit update` fixes plan: the campaign's positive geo
+ * targeting, declared as a **replace set** — after the mutation its positive geo
+ * criteria are exactly what this block lists (additions created, live criteria not
+ * listed removed, already-correct ones skipped). Same vocabulary `/adkit create`
+ * briefs use (`locations`, `radiusTargets`), so the two can never drift.
+ *
+ * An absent `locations`/`radiusTargets` means "none of that kind". A block with
+ * NEITHER removes all geo targeting, which serves the whole world and spends real
+ * money, so it is refused unless it carries an explicit `allowUnrestricted: true`.
+ *
+ * `geoTargetType` is a campaign *setting*, not a criterion: it is left untouched when
+ * the block omits it, rather than being reset to a default.
+ */
+export const GeoChangeSchema = z
+  .object({
+    campaignId: z.coerce.string().regex(/^[0-9]+$/),
+    locations: z.array(LocationSchema).refine((ls) => new Set(ls).size === ls.length, {
+      message: "locations: no duplicates",
+    }).optional(),
+    radiusTargets: z.array(RadiusTargetSchema).optional(),
+    geoTargetType: z.enum(GEO_TARGET_TYPES).optional(),
+    allowUnrestricted: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((g, ctx) => {
+    const empty = (g.locations ?? []).length === 0 && (g.radiusTargets ?? []).length === 0;
+    if (empty && g.allowUnrestricted !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "a geo block with no locations and no radiusTargets removes ALL geo targeting " +
+          "(the campaign then serves worldwide) — set allowUnrestricted: true to confirm",
+      });
+    }
+  });
+export type GeoChange = z.infer<typeof GeoChangeSchema>;
 
 export const CampaignStatusChangeSchema = z
   .object({
@@ -721,6 +776,7 @@ export const FAILURE_STEPS = [
   "create-keywords",
   "resolve-locations",
   "target-radius",
+  "target-geo-type",
   "create-display-campaign",
   "create-image-assets",
   "create-audiences",

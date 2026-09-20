@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { enums } from "google-ads-api";
 import { parse as yamlParseForTest } from "yaml";
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
@@ -1060,6 +1061,274 @@ describe("languages path", () => {
 });
 
 // ---------------------------------------------------------------------------
+// geo — campaign location targeting as a declarative replace-set. The Gambrills
+// case: a live campaign whose entire targeting is one 25-mile proximity circle and
+// which therefore serves nobody, fixed from a plan instead of from the Ads UI.
+// ---------------------------------------------------------------------------
+
+/** Known geo target constants the fake resolver can resolve (anything else is unknown). */
+const GEO_CONSTANTS: Array<{ id: string; canonicalName: string }> = [
+  { id: "1014221", canonicalName: "Anne Arundel County,Maryland,United States" },
+  { id: "2840", canonicalName: "United States" },
+];
+
+/** A live PROXIMITY criterion row, as the API returns one (units decoded, geo point filled in). */
+function proximityRow(resourceName: string, postalCode: string, radius: number): Record<string, unknown> {
+  return {
+    campaign: { id: 500 },
+    campaign_criterion: {
+      resource_name: resourceName,
+      proximity: {
+        radius,
+        radius_units: "MILES",
+        address: { postal_code: postalCode, country_code: "US" },
+        geo_point: { latitude_in_micro_degrees: 39062000, longitude_in_micro_degrees: -76664000 },
+      },
+    },
+  };
+}
+
+/** A live LOCATION criterion row. */
+function locationRow(resourceName: string, geoTargetConstant: string): Record<string, unknown> {
+  return {
+    campaign: { id: 500 },
+    campaign_criterion: { resource_name: resourceName, location: { geo_target_constant: geoTargetConstant } },
+  };
+}
+
+/**
+ * Fake client for a geo-only plan: `searchStructured` answers the one live-criteria
+ * read it triggers (every other live-state fetch short-circuits on an empty id list),
+ * and `search` answers `resolveLocations`' geo_target_constant lookups from
+ * {@link GEO_CONSTANTS} — a name absent from that table resolves to nothing, exactly
+ * as an unknown location does live.
+ */
+function geoClient(
+  liveRows: Array<Record<string, unknown>>,
+  failOn?: (op: AdsMutateOperation) => boolean,
+  liveGeoTargetType?: string,
+): { client: AdsClient; mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> } {
+  const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
+  const client: AdsClient = {
+    async search<Row = unknown>(_customerId: string, query: string): Promise<Row[]> {
+      if (!query.includes("geo_target_constant")) {
+        return [] as Row[];
+      }
+      return GEO_CONSTANTS.map((g) => ({
+        geo_target_constant: { resource_name: `geoTargetConstants/${g.id}`, id: g.id, canonical_name: g.canonicalName },
+      })) as Row[];
+    },
+    async searchStructured<Row = unknown>(_customerId: string, args: SearchArgs): Promise<Row[]> {
+      if (args.resource === "campaign") {
+        return (liveGeoTargetType === undefined
+          ? []
+          : [{ campaign: { id: 500, geo_target_type_setting: { positive_geo_target_type: liveGeoTargetType } } }]) as Row[];
+      }
+      return liveRows as Row[];
+    },
+    async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
+      if (failOn && operations.some(failOn)) {
+        throw new Error("simulated Google Ads API failure");
+      }
+      mutations.push({ customerId, operations });
+      return { results: operations.map(() => ({ resource_name: "customers/1111111111/campaignCriteria/x" })) };
+    },
+  };
+  return { client, mutations };
+}
+
+function writeGeoPlan(blocks: Array<Record<string, unknown>>, at: string = dir): string {
+  const p = join(at, "geo-plan.json");
+  writeFileSync(p, JSON.stringify({ customerId: "1111111111", geo: blocks }));
+  return p;
+}
+
+/** The JSON envelope emitted at the end of a run. */
+function envelope(out: string): Record<string, unknown> {
+  return JSON.parse(out.slice(out.indexOf("{"))) as Record<string, unknown>;
+}
+
+describe("geo path", () => {
+  const wider = { address: { postalCode: "21054", countryCode: "US" }, radius: 40, units: "miles" };
+
+  it("dry-run: shows the 25mi criterion removed and the 40mi one added, mutating nothing", async () => {
+    const { client, mutations } = geoClient([proximityRow("cc/25mi", "21054", 25)]);
+    currentClient = client;
+
+    const cap = captureStdout();
+    expect(await main([writeGeoPlan([{ campaignId: "500", radiusTargets: [wider] }])])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("geo campaign 500: +0 locations, +1 radius, -1 removed");
+    expect(mutations).toEqual([]);
+  });
+
+  it("apply: a radius change is a remove + add in ONE batch (radius is immutable live)", async () => {
+    const { client, mutations } = geoClient([proximityRow("cc/25mi", "21054", 25)]);
+    currentClient = client;
+
+    const cap = captureStdout();
+    expect(await main([writeGeoPlan([{ campaignId: "500", radiusTargets: [wider] }]), "--apply"])).toBe(0);
+    cap.text();
+
+    expect(mutations).toHaveLength(1);
+    const ops = mutations[0]!.operations;
+    expect(ops.map((o) => o.operation)).toEqual(["remove", "create"]);
+    expect(ops[0]!.resource).toEqual({ resource_name: "cc/25mi" });
+    expect((ops[1]!.resource as { proximity: { radius: number } }).proximity.radius).toBe(40);
+  });
+
+  it("replace-set: adds what is listed, removes what is not, skips what already matches", async () => {
+    const { client, mutations } = geoClient([
+      locationRow("cc/keep", "geoTargetConstants/1014221"),
+      locationRow("cc/drop", "geoTargetConstants/2840"),
+    ]);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const plan = writeGeoPlan([
+      { campaignId: "500", locations: ["Anne Arundel County,Maryland,United States"], radiusTargets: [wider] },
+    ]);
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("geo campaign 500: +0 locations, +1 radius, -1 removed");
+    expect(mutations[0]!.operations.map((o) => o.operation)).toEqual(["remove", "create"]);
+    expect(mutations[0]!.operations[0]!.resource).toEqual({ resource_name: "cc/drop" });
+  });
+
+  it("idempotent re-run: a campaign already matching is skipped, never re-mutated", async () => {
+    const { client, mutations } = geoClient([proximityRow("cc/40mi", "21054", 40)]);
+    currentClient = client;
+
+    const cap = captureStdout();
+    expect(await main([writeGeoPlan([{ campaignId: "500", radiusTargets: [wider] }]), "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("geo campaign 500: already matches, skipped");
+    expect(mutations).toEqual([]);
+    expect((envelope(out).geoSkipped as unknown[])).toHaveLength(1);
+  });
+
+  it("an unresolvable location rejects the WHOLE plan, naming it, with error.step resolve-locations", async () => {
+    const { client, mutations } = geoClient([proximityRow("cc/25mi", "21054", 25)]);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const plan = writeGeoPlan([{ campaignId: "500", locations: ["Gambrills,Maryland,United States"] }]);
+    expect(await main([plan, "--apply"])).toBe(1);
+    const out = cap.text();
+
+    expect(out).toContain("VALIDATION FAILED");
+    expect(out).toContain("Gambrills,Maryland,United States");
+    const payload = envelope(out);
+    expect(payload.ok).toBe(false);
+    expect(payload.step).toBe("resolve-locations");
+    expect(mutations).toEqual([]); // nothing mutated — rejection happens before any write
+  });
+
+  it("an empty set is refused at validation unless allowUnrestricted says so", async () => {
+    const { client, mutations } = geoClient([proximityRow("cc/25mi", "21054", 25)]);
+    currentClient = client;
+
+    const cap = captureStdout();
+    expect(await main([writeGeoPlan([{ campaignId: "500" }]), "--apply"])).toBe(1);
+    const out = cap.text();
+    expect(out).toContain("allowUnrestricted");
+    expect(mutations).toEqual([]);
+
+    const { client: c2, mutations: m2 } = geoClient([proximityRow("cc/25mi", "21054", 25)]);
+    currentClient = c2;
+    const cap2 = captureStdout();
+    expect(await main([writeGeoPlan([{ campaignId: "500", allowUnrestricted: true }]), "--apply"])).toBe(0);
+    const out2 = cap2.text();
+    expect(m2[0]!.operations.map((o) => o.operation)).toEqual(["remove"]);
+    expect(out2).toContain("widens reach"); // clearing all targeting IS the widest change
+  });
+
+  it("widening is surfaced loudly (warning + envelope key); narrowing is not", async () => {
+    const { client } = geoClient([proximityRow("cc/25mi", "21054", 25)]);
+    currentClient = client;
+    const cap = captureStdout();
+    await main([writeGeoPlan([{ campaignId: "500", radiusTargets: [wider] }])]);
+    const out = cap.text();
+    expect(out).toContain("WARNING: geo change widens reach (more live spend) on campaign(s): 500");
+    expect(envelope(out).geoWideningIncreasesReach).toEqual(["500"]);
+
+    const { client: c2 } = geoClient([proximityRow("cc/40mi", "21054", 40)]);
+    currentClient = c2;
+    const cap2 = captureStdout();
+    await main([writeGeoPlan([{ campaignId: "500", radiusTargets: [{ ...wider, radius: 10 }] }])]);
+    const out2 = cap2.text();
+    expect(out2).not.toContain("widens reach");
+    expect(envelope(out2).geoWideningIncreasesReach).toEqual([]);
+  });
+
+  it("units: MILES publishes MILES (the plan is parsed once, never re-cast raw)", async () => {
+    const { client, mutations } = geoClient([]);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const plan = writeGeoPlan([{ campaignId: "500", radiusTargets: [{ ...wider, units: "MILES" }] }]);
+    expect(await main([plan, "--apply"])).toBe(0);
+    cap.text();
+
+    const proximity = (mutations[0]!.operations[0]!.resource as { proximity: Record<string, unknown> }).proximity;
+    expect(proximity.radius_units).toBe(enums.ProximityRadiusUnits.MILES);
+    expect(proximity.radius).toBe(40);
+  });
+
+  it("a radius over the cap is rejected in the unit the plan actually wrote", async () => {
+    const { client, mutations } = geoClient([]);
+    currentClient = client;
+    const cap = captureStdout();
+    const plan = writeGeoPlan([{ campaignId: "500", radiusTargets: [{ ...wider, radius: 501, units: "MILES" }] }]);
+    expect(await main([plan, "--apply"])).toBe(1);
+    expect(cap.text()).toContain("max is 500 miles");
+    expect(mutations).toEqual([]);
+  });
+
+  it("geoTargetType already set live is skipped — no mutate, no false widening warning", async () => {
+    const { client, mutations } = geoClient([proximityRow("cc/40mi", "21054", 40)], undefined, "PRESENCE_OR_INTEREST");
+    currentClient = client;
+
+    const cap = captureStdout();
+    const plan = writeGeoPlan([
+      { campaignId: "500", radiusTargets: [wider], geoTargetType: "PRESENCE_OR_INTEREST" },
+    ]);
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("geo campaign 500: already matches, skipped");
+    expect(out).not.toContain("widens reach");
+    expect(mutations).toEqual([]);
+    expect(envelope(out).geoWideningIncreasesReach).toEqual([]);
+  });
+
+  it("geoTargetType updates the campaign setting and counts as widening when loosened", async () => {
+    const { client, mutations } = geoClient([proximityRow("cc/40mi", "21054", 40)]);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const plan = writeGeoPlan([
+      { campaignId: "500", radiusTargets: [wider], geoTargetType: "PRESENCE_OR_INTEREST" },
+    ]);
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("targeting PRESENCE_OR_INTEREST");
+    expect(out).toContain("widens reach");
+    // The criteria already match, so the ONLY mutation is the campaign setting.
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]!.operations[0]!.entity).toBe("campaign");
+    expect(mutations[0]!.operations[0]!.resource).toEqual({
+      resource_name: "customers/1111111111/campaigns/500",
+      geo_target_type_setting: { positive_geo_target_type: enums.PositiveGeoTargetType.PRESENCE_OR_INTEREST },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // rewrites — display-path (path1/path2) change (issue #14, item 5a)
 // ---------------------------------------------------------------------------
 
@@ -1420,6 +1689,58 @@ describe("adbriefs staging (dry-run diff, apply write, partial-failure safety)",
     expect(persisted.adGroups[0]!.responsiveSearchAds[0]!.headlines.map((h: { text: string }) => h.text)).toEqual(
       Array.from({ length: 15 }, (_, i) => `staged headline ${i}`),
     );
+  });
+
+  // The acceptance case: a geo mutation MUST stage into the brief, or the brief is
+  // left asserting targeting the account no longer has.
+  describe("geo", () => {
+    const wider = { address: { postalCode: "21054", countryCode: "US" }, radius: 40, units: "miles" };
+
+    function geoPlan(): string {
+      return writeGeoPlan([{ campaignId: "500", radiusTargets: [wider] }], root);
+    }
+
+    it("dry-run: prints the brief diff gaining the new targeting, and writes no file", async () => {
+      const { client } = geoClient([proximityRow("cc/25mi", "21054", 25)]);
+      currentClient = client;
+      const before = readFileSync(briefPath(), "utf8");
+
+      const cap = captureStdout();
+      expect(await main([geoPlan()])).toBe(0);
+      const out = cap.text();
+
+      expect(out).toContain("radiusTargets");
+      expect(readFileSync(briefPath(), "utf8")).toBe(before);
+      expect(envelope(out).briefs).toMatchObject([{ briefSynced: false, briefDiff: { changed: true } }]);
+    });
+
+    it("apply: the brief comes out matching the account", async () => {
+      const { client } = geoClient([proximityRow("cc/25mi", "21054", 25)]);
+      currentClient = client;
+
+      const cap = captureStdout();
+      expect(await main([geoPlan(), "--apply"])).toBe(0);
+      const out = cap.text();
+
+      expect(envelope(out).briefs).toMatchObject([{ briefSynced: true }]);
+      expect(onDiskBrief().campaign.radiusTargets).toEqual([wider]);
+      expect(onDiskBrief().campaign.locations).toBeUndefined();
+    });
+
+    it("a failed geo mutation leaves the brief byte-for-byte unchanged (briefSynced false)", async () => {
+      const { client } = geoClient([proximityRow("cc/25mi", "21054", 25)], (op) => op.entity === "campaign_criterion");
+      currentClient = client;
+      const before = readFileSync(briefPath(), "utf8");
+
+      const cap = captureStdout();
+      expect(await main([geoPlan(), "--apply"])).toBe(1);
+      const out = cap.text();
+
+      expect(out).toContain("diverged");
+      expect(out).toContain("geo (campaign 500)");
+      expect(readFileSync(briefPath(), "utf8")).toBe(before);
+      expect(envelope(out).briefs).toMatchObject([{ briefSynced: false }]);
+    });
   });
 
   it("partial failure (T016): a mutation failure leaves the brief byte-for-byte unchanged and reports briefSynced false", async () => {

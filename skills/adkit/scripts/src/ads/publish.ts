@@ -40,6 +40,7 @@ import {
   targetDevices,
   effectiveLocations,
   resolveLocations,
+  setGeoTargetType,
   targetRadius,
   targetLocations,
   ALL_DEVICES,
@@ -165,6 +166,16 @@ export async function publishV1(
     await step("target-devices", () =>
       targetDevices(client, customerId, results.campaignId!, brief.campaign.devices),
     );
+    // Reconciled only when the brief states one. An omitted field means "whatever
+    // adkit's create op writes", i.e. PRESENCE — so a fresh campaign is already right,
+    // and a REUSED one is left alone rather than being narrowed behind the operator's
+    // back. The gap that leaves: a brief that once set PRESENCE_OR_INTEREST and then
+    // dropped the key keeps the looser setting live. Restate it, or use update's geo
+    // lever, to move it back.
+    if (brief.campaign.geoTargetType !== undefined) {
+      const geoTargetType = brief.campaign.geoTargetType;
+      await step("target-geo-type", () => setGeoTargetType(client, customerId, results.campaignId!, geoTargetType));
+    }
     if (!existingCampaign) {
       await step("create-negative-keywords", () =>
         createNegativeKeywords(client, customerId, results.campaignId!, brief.campaign.negativeKeywords),
@@ -325,6 +336,16 @@ export async function publishDisplay(
     await step("target-devices", () =>
       targetDevices(client, customerId, results.campaignId!, brief.campaign.devices ?? [...ALL_DEVICES]),
     );
+    // Reconciled only when the brief states one. An omitted field means "whatever
+    // adkit's create op writes", i.e. PRESENCE — so a fresh campaign is already right,
+    // and a REUSED one is left alone rather than being narrowed behind the operator's
+    // back. The gap that leaves: a brief that once set PRESENCE_OR_INTEREST and then
+    // dropped the key keeps the looser setting live. Restate it, or use update's geo
+    // lever, to move it back.
+    if (brief.campaign.geoTargetType !== undefined) {
+      const geoTargetType = brief.campaign.geoTargetType;
+      await step("target-geo-type", () => setGeoTargetType(client, customerId, results.campaignId!, geoTargetType));
+    }
     const assets = await step("create-image-assets", () => createImageAssets(client, customerId, images));
     results.imageAssetResourceNames = [...assets.values()];
     for (const [idx, briefAg] of brief.adGroups.entries()) {

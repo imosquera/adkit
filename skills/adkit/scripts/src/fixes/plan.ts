@@ -15,12 +15,14 @@ import {
   AdGroupStatusChangeSchema,
   AdStatusChangeSchema,
   CampaignStatusChangeSchema,
+  GeoChangeSchema,
   KeywordSchema,
   PHONE_NUMBER_MESSAGE,
   SearchPartnersChangeSchema,
   displayPathPairErrors,
   hasPhoneNumber,
   type AdGroup,
+  type GeoChange,
   type Keyword,
 } from "../lib/schema.js";
 import { pyRepr, pyStr } from "../cli/py-format.js";
@@ -404,6 +406,62 @@ function languagesErrors(languageBlocks: Array<Record<string, unknown>>): string
     ];
   };
   return languageBlocks.flatMap(one);
+}
+
+/**
+ * Validate each `geo` block against {@link GeoChangeSchema} — the replace-set shape,
+ * the radius caps `/adkit create` briefs already enforce, and the `allowUnrestricted`
+ * guardrail on a block that would clear all geo targeting. Every issue surfaces
+ * prefixed with the campaign id. Mirrors {@link statusChangeErrors}.
+ */
+function geoErrors(blocks: unknown[]): string[] {
+  const one = (item: unknown): string[] => {
+    if (!isObject(item)) {
+      return [`geo: entry must be an object, got ${pyTypeName(item)}`];
+    }
+    const parsed = GeoChangeSchema.safeParse(item);
+    if (parsed.success) {
+      return [];
+    }
+    return parsed.error.issues.map((issue: ZodIssue) => {
+      const loc = issue.path.map((p) => String(p)).join(".") || "?";
+      return `geo campaign ${pyRepr(item["campaignId"])}: ${loc}: ${issue.message}`;
+    });
+  };
+  // A geo block declares the campaign's WHOLE positive geo set, so two blocks for one
+  // campaign contradict each other: each is diffed against the same live state, and
+  // applying both would try to remove a criterion the first block already removed.
+  // Keyed the way the live-state maps key ids (asInt, not the raw spelling), so
+  // "0500" and 500 — which resolve to the same campaign downstream — are caught as
+  // the duplicate they are. A block with no usable id is already failing above.
+  const ids = blocks.filter(isObject).map((b) => asInt(b["campaignId"]));
+  const duplicates = [
+    ...new Set(ids.filter((id, i) => id !== null && ids.indexOf(id) !== i)),
+  ];
+  return [
+    ...blocks.flatMap(one),
+    ...duplicates.map(
+      (id) =>
+        `geo campaign ${pyStr(id)}: more than one geo block for the same campaign — ` +
+        "a geo block declares the campaign's whole positive geo set, so merge them into one",
+    ),
+  ];
+}
+
+/**
+ * Parse each `geo` block into the typed {@link GeoChange} the mutation and staging
+ * paths consume. Blocks are assumed already validated by {@link geoErrors}, so a parse
+ * failure here drops the block defensively (mirrors {@link addAdGroupsPlan}).
+ *
+ * This is the ONLY way a geo block should reach either path: re-casting the raw YAML
+ * skips the schema's normalization — `units: MILES` would stay upper-case and publish
+ * as KILOMETERS, and the radius cap would be checked against the wrong unit.
+ */
+export function geoPlan(blocks: Array<Record<string, unknown>>): GeoChange[] {
+  return blocks.flatMap((b) => {
+    const parsed = GeoChangeSchema.safeParse(b);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 function rewritesErrors(rewrites: Array<Record<string, unknown>>): string[] {
@@ -1111,5 +1169,6 @@ export function validate(
     ...searchPartnersPreconditionErrors(arr("searchPartners"), liveSearchPartnersGoogleSearch ?? new Map()),
     ...adGroupsErrors(arr("adGroups")),
     ...languagesErrors(arr("languages")),
+    ...geoErrors(arr("geo")),
   ];
 }

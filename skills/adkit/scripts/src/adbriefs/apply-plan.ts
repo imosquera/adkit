@@ -16,7 +16,7 @@
  * "no-state-file" degrade case.
  */
 
-import type { AdGroup, Brief, Keyword } from "../lib/schema.js";
+import type { AdGroup, Brief, GeoTargetType, Keyword, RadiusTarget } from "../lib/schema.js";
 import { coerceKeyword, keyStr, negKey, posKey, type AdGroupCreatePlanEntry } from "../fixes/plan.js";
 import type { AdGroupLocator, StateIndex } from "./state.js";
 
@@ -59,7 +59,9 @@ interface ResolvedAdGroupCreateBlock {
  * module doc). `campaignStatus`/`adGroupStatus`/`adStatus`/`searchPartners`/`languages`
  * are walked for resolution (so an unresolvable id in those sections still warns) but
  * are not carried into `sections`: the {@link Brief} schema has no live-status,
- * search-partners, or language field to stage them into.
+ * search-partners, or language field to stage them into. `geo` IS carried: the brief
+ * owns `campaign.locations`/`radiusTargets`/`geoTargetType`, so a geo mutation that
+ * skipped staging would leave the brief asserting targeting the account no longer has.
  */
 export interface ResolvedPlanGroup {
   slug: string;
@@ -73,6 +75,7 @@ export interface ResolvedPlanGroup {
     keywords: ResolvedKeywordsBlock[];
     budgets: Array<Record<string, unknown>>;
     bidding: Array<Record<string, unknown>>;
+    geo: Array<Record<string, unknown>>;
     adGroups: ResolvedAdGroupCreateBlock[];
   };
   unresolvedIds: UnresolvedId[];
@@ -91,6 +94,7 @@ function emptySections(): ResolvedPlanGroup["sections"] {
     keywords: [],
     budgets: [],
     bidding: [],
+    geo: [],
     adGroups: [],
   };
 }
@@ -105,6 +109,7 @@ export interface PlanSections {
   keywords?: Array<Record<string, unknown>>;
   budgets?: Array<Record<string, unknown>>;
   bidding?: Array<Record<string, unknown>>;
+  geo?: Array<Record<string, unknown>>;
   campaignStatus?: Array<Record<string, unknown>>;
   adGroupStatus?: Array<Record<string, unknown>>;
   adStatus?: Array<Record<string, unknown>>;
@@ -207,6 +212,7 @@ export function resolvePlanGroups(plan: PlanSections, index: StateIndex): Resolv
   campaignSection("negatives", (g, b) => g.sections.negatives.push(b));
   campaignSection("budgets", (g, b) => g.sections.budgets.push(b));
   campaignSection("bidding", (g, b) => g.sections.bidding.push(b));
+  campaignSection("geo", (g, b) => g.sections.geo.push(b));
   campaignSection("adGroups", (g, b) => g.sections.adGroups.push({ block: b }));
   // campaignStatus/searchPartners/languages: resolved for the warning only (no Brief field).
   campaignSection("campaignStatus", null);
@@ -401,6 +407,36 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
       : undefined
     : campaign.targetRoas;
 
+  // geo (replace-set): the last block wins, and it declares the campaign's WHOLE
+  // positive geo set, so an absent key means "none of that kind" — not "leave as is".
+  // The one exception is `locations` alongside `radiusTargets`: the brief already
+  // spells that as an absent `locations` (see `effectiveLocations`), so it stays
+  // absent rather than becoming a noisy explicit `[]`. `geoTargetType` is a campaign
+  // setting rather than a criterion set, so an absent key does leave it alone.
+  const lastGeo = group.sections.geo[group.sections.geo.length - 1];
+  const geoRadiusTargets = lastGeo
+    ? ((Array.isArray(lastGeo["radiusTargets"]) ? (lastGeo["radiusTargets"] as RadiusTarget[]) : []).length > 0
+        ? (lastGeo["radiusTargets"] as RadiusTarget[])
+        : undefined)
+    : campaign.radiusTargets;
+  const geoLocations = lastGeo
+    ? Array.isArray(lastGeo["locations"]) && (lastGeo["locations"] as string[]).length > 0
+      ? (lastGeo["locations"] as string[])
+      : geoRadiusTargets !== undefined
+        ? undefined
+        : []
+    : campaign.locations;
+  const geoTargetType = lastGeo
+    ? ((lastGeo["geoTargetType"] as GeoTargetType | undefined) ?? campaign.geoTargetType)
+    : campaign.geoTargetType;
+  // Compared as serialized values: a key-order difference between a raw plan block and
+  // the zod-parsed brief can only ever over-report a change, and the diff is the real
+  // gate (a staged brief that serializes identically is never rewritten).
+  const geoChanged =
+    lastGeo !== undefined &&
+    JSON.stringify([geoLocations, geoRadiusTargets, geoTargetType]) !==
+      JSON.stringify([campaign.locations, campaign.radiusTargets, campaign.geoTargetType]);
+
   const campaignChanged =
     newSitelinks.length > 0 ||
     newCallouts.length > 0 ||
@@ -409,7 +445,8 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
     bidStrategy !== campaign.bidStrategy ||
     cpcBidCeilingMicros !== campaign.cpcBidCeilingMicros ||
     targetCpaMicros !== campaign.targetCpaMicros ||
-    targetRoas !== campaign.targetRoas;
+    targetRoas !== campaign.targetRoas ||
+    geoChanged;
 
   return {
     ...base,
@@ -430,6 +467,12 @@ export function applyPlanToBrief(base: Brief, group: ResolvedPlanGroup, computed
           cpcBidCeilingMicros,
           targetCpaMicros,
           targetRoas,
+          // Explicit keys for the same reason as the bidding trio above: a geo block
+          // that drops every location must CLEAR `locations`, not inherit the old
+          // list from `...campaign`.
+          locations: geoLocations,
+          radiusTargets: geoRadiusTargets,
+          geoTargetType,
         }
       : campaign,
   };

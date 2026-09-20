@@ -26,13 +26,33 @@
  *   "adGroupStatus": [{"adGroupId": "789", "status": "PAUSED"}],     // flip an ad group on/off
  *   "adStatus": [{"adId": "123", "status": "ENABLED"}],             // flip a single ad on/off (e.g. enable a new group's PAUSED ad)
  *   "adGroups":  [{"campaignId": 456, "adGroup": {<brief ad group: name, defaultBidMicros, responsiveSearchAds (exactly 2), keywords>}}],  // add a new ad group
- *   "languages": [{"campaignId": 456}]                               // make the campaign English-only
+ *   "languages": [{"campaignId": 456}],                              // make the campaign English-only
+ *   "geo": [{"campaignId": 456, "locations": ["1014221"], "radiusTargets": [...], "geoTargetType": "PRESENCE"}]
  * }
  *
  * languages makes a campaign serve in English only: it adds the English language
  * criterion and removes any other live language criteria (Google's default is an
  * implicit "all languages"). Idempotent — an already-English campaign is reported
  * skipped, never duplicated.
+ *
+ * geo sets a campaign's positive location targeting as a DECLARATIVE REPLACE SET: after
+ * the mutation the campaign's positive geo criteria are exactly what the block lists —
+ * additions created, live criteria not listed removed, already-correct ones skipped
+ * (idempotent, so a plan is safe to re-run). It speaks the same `locations` /
+ * `radiusTargets` vocabulary /adkit create briefs use and resolves names through the
+ * same `resolve-locations` step, so the two can never drift. A radius is immutable on a
+ * live criterion, so a radius change is a remove + add in the same mutate batch.
+ * Two guardrails: a block listing NO locations and NO radius targets clears all geo
+ * targeting (the campaign then serves worldwide) and is refused unless it carries
+ * `allowUnrestricted: true`; and a set that strictly widens live reach is surfaced
+ * loudly (a warning line + `geoWideningIncreasesReach` in the envelope), like ENABLE —
+ * and the gate is conservative: anything that is not provably a subset of the live set
+ * warns, since containment between two geo target constants is not knowable from their
+ * resource names.
+ * `geoTargetType` (PRESENCE / PRESENCE_OR_INTEREST) is a campaign setting rather than a
+ * criterion — omitting it, or naming the type the campaign is already set to, leaves
+ * the live setting alone. Negative (excluded) locations,
+ * ad schedule, and per-location bid modifiers are out of scope.
  *
  * A new ad group (`adGroups`) is authored in the same shape a /adkit create brief ad
  * group uses (full 15/4 RSA + 1–30 keywords), validated by the same AdGroupSchema.
@@ -66,7 +86,7 @@ import { join } from "node:path";
 import { parse as yamlParse, YAMLParseError } from "yaml";
 import { z } from "zod";
 import { isMainModule } from "../cli/entry.js";
-import { formatGoogleAdsError } from "../ads/errors.js";
+import { StepError, formatGoogleAdsError } from "../ads/errors.js";
 import { ADBRIEFS_DIR, AdbriefsError, writeBrief } from "../adbriefs/store.js";
 import { loadConfig, resolveBriefsDir, resolveTier } from "../lib/config.js";
 import { MCC_CUSTOMER_ID_ENV } from "../cli/args.js";
@@ -79,7 +99,7 @@ import {
   type ApplyPlanComputed,
   type ResolvedPlanGroup,
 } from "../adbriefs/apply-plan.js";
-import { parseBrief, type AdGroup, type Brief } from "../lib/schema.js";
+import { parseBrief, type AdGroup, type Brief, type GeoTargetType } from "../lib/schema.js";
 
 import {
   createAdGroup,
@@ -92,8 +112,14 @@ import {
   setAdGroupAdStatus,
   setCampaignStatus,
   setSearchPartners,
+  buildGeoOps,
   buildKeywordOps,
   buildLanguageOps,
+  geoCriterionPlan,
+  resolveLocations,
+  setGeoTargetType,
+  type GeoCriterion,
+  type GeoCriterionPlan,
   buildNegativeKeywordOps,
   ENGLISH_LANGUAGE_CONSTANT,
 } from "../ads/entities.js";
@@ -108,6 +134,7 @@ import {
   biddingPlan,
   campaignStatusPlan,
   coerceKeyword,
+  geoPlan,
   keyStr,
   negKey,
   newNegatives,
@@ -127,6 +154,8 @@ import {
   applyBiddingGuardQuery,
   applyBudgetsQuery,
   applyCampaignStatusesQuery,
+  applyGeoQuery,
+  applyGeoTargetTypesQuery,
   applyHeadlinesQuery,
   applyLanguagesQuery,
   applyNegativesQuery,
@@ -230,6 +259,15 @@ interface HeadlineRow {
 interface AdGroupNameRow {
   campaign: { id: number };
   ad_group: { name: string };
+}
+
+interface GeoRow {
+  campaign: { id: number };
+  campaign_criterion: GeoCriterion;
+}
+
+interface GeoTargetTypeRow {
+  campaign: { id: number; geo_target_type_setting?: { positive_geo_target_type?: string | number } };
 }
 
 interface LanguageRow {
@@ -511,6 +549,43 @@ export async function liveLanguages(
   }, new Map<number, Map<string, string>>());
 }
 
+/** campaignId -> its live POSITIVE geo criteria (LOCATION + PROXIMITY). */
+export async function liveGeoCriteria(
+  client: AdsClient,
+  customerId: string,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Map<number, GeoCriterion[]>> {
+  if (campaignIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.searchStructured<GeoRow>(customerId, applyGeoQuery(campaignIds));
+  return rows.reduce(
+    (acc, r) => acc.set(r.campaign.id, [...(acc.get(r.campaign.id) ?? []), r.campaign_criterion]),
+    new Map<number, GeoCriterion[]>(),
+  );
+}
+
+/**
+ * campaignId -> its live positive geo target type. A campaign that has never had the
+ * setting written reports Google's own default, so an absent row is treated as
+ * unknown (never as "already PRESENCE") and the plan's type is applied.
+ */
+export async function liveGeoTargetTypes(
+  client: AdsClient,
+  customerId: string,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Map<number, GeoTargetType | undefined>> {
+  if (campaignIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.searchStructured<GeoTargetTypeRow>(customerId, applyGeoTargetTypesQuery(campaignIds));
+  return rows.reduce((acc, r) => {
+    const raw = r.campaign.geo_target_type_setting?.positive_geo_target_type;
+    const name = typeof raw === "number" ? enums.PositiveGeoTargetType[raw] : raw;
+    return acc.set(r.campaign.id, name === "PRESENCE" || name === "PRESENCE_OR_INTEREST" ? name : undefined);
+  }, new Map<number, GeoTargetType | undefined>());
+}
+
 /** adId -> live RSA headline texts, for an appendHeadlines merge. */
 export async function liveHeadlines(
   client: AdsClient,
@@ -552,6 +627,7 @@ export interface FixesPlan extends Record<string, unknown> {
   searchPartners?: Array<Record<string, unknown>>;
   adGroups?: Array<Record<string, unknown>>;
   languages?: Array<Record<string, unknown>>;
+  geo?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -733,6 +809,14 @@ function stageResolvedGroups(
  */
 function slugsForIds(ids: ReadonlyArray<unknown>, indexMap: Map<string, { slug: string }>): string[] {
   return [...new Set(ids.map((id) => indexMap.get(String(id))?.slug).filter((s): s is string => s !== undefined))];
+}
+
+/** One `geo` block, resolved against live state: what to mutate and whether it widens reach. */
+interface GeoAction {
+  campaignId: unknown;
+  /** Undefined => leave the campaign's live positive geo target type alone. */
+  geoTargetType: GeoTargetType | undefined;
+  plan: GeoCriterionPlan;
 }
 
 /** One mutation step (or one entry within it) that failed — the error plus the brief slug(s)
@@ -975,6 +1059,16 @@ export async function main(
     customer,
     section(plan, "adGroups").map((g) => g.campaignId as string | number),
   );
+  const liveGeo = await liveGeoCriteria(
+    client,
+    customer,
+    section(plan, "geo").map((g) => g.campaignId as string | number),
+  );
+  const liveGeoTypes = await liveGeoTargetTypes(
+    client,
+    customer,
+    section(plan, "geo").map((g) => g.campaignId as string | number),
+  );
   const liveLangs = await liveLanguages(
     client,
     customer,
@@ -1041,6 +1135,42 @@ export async function main(
     return { campaignId: l.campaignId, addEnglish, remove };
   });
 
+  // geo: a declarative replace-set per campaign. Every location NAME/ID across every
+  // block resolves in ONE read through the same `resolve-locations` step /adkit create
+  // publishes through, so an unknown name rejects the whole plan (naming what it could
+  // not resolve) before anything mutates — never a silently dropped target.
+  // Parsed ONCE here (never re-cast from the raw YAML downstream): the schema
+  // normalizes `units` and enforces the radius caps, and both the mutation and the
+  // brief staging below consume these typed blocks.
+  const geoBlocks = geoPlan(section(plan, "geo"));
+  let geoActions: GeoAction[];
+  try {
+    const geoLocationNames = [...new Set(geoBlocks.flatMap((g) => g.locations ?? []))];
+    const resolvedGeo = new Map(
+      (await resolveLocations(client, customer, geoLocationNames)).map((rn, i) => [geoLocationNames[i]!, rn]),
+    );
+    geoActions = geoBlocks.map((g) => ({
+      campaignId: g.campaignId,
+      // Undefined, or a type the campaign is already set to, leaves the setting alone.
+      geoTargetType: g.geoTargetType === liveGeoTypes.get(asId(g.campaignId)) ? undefined : g.geoTargetType,
+      plan: geoCriterionPlan(
+        liveGeo.get(asId(g.campaignId)) ?? [],
+        (g.locations ?? []).map((l) => resolvedGeo.get(l)!),
+        g.radiusTargets ?? [],
+      ),
+    }));
+  } catch (exc) {
+    if (exc instanceof StepError) {
+      console.log(`VALIDATION FAILED:\n  - ${exc.message}`);
+      emitJson(errorEnvelope(exc.message, { step: exc.step }));
+      return 1;
+    }
+    throw exc;
+  }
+  const geoChanges = geoActions.filter((g) => g.plan.changed || g.geoTargetType !== undefined);
+  const geoSkips = geoActions.filter((g) => !g.plan.changed && g.geoTargetType === undefined);
+  const geoWidening = geoActions.filter((g) => g.plan.widening || g.geoTargetType === "PRESENCE_OR_INTEREST");
+
   // ----- adbriefs staging: resolve this plan's ids to their brief(s) via the state
   // index, stage the already-computed changes above into a proposed copy, and diff
   // against disk — on EVERY run, dry-run included (FR-001, FR-002, FR-003, FR-010).
@@ -1054,7 +1184,7 @@ export async function main(
   // live (spec.md 048 FR-002). resolvePlanGroups reads plan.bidding directly, so a
   // stagingPlan with only biddingChanges substituted is passed in place of the raw
   // plan; every other section is staged from the plan unchanged.
-  const stagingPlan = { ...plan, bidding: biddingChanges };
+  const stagingPlan = { ...plan, bidding: biddingChanges, geo: geoBlocks };
   const planGroups = resolvePlanGroups(stagingPlan, stateIndex);
   const unresolvedIds = planGroups.find((g) => g.slug === "")?.unresolvedIds ?? [];
   const staged = stageResolvedGroups(
@@ -1127,6 +1257,15 @@ export async function main(
         searchPartnersChanges: spChanges,
         searchPartnersSkipped: spSkips,
         searchPartnersEnableIncreasesReach: spEnableChanges.map((c) => c.campaignId),
+        geoChanges: geoChanges.map((g) => ({
+          campaignId: g.campaignId,
+          addLocations: g.plan.addGeoTargets.length,
+          addRadius: g.plan.addRadius.length,
+          removed: g.plan.removeResources.length,
+          ...(g.geoTargetType !== undefined ? { geoTargetType: g.geoTargetType } : {}),
+        })),
+        geoSkipped: geoSkips.map((g) => ({ campaignId: g.campaignId })),
+        geoWideningIncreasesReach: geoWidening.map((g) => g.campaignId),
         biddingChanges,
         biddingSkipped: biddingSkips,
         bidStrategyChangeAffectsSpend: bidStrategyChangeAffectsSpendIds,
@@ -1202,6 +1341,13 @@ export async function main(
         `(RSA 15H/4D + ${g.adGroup.keywords.length} keywords, ad PAUSED)`,
     ),
     ...agCreateSkips.map((g) => `ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`),
+    ...geoActions.map((g) =>
+      g.plan.changed || g.geoTargetType !== undefined
+        ? `geo campaign ${pyStr(g.campaignId)}: +${g.plan.addGeoTargets.length} locations, ` +
+          `+${g.plan.addRadius.length} radius, -${g.plan.removeResources.length} removed` +
+          (g.geoTargetType !== undefined ? `, targeting ${g.geoTargetType}` : "")
+        : `geo campaign ${pyStr(g.campaignId)}: already matches, skipped`,
+    ),
     ...languageActions.map((l) =>
       l.addEnglish || l.remove.length > 0
         ? `languages campaign ${pyStr(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`
@@ -1240,6 +1386,15 @@ export async function main(
     console.log(
       "WARNING: search partners ON increases reach on campaign(s): " +
         spEnableChanges.map((c) => String(c.campaignId)).join(", "),
+    );
+  }
+  if (geoWidening.length > 0) {
+    // A geo set that reaches MORE people than the live one (a bigger radius, an added
+    // location, PRESENCE_OR_INTEREST, or all targeting dropped) spends more — same
+    // loud surface as ENABLE. Narrowing only reduces reach, so it never warns.
+    console.log(
+      "WARNING: geo change widens reach (more live spend) on campaign(s): " +
+        geoWidening.map((g) => String(g.campaignId)).join(", "),
     );
   }
   // Ceiling-sanity warning (FR-006): non-blocking, deliberately outside validate()/
@@ -1570,6 +1725,32 @@ export async function main(
       );
     } catch (exc) {
       recordFailure(`languages (campaign ${pyStr(l.campaignId)})`, exc, slugsForIds([l.campaignId], stateIndex.byCampaignId));
+    }
+  }
+
+  // 8d) geo targeting: make each listed campaign's positive geo criteria exactly what
+  // its block declares. Removes and creates go in ONE batch, so a radius change (which
+  // must be remove-then-add — radius is immutable on a live criterion) is atomic.
+  // Idempotent — a campaign already matching yields no ops and is reported skipped.
+  for (const g of geoActions) {
+    try {
+      const campaignRn = `customers/${customer}/campaigns/${pyStr(g.campaignId)}`;
+      const ops = buildGeoOps(campaignRn, g.plan);
+      if (ops.length > 0) {
+        await client.mutate(customer, ops);
+      }
+      if (g.geoTargetType !== undefined) {
+        await setGeoTargetType(client, customer, campaignRn, g.geoTargetType);
+      }
+      console.log(
+        ops.length === 0 && g.geoTargetType === undefined
+          ? `  geo campaign ${pyStr(g.campaignId)}: already matches, skipped`
+          : `  geo campaign ${pyStr(g.campaignId)}: +${g.plan.addGeoTargets.length} locations, ` +
+            `+${g.plan.addRadius.length} radius, -${g.plan.removeResources.length} removed` +
+            (g.geoTargetType !== undefined ? `, targeting ${g.geoTargetType}` : ""),
+      );
+    } catch (exc) {
+      recordFailure(`geo (campaign ${pyStr(g.campaignId)})`, exc, slugsForIds([g.campaignId], stateIndex.byCampaignId));
     }
   }
 
