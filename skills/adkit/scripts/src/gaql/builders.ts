@@ -723,6 +723,40 @@ export function applyAdGroupNamesQuery(
  * (English-only) block can add English when absent and remove every other language.
  * Ids guarded digits-only.
  */
+/**
+ * Live POSITIVE geo criteria (LOCATION + PROXIMITY) for every campaign a `geo` plan
+ * block names — what `/adkit update`'s geo replace-set diffs against. Negative
+ * (excluded) locations are deliberately out of scope and filtered out here.
+ */
+export function applyGeoQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "campaign_criterion",
+    [
+      "campaign.id",
+      "campaign_criterion.resource_name",
+      "campaign_criterion.location.geo_target_constant",
+      "campaign_criterion.proximity.radius",
+      "campaign_criterion.proximity.radius_units",
+      "campaign_criterion.proximity.geo_point.latitude_in_micro_degrees",
+      "campaign_criterion.proximity.geo_point.longitude_in_micro_degrees",
+      "campaign_criterion.proximity.address.street_address",
+      "campaign_criterion.proximity.address.city_name",
+      "campaign_criterion.proximity.address.province_code",
+      "campaign_criterion.proximity.address.postal_code",
+      "campaign_criterion.proximity.address.country_code",
+    ],
+    "campaign.id",
+    campaignIds,
+    [
+      "campaign_criterion.type IN ('LOCATION', 'PROXIMITY')",
+      "campaign_criterion.negative = FALSE",
+      "campaign_criterion.status != 'REMOVED'",
+    ],
+  );
+}
+
 export function applyLanguagesQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {

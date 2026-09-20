@@ -941,6 +941,46 @@ describe("languages", () => {
   });
 });
 
+// ---------- geo (declarative replace-set) ----------
+
+describe("geo", () => {
+  const circle = { address: { postalCode: "21054", countryCode: "US" }, radius: 40, units: "miles" };
+
+  const cases: Array<{ name: string; block: Record<string, unknown>; error: RegExp | null }> = [
+    { name: "locations + radiusTargets", block: { campaignId: "24206941608", locations: ["1014221"], radiusTargets: [circle] }, error: null },
+    { name: "radius targets alone", block: { campaignId: 24206941608, radiusTargets: [circle] }, error: null },
+    { name: "a case-insensitive MILES", block: { campaignId: "1", radiusTargets: [{ ...circle, units: "MILES" }] }, error: null },
+    { name: "an explicit geoTargetType", block: { campaignId: "1", locations: ["1014221"], geoTargetType: "PRESENCE_OR_INTEREST" }, error: null },
+    { name: "missing campaignId", block: { locations: ["1014221"] }, error: /campaignId/ },
+    { name: "non-numeric campaignId", block: { campaignId: "23x", locations: ["1014221"] }, error: /campaignId/ },
+    { name: "a radius over Google's cap", block: { campaignId: "1", radiusTargets: [{ ...circle, radius: 501 }] }, error: /max is 500 miles/ },
+    { name: "a km radius over Google's cap", block: { campaignId: "1", radiusTargets: [{ ...circle, radius: 801, units: "kilometers" }] }, error: /max is 800 kilometers/ },
+    { name: "a location that is neither an id nor a canonical name", block: { campaignId: "1", locations: ["Chicago"] }, error: /geo target id/ },
+    { name: "duplicate locations", block: { campaignId: "1", locations: ["1014221", "1014221"] }, error: /no duplicates/ },
+    { name: "an unknown key", block: { campaignId: "1", locations: ["1014221"], schedule: [] }, error: /[Uu]nrecognized/ },
+    { name: "an empty set with no acknowledgement", block: { campaignId: "1" }, error: /allowUnrestricted/ },
+    { name: "an empty set with the explicit escape hatch", block: { campaignId: "1", allowUnrestricted: true }, error: null },
+    { name: "an empty set with allowUnrestricted: false", block: { campaignId: "1", allowUnrestricted: false }, error: /allowUnrestricted/ },
+    { name: "an unknown geoTargetType", block: { campaignId: "1", locations: ["1014221"], geoTargetType: "SEARCH_INTEREST" }, error: /geoTargetType/ },
+  ];
+
+  for (const c of cases) {
+    it(`${c.error === null ? "accepts" : "rejects"} ${c.name}`, () => {
+      const errs = validate({ geo: [c.block] }, {}, {});
+      if (c.error === null) {
+        expect(errs).toEqual([]);
+      } else {
+        expect(errs.some((e) => c.error!.test(e))).toBe(true);
+        expect(errs.every((e) => e.startsWith("geo"))).toBe(true);
+      }
+    });
+  }
+
+  it("a non-object entry is rejected rather than coerced", () => {
+    expect(validate({ geo: ["24206941608"] }, {}, {}).some((e) => e.includes("must be an object"))).toBe(true);
+  });
+});
+
 // ---------- adGroups (add-ad-group) ----------
 
 /**

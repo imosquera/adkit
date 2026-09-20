@@ -21,8 +21,12 @@ import {
   findMissingKeywords,
   findMissingResponsiveSearchAds,
   setCampaignStatus,
+  buildGeoOps,
   effectiveLocations,
+  geoCriterionPlan,
   proximityInfo,
+  setGeoTargetType,
+  type GeoCriterion,
   resolveLocations,
   targetRadius,
   targetDevices,
@@ -706,5 +710,146 @@ describe("radius targeting", () => {
     await targetRadius(client, "123", CAMPAIGN_RN, [chicago, point]);
     expect(calls[0]!.ops.map((op) => op.operation)).toEqual(["remove", "create", "create"]);
     expect(calls[0]!.ops[0]!.resource).toEqual({ resource_name: "cc/old" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// geoCriterionPlan / buildGeoOps — the pure replace-set layer /adkit update's `geo`
+// lever plans against. Table-driven: every row is one live set + one target set.
+// ---------------------------------------------------------------------------
+
+describe("geoCriterionPlan (replace-set)", () => {
+  const gambrills = RadiusTargetSchema.parse({
+    address: { postalCode: "21054", countryCode: "US" },
+    radius: 25,
+    units: "miles",
+  });
+  const wider = RadiusTargetSchema.parse({ ...gambrills, radius: 40 });
+  const elsewhere = RadiusTargetSchema.parse({
+    address: { postalCode: "20001", countryCode: "US" },
+    radius: 25,
+    units: "miles",
+  });
+  /** A live LOCATION criterion. */
+  const loc = (rn: string, geo: string): GeoCriterion => ({
+    resource_name: rn,
+    location: { geo_target_constant: geo },
+  });
+  /** A live PROXIMITY criterion, as the API returns it (units pre-decoded, geo point filled in). */
+  const prox = (rn: string, t: typeof gambrills): GeoCriterion => ({
+    resource_name: rn,
+    proximity: {
+      ...(proximityInfo(t) as Record<string, unknown>),
+      radius_units: t.units === "miles" ? "MILES" : "KILOMETERS",
+      geo_point: { latitude_in_micro_degrees: 39062000, longitude_in_micro_degrees: -76664000 },
+    },
+  });
+
+  const cases: Array<{
+    name: string;
+    live: GeoCriterion[];
+    geoTargets: string[];
+    radius: Array<typeof gambrills>;
+    expect: { add: number; addRadius: number; remove: string[]; changed: boolean; widening: boolean };
+  }> = [
+    {
+      name: "add + remove + skip in one block",
+      live: [loc("cc/keep", "geoTargetConstants/1014221"), loc("cc/drop", "geoTargetConstants/2840")],
+      geoTargets: ["geoTargetConstants/1014221", "geoTargetConstants/21133"],
+      radius: [],
+      expect: { add: 1, addRadius: 0, remove: ["cc/drop"], changed: true, widening: false },
+    },
+    {
+      name: "idempotent re-run: live set already equals the target set",
+      live: [loc("cc/a", "geoTargetConstants/1014221"), prox("cc/p", gambrills)],
+      geoTargets: ["geoTargetConstants/1014221"],
+      radius: [gambrills],
+      expect: { add: 0, addRadius: 0, remove: [], changed: false, widening: false },
+    },
+    {
+      name: "radius change is remove-then-add (radius is immutable on a live criterion)",
+      live: [prox("cc/25mi", gambrills)],
+      geoTargets: [],
+      radius: [wider],
+      expect: { add: 0, addRadius: 1, remove: ["cc/25mi"], changed: true, widening: true },
+    },
+    {
+      name: "narrowing a radius at the same place does not warn",
+      live: [prox("cc/40mi", wider)],
+      geoTargets: [],
+      radius: [gambrills],
+      expect: { add: 0, addRadius: 1, remove: ["cc/40mi"], changed: true, widening: false },
+    },
+    {
+      name: "adding a location on top of the live ones widens reach",
+      live: [loc("cc/a", "geoTargetConstants/1014221")],
+      geoTargets: ["geoTargetConstants/1014221", "geoTargetConstants/2840"],
+      radius: [],
+      expect: { add: 1, addRadius: 0, remove: [], changed: true, widening: true },
+    },
+    {
+      name: "moving the circle elsewhere is not a widening (live reach is dropped)",
+      live: [prox("cc/here", gambrills)],
+      geoTargets: [],
+      radius: [elsewhere],
+      expect: { add: 0, addRadius: 1, remove: ["cc/here"], changed: true, widening: false },
+    },
+    {
+      name: "clearing all targeting (the whole world) is the widest change there is",
+      live: [prox("cc/here", gambrills)],
+      geoTargets: [],
+      radius: [],
+      expect: { add: 0, addRadius: 0, remove: ["cc/here"], changed: true, widening: true },
+    },
+    {
+      name: "a campaign with no live geo already serves everywhere, so the first criterion narrows",
+      live: [],
+      geoTargets: ["geoTargetConstants/1014221"],
+      radius: [],
+      expect: { add: 1, addRadius: 0, remove: [], changed: true, widening: false },
+    },
+  ];
+
+  for (const c of cases) {
+    it(c.name, () => {
+      const plan = geoCriterionPlan(c.live, c.geoTargets, c.radius);
+      expect(plan.addGeoTargets).toHaveLength(c.expect.add);
+      expect(plan.addRadius).toHaveLength(c.expect.addRadius);
+      expect(plan.removeResources).toEqual(c.expect.remove);
+      expect(plan.changed).toBe(c.expect.changed);
+      expect(plan.widening).toBe(c.expect.widening);
+    });
+  }
+
+  it("compares a km radius against a live miles one in a common unit", () => {
+    // 50 km ~= 31 miles: wider than the live 25-mile circle around the same address.
+    const km = RadiusTargetSchema.parse({ address: { postalCode: "21054", countryCode: "US" }, radius: 50, units: "KILOMETERS" });
+    expect(geoCriterionPlan([prox("cc/25mi", gambrills)], [], [km]).widening).toBe(true);
+    const small = RadiusTargetSchema.parse({ ...km, radius: 10 });
+    expect(geoCriterionPlan([prox("cc/25mi", gambrills)], [], [small]).widening).toBe(false);
+  });
+
+  it("buildGeoOps emits removes before creates, so a radius swap is one atomic batch", () => {
+    const plan = geoCriterionPlan([prox("cc/25mi", gambrills)], [], [wider]);
+    const ops = buildGeoOps(CAMPAIGN_RN, plan);
+    expect(ops.map((o) => o.operation)).toEqual(["remove", "create"]);
+    expect(ops[0]!.resource).toEqual({ resource_name: "cc/25mi" });
+    expect(ops[1]!.resource).toEqual({ campaign: CAMPAIGN_RN, proximity: proximityInfo(wider) });
+    expect(buildGeoOps(CAMPAIGN_RN, geoCriterionPlan([prox("cc/p", gambrills)], [], [gambrills]))).toEqual([]);
+  });
+
+  it("setGeoTargetType updates only the positive geo target type", async () => {
+    const { client, calls } = makeFake();
+    await setGeoTargetType(client, "123", "456", "PRESENCE_OR_INTEREST");
+    expect(calls[0]!.ops[0]).toEqual({
+      entity: "campaign",
+      operation: "update",
+      resource: {
+        resource_name: "customers/123/campaigns/456",
+        geo_target_type_setting: {
+          positive_geo_target_type: enums.PositiveGeoTargetType.PRESENCE_OR_INTEREST,
+        },
+      },
+    });
   });
 });

@@ -15,6 +15,7 @@ import {
   AdGroupStatusChangeSchema,
   AdStatusChangeSchema,
   CampaignStatusChangeSchema,
+  GeoChangeSchema,
   KeywordSchema,
   PHONE_NUMBER_MESSAGE,
   SearchPartnersChangeSchema,
@@ -404,6 +405,29 @@ function languagesErrors(languageBlocks: Array<Record<string, unknown>>): string
     ];
   };
   return languageBlocks.flatMap(one);
+}
+
+/**
+ * Validate each `geo` block against {@link GeoChangeSchema} — the replace-set shape,
+ * the radius caps `/adkit create` briefs already enforce, and the `allowUnrestricted`
+ * guardrail on a block that would clear all geo targeting. Every issue surfaces
+ * prefixed with the campaign id. Mirrors {@link statusChangeErrors}.
+ */
+function geoErrors(blocks: unknown[]): string[] {
+  const one = (item: unknown): string[] => {
+    if (!isObject(item)) {
+      return [`geo: entry must be an object, got ${pyTypeName(item)}`];
+    }
+    const parsed = GeoChangeSchema.safeParse(item);
+    if (parsed.success) {
+      return [];
+    }
+    return parsed.error.issues.map((issue: ZodIssue) => {
+      const loc = issue.path.map((p) => String(p)).join(".") || "?";
+      return `geo campaign ${pyRepr(item["campaignId"])}: ${loc}: ${issue.message}`;
+    });
+  };
+  return blocks.flatMap(one);
 }
 
 function rewritesErrors(rewrites: Array<Record<string, unknown>>): string[] {
@@ -1111,5 +1135,6 @@ export function validate(
     ...searchPartnersPreconditionErrors(arr("searchPartners"), liveSearchPartnersGoogleSearch ?? new Map()),
     ...adGroupsErrors(arr("adGroups")),
     ...languagesErrors(arr("languages")),
+    ...geoErrors(arr("geo")),
   ];
 }

@@ -428,6 +428,60 @@ describe("applyPlanToBrief", () => {
     );
   });
 
+  // geo stages into the brief's own campaign.locations / radiusTargets /
+  // geoTargetType — the whole point of the lever is that the brief cannot end up
+  // asserting targeting the account no longer has.
+  describe("geo (replace-set staging)", () => {
+    const circle = { address: { postalCode: "21054", countryCode: "US" }, radius: 40, units: "miles" };
+
+    it("replaces the brief's whole geo set, clearing what the block no longer lists", () => {
+      const base = baseBrief({
+        campaign: { ...baseBrief().campaign, locations: ["2840", "2124"], radiusTargets: [{ ...circle, radius: 25 }] },
+      } as Partial<Brief>);
+      const result = applyPlanToBrief(base, groupFor({ geo: [{ campaignId: "100", locations: ["1014221"] }] }));
+      expect(result.campaign.locations).toEqual(["1014221"]);
+      expect(result.campaign.radiusTargets).toBeUndefined();
+    });
+
+    it("a radius-only block leaves `locations` absent (the brief's own spelling for none)", () => {
+      const result = applyPlanToBrief(baseBrief(), groupFor({ geo: [{ campaignId: "100", radiusTargets: [circle] }] }));
+      expect(result.campaign.locations).toBeUndefined();
+      expect(result.campaign.radiusTargets).toEqual([circle]);
+    });
+
+    it("an allowUnrestricted block spells `no targeting at all` as an explicit empty list", () => {
+      const base = baseBrief({ campaign: { ...baseBrief().campaign, locations: ["2840"] } } as Partial<Brief>);
+      const result = applyPlanToBrief(base, groupFor({ geo: [{ campaignId: "100", allowUnrestricted: true }] }));
+      expect(result.campaign.locations).toEqual([]);
+      expect(result.campaign.radiusTargets).toBeUndefined();
+    });
+
+    it("geoTargetType is a setting: an omitted key leaves the brief's own value alone", () => {
+      const base = baseBrief({ campaign: { ...baseBrief().campaign, geoTargetType: "PRESENCE" } } as Partial<Brief>);
+      expect(
+        applyPlanToBrief(base, groupFor({ geo: [{ campaignId: "100", locations: ["1014221"] }] })).campaign.geoTargetType,
+      ).toBe("PRESENCE");
+      expect(
+        applyPlanToBrief(
+          base,
+          groupFor({ geo: [{ campaignId: "100", locations: ["1014221"], geoTargetType: "PRESENCE_OR_INTEREST" }] }),
+        ).campaign.geoTargetType,
+      ).toBe("PRESENCE_OR_INTEREST");
+    });
+
+    it("re-running a block the brief already reflects leaves the campaign untouched", () => {
+      const base = baseBrief({ campaign: { ...baseBrief().campaign, radiusTargets: [circle] } } as Partial<Brief>);
+      const result = applyPlanToBrief(base, groupFor({ geo: [{ campaignId: "100", radiusTargets: [circle] }] }));
+      expect(result.campaign).toBe(base.campaign);
+    });
+
+    it("only the campaign the block names is staged", () => {
+      const groups = resolvePlanGroups({ geo: [{ campaignId: "200", radiusTargets: [circle] }] }, twoCampaignIndex());
+      expect(groups.map((g) => g.slug)).toEqual(["beta"]);
+      expect(groups[0]!.sections.geo).toHaveLength(1);
+    });
+  });
+
   it("a no-op change-list leaves the result serialization-identical to base (FR-011)", () => {
     const brief = baseBrief();
     const plan = {}; // touches nothing
@@ -435,7 +489,7 @@ describe("applyPlanToBrief", () => {
     expect(groups).toEqual([]);
     // With no group at all there is nothing to apply — applyPlanToBrief is only ever
     // called for a resolved group, so simulate the "resolved but empty" case directly.
-    const emptyGroup = { slug: "alpha", campaignName: "Alpha", sections: { rewrites: [], appendHeadlines: [], sitelinks: [], callouts: [], negatives: [], keywords: [], budgets: [], bidding: [], adGroups: [] }, unresolvedIds: [] };
+    const emptyGroup = { slug: "alpha", campaignName: "Alpha", sections: { rewrites: [], appendHeadlines: [], sitelinks: [], callouts: [], negatives: [], keywords: [], budgets: [], bidding: [], geo: [], adGroups: [] }, unresolvedIds: [] };
     const result = applyPlanToBrief(brief, emptyGroup);
     expect(result).toEqual(brief);
   });

@@ -23,6 +23,7 @@ import type {
   Campaign,
   DisplayAdGroup,
   DisplayBrief,
+  GeoTargetType,
   Keyword,
   RadiusTarget,
   ResponsiveDisplayAd,
@@ -185,9 +186,11 @@ export async function createSearchCampaign(
       target_content_network: false,
       target_partner_search_network: false,
     },
-    // PRESENCE = serve only to people physically in the targeted locations.
+    // PRESENCE (the default when the brief omits it) = serve only to people physically
+    // in the targeted locations; PRESENCE_OR_INTEREST also reaches people searching
+    // for the location from elsewhere.
     geo_target_type_setting: {
-      positive_geo_target_type: enums.PositiveGeoTargetType.PRESENCE,
+      positive_geo_target_type: enums.PositiveGeoTargetType[brief.campaign.geoTargetType ?? "PRESENCE"],
     },
     // AI Max: lets Google AI expand beyond exact/phrase keywords via broad-match
     // tech and match landing-page/asset content to more queries.
@@ -435,19 +438,30 @@ async function linkAssetsToCampaign(
   return (await client.mutate(customerId, linkOps)).results.map((r) => r.resource_name);
 }
 
+/** A live ProximityInfo, as the API returns it (or as {@link proximityInfo} builds it). */
+export interface ProximityShape {
+  radius?: number;
+  radius_units?: string | number;
+  geo_point?: { latitude_in_micro_degrees?: number; longitude_in_micro_degrees?: number };
+  address?: Record<string, string | undefined>;
+}
+
+/**
+ * One live positive geo criterion on a campaign — a LOCATION (`location`) or a
+ * PROXIMITY (`proximity`). Shared by the publish-path reconcilers here and by
+ * `/adkit update`'s `geo` lever, so both diff against the same shape.
+ */
+export interface GeoCriterion {
+  resource_name: string;
+  location?: { geo_target_constant?: string };
+  proximity?: ProximityShape;
+}
+
 /** One live campaign_criterion row, as returned by {@link liveCampaignCriteria}. */
 interface CampaignCriterionRow {
-  campaign_criterion?: {
-    resource_name: string;
+  campaign_criterion?: GeoCriterion & {
     bid_modifier?: number;
     device?: { type?: string | number };
-    location?: { geo_target_constant?: string };
-    proximity?: {
-      radius?: number;
-      radius_units?: string | number;
-      geo_point?: { latitude_in_micro_degrees?: number; longitude_in_micro_degrees?: number };
-      address?: Record<string, string | undefined>;
-    };
   };
 }
 
@@ -716,15 +730,25 @@ export function proximityInfo(target: RadiusTarget): Record<string, unknown> {
  * targets compare by address — Google also fills in the geocoded point on those, which the
  * brief never has.
  */
-function proximityKey(p: NonNullable<NonNullable<CampaignCriterionRow["campaign_criterion"]>["proximity"]>): string {
-  const units = typeof p.radius_units === "number" ? enums.ProximityRadiusUnits[p.radius_units] : p.radius_units;
+function proximityWhere(p: ProximityShape): string {
   const where =
     p.address?.city_name !== undefined || p.address?.postal_code !== undefined
       ? ["street_address", "city_name", "province_code", "postal_code", "country_code"].map((k) =>
           (p.address?.[k] ?? "").toLowerCase(),
         )
       : [p.geo_point?.latitude_in_micro_degrees, p.geo_point?.longitude_in_micro_degrees];
-  return JSON.stringify([Number(p.radius), units, where]);
+  return JSON.stringify(where);
+}
+
+/** Pure: a proximity's radius in miles, so a miles target and a km one compare. */
+function radiusMiles(p: ProximityShape): number {
+  const units = typeof p.radius_units === "number" ? enums.ProximityRadiusUnits[p.radius_units] : p.radius_units;
+  return Number(p.radius) * (units === "KILOMETERS" ? 0.621371 : 1);
+}
+
+function proximityKey(p: ProximityShape): string {
+  const units = typeof p.radius_units === "number" ? enums.ProximityRadiusUnits[p.radius_units] : p.radius_units;
+  return JSON.stringify([Number(p.radius), units, proximityWhere(p)]);
 }
 
 /**
@@ -739,8 +763,8 @@ export async function targetRadius(
   targets: readonly RadiusTarget[],
 ): Promise<void> {
   const live = (await liveCampaignCriteria(client, customerId, campaignRn)).filter((c) => c.proximity?.radius !== undefined);
-  const wanted = targets.map((t) => proximityInfo(t) as Parameters<typeof proximityKey>[0]);
-  const sortedKeys = (ps: Array<Parameters<typeof proximityKey>[0]>) => JSON.stringify(ps.map(proximityKey).sort());
+  const wanted = targets.map((t) => proximityInfo(t) as ProximityShape);
+  const sortedKeys = (ps: ProximityShape[]) => JSON.stringify(ps.map(proximityKey).sort());
   if (sortedKeys(live.map((c) => c.proximity!)) === sortedKeys(wanted)) {
     return;
   }
@@ -790,6 +814,127 @@ export async function targetLocations(
   if (ops.length > 0) {
     await client.mutate(customerId, ops);
   }
+}
+
+/**
+ * The criterion-level work one `/adkit update` `geo` block implies, computed purely
+ * from the campaign's live positive geo criteria and the target set. This is the
+ * dry-run preview AND the input to {@link buildGeoOps} — one decision, made once.
+ */
+export interface GeoCriterionPlan {
+  /** Geo target constant resource names to create (already-live ones are omitted). */
+  addGeoTargets: string[];
+  /** Radius targets to create (one already live, identical, is omitted). */
+  addRadius: RadiusTarget[];
+  /** Criterion resource names to remove — live criteria the target set no longer lists. */
+  removeResources: string[];
+  /** True when the target set strictly widens live reach — a live-spend action. */
+  widening: boolean;
+  /** False when the live set already equals the target set (an idempotent re-run). */
+  changed: boolean;
+}
+
+/**
+ * Pure: diff a campaign's live positive geo criteria against the target set, as a
+ * **replace set** — what to add, what to remove, and whether the result is already
+ * live. A radius is immutable on a live criterion, so changing one shows up here as a
+ * remove of the old plus an add of the new ({@link buildGeoOps} puts both in one batch).
+ *
+ * `widening` answers "does this reach MORE people than it does now": every live
+ * criterion still covered (a radius kept at least its current size, compared in miles
+ * so a km target still compares) *and* something added or enlarged — plus the
+ * unrestricted case, where dropping all targeting opens the campaign to the world. An
+ * account with no geo criteria at all already serves everywhere, so adding the first
+ * one only ever narrows.
+ */
+export function geoCriterionPlan(
+  live: readonly GeoCriterion[],
+  geoTargets: readonly string[],
+  radiusTargets: readonly RadiusTarget[],
+): GeoCriterionPlan {
+  const liveLocations = live.filter((c) => c.location?.geo_target_constant !== undefined);
+  const liveProximities = live.filter((c) => c.proximity?.radius !== undefined);
+  const liveGeoSet = new Set(liveLocations.map((c) => c.location!.geo_target_constant!));
+
+  const wanted = radiusTargets.map((t) => proximityInfo(t) as ProximityShape);
+  const wantedKeys = new Set(wanted.map(proximityKey));
+  const liveKeys = new Set(liveProximities.map((c) => proximityKey(c.proximity!)));
+
+  const addGeoTargets = [...new Set(geoTargets)].filter((geo) => !liveGeoSet.has(geo));
+  const addRadius = radiusTargets.filter((_, i) => !liveKeys.has(proximityKey(wanted[i]!)));
+  const removeResources = [
+    ...liveLocations.filter((c) => !geoTargets.includes(c.location!.geo_target_constant!)),
+    ...liveProximities.filter((c) => !wantedKeys.has(proximityKey(c.proximity!))),
+  ].map((c) => c.resource_name);
+
+  // Widest radius per place, so "same address, 25mi -> 40mi" reads as growth rather
+  // than as an unrelated remove + add.
+  const widest = (ps: ProximityShape[]): Map<string, number> =>
+    ps.reduce((acc, p) => acc.set(proximityWhere(p), Math.max(acc.get(proximityWhere(p)) ?? 0, radiusMiles(p))), new Map<string, number>());
+  const liveWidest = widest(liveProximities.map((c) => c.proximity!));
+  const wantedWidest = widest(wanted);
+  const covers =
+    liveLocations.every((c) => geoTargets.includes(c.location!.geo_target_constant!)) &&
+    [...liveWidest].every(([where, miles]) => (wantedWidest.get(where) ?? -1) >= miles);
+  const grows =
+    addGeoTargets.length > 0 || [...wantedWidest].some(([where, miles]) => (liveWidest.get(where) ?? -1) < miles);
+  const unrestricted = geoTargets.length === 0 && radiusTargets.length === 0;
+
+  return {
+    addGeoTargets,
+    addRadius,
+    removeResources,
+    widening: live.length > 0 && (unrestricted || (covers && grows)),
+    changed: addGeoTargets.length > 0 || addRadius.length > 0 || removeResources.length > 0,
+  };
+}
+
+/**
+ * Pure: the campaign_criterion mutate ops a {@link GeoCriterionPlan} implies, removes
+ * first so a radius change (remove-then-add of the same place) lands in ONE batch.
+ * Mirrors {@link buildLanguageOps}.
+ */
+export function buildGeoOps(campaignRn: string, plan: GeoCriterionPlan): AdsMutateOperation[] {
+  return [
+    ...plan.removeResources.map((rn): AdsMutateOperation => ({
+      entity: "campaign_criterion",
+      operation: "remove",
+      resource: { resource_name: rn },
+    })),
+    ...plan.addGeoTargets.map((geo): AdsMutateOperation => ({
+      entity: "campaign_criterion",
+      operation: "create",
+      resource: { campaign: campaignRn, location: { geo_target_constant: geo } },
+    })),
+    ...plan.addRadius.map((t): AdsMutateOperation => ({
+      entity: "campaign_criterion",
+      operation: "create",
+      resource: { campaign: campaignRn, proximity: proximityInfo(t) },
+    })),
+  ];
+}
+
+/**
+ * Set a live campaign's positive geo target type (who a targeted location reaches:
+ * people physically in it, or also people searching for it from elsewhere). Sends only
+ * that nested field — the SDK derives the update mask from what is present. Mirrors
+ * {@link setSearchPartners}.
+ */
+export async function setGeoTargetType(
+  client: AdsClient,
+  customerId: string,
+  campaignId: string,
+  type: GeoTargetType,
+): Promise<string> {
+  const op: AdsMutateOperation = {
+    entity: "campaign",
+    operation: "update",
+    resource: {
+      resource_name: `customers/${customerId}/campaigns/${campaignId}`,
+      geo_target_type_setting: { positive_geo_target_type: enums.PositiveGeoTargetType[type] },
+    },
+  };
+  return (await client.mutate(customerId, [op])).results[0]!.resource_name;
 }
 
 /**
@@ -1070,7 +1215,9 @@ export async function createDisplayCampaign(
       status: enums.CampaignStatus.PAUSED,
       ...bidStrategyFields(brief),
       campaign_budget: budgetRn,
-      geo_target_type_setting: { positive_geo_target_type: enums.PositiveGeoTargetType.PRESENCE },
+      geo_target_type_setting: {
+        positive_geo_target_type: enums.PositiveGeoTargetType[brief.campaign.geoTargetType ?? "PRESENCE"],
+      },
       contains_eu_political_advertising:
         enums.EuPoliticalAdvertisingStatus.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING,
     },
