@@ -979,6 +979,9 @@ describe("geo", () => {
   it("two blocks for the same campaign contradict each other and are rejected", () => {
     const errs = validate({ geo: [{ campaignId: "1", locations: ["1014221"] }, { campaignId: 1, locations: ["2840"] }] }, {}, {});
     expect(errs.some((e) => e.includes("more than one geo block"))).toBe(true);
+    // ...including ids that only LOOK different but resolve to the same campaign.
+    const padded = validate({ geo: [{ campaignId: "0500", locations: ["1014221"] }, { campaignId: 500, locations: ["2840"] }] }, {}, {});
+    expect(padded.some((e) => e.includes("more than one geo block"))).toBe(true);
     // ...but the same campaign in two DIFFERENT sections is fine.
     expect(validate({ geo: [{ campaignId: "1", locations: ["1014221"] }], languages: [{ campaignId: "1" }] }, {}, {})).toEqual([]);
   });

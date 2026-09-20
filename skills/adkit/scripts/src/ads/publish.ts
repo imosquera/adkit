@@ -166,9 +166,12 @@ export async function publishV1(
     await step("target-devices", () =>
       targetDevices(client, customerId, results.campaignId!, brief.campaign.devices),
     );
-    // Reconciled only when the brief states one: a fresh campaign already gets it from
-    // the create op, and an omitted field means "Google's PRESENCE default", which a
-    // reused campaign already has unless a brief once set it and then dropped the key.
+    // Reconciled only when the brief states one. An omitted field means "whatever
+    // adkit's create op writes", i.e. PRESENCE — so a fresh campaign is already right,
+    // and a REUSED one is left alone rather than being narrowed behind the operator's
+    // back. The gap that leaves: a brief that once set PRESENCE_OR_INTEREST and then
+    // dropped the key keeps the looser setting live. Restate it, or use update's geo
+    // lever, to move it back.
     if (brief.campaign.geoTargetType !== undefined) {
       const geoTargetType = brief.campaign.geoTargetType;
       await step("target-geo-type", () => setGeoTargetType(client, customerId, results.campaignId!, geoTargetType));
@@ -333,9 +336,12 @@ export async function publishDisplay(
     await step("target-devices", () =>
       targetDevices(client, customerId, results.campaignId!, brief.campaign.devices ?? [...ALL_DEVICES]),
     );
-    // Reconciled only when the brief states one: a fresh campaign already gets it from
-    // the create op, and an omitted field means "Google's PRESENCE default", which a
-    // reused campaign already has unless a brief once set it and then dropped the key.
+    // Reconciled only when the brief states one. An omitted field means "whatever
+    // adkit's create op writes", i.e. PRESENCE — so a fresh campaign is already right,
+    // and a REUSED one is left alone rather than being narrowed behind the operator's
+    // back. The gap that leaves: a brief that once set PRESENCE_OR_INTEREST and then
+    // dropped the key keeps the looser setting live. Restate it, or use update's geo
+    // lever, to move it back.
     if (brief.campaign.geoTargetType !== undefined) {
       const geoTargetType = brief.campaign.geoTargetType;
       await step("target-geo-type", () => setGeoTargetType(client, customerId, results.campaignId!, geoTargetType));

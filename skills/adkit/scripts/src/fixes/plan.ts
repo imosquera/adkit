@@ -431,19 +431,18 @@ function geoErrors(blocks: unknown[]): string[] {
   // A geo block declares the campaign's WHOLE positive geo set, so two blocks for one
   // campaign contradict each other: each is diffed against the same live state, and
   // applying both would try to remove a criterion the first block already removed.
+  // Keyed the way the live-state maps key ids (asInt, not the raw spelling), so
+  // "0500" and 500 — which resolve to the same campaign downstream — are caught as
+  // the duplicate they are. A block with no usable id is already failing above.
+  const ids = blocks.filter(isObject).map((b) => asInt(b["campaignId"]));
   const duplicates = [
-    ...new Set(
-      blocks
-        .filter(isObject)
-        .map((b) => String(b["campaignId"]))
-        .filter((id, i, all) => all.indexOf(id) !== i),
-    ),
+    ...new Set(ids.filter((id, i) => id !== null && ids.indexOf(id) !== i)),
   ];
   return [
     ...blocks.flatMap(one),
     ...duplicates.map(
       (id) =>
-        `geo campaign ${pyRepr(id)}: more than one geo block for the same campaign — ` +
+        `geo campaign ${pyStr(id)}: more than one geo block for the same campaign — ` +
         "a geo block declares the campaign's whole positive geo set, so merge them into one",
     ),
   ];
