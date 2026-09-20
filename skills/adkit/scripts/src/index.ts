@@ -142,7 +142,7 @@ export type { SearchArgs } from "./gaql/search-args.js";
 export { gaqlId, gaqlString } from "./gaql/escape.js";
 
 // --- Keyword merge + display formatting (pure) ---
-export { comparisonKey, MAX_KEYWORD_CHARS, MIN_VOLUME, unionCandidates } from "./lib/merge.js";
+export { comparisonKey, MAX_KEYWORD_CHARS, unionCandidates } from "./lib/merge.js";
 export type { ApiIdea, Candidate } from "./lib/merge.js";
 export { formatBulletText } from "./lib/markdown.js";
 export { competitionLabel, formatCpcRange, formatVolume } from "./lib/metrics.js";

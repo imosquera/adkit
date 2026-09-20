@@ -30,7 +30,7 @@ import { emitJson, errorEnvelope, ok, sdkErrorMessage } from "../cli/output.js";
 import { formatBulletText } from "../lib/markdown.js";
 import { competitionLabel, formatCpcRange } from "../lib/metrics.js";
 import { microsToCurrency } from "../lib/report.js";
-import { comparisonKey, MAX_KEYWORD_CHARS, MIN_VOLUME } from "../lib/merge.js";
+import { comparisonKey, MAX_KEYWORD_CHARS } from "../lib/merge.js";
 import {
   buildRequest,
   conceptGroupName,
@@ -267,11 +267,13 @@ export interface AggregatedKeyword {
  * then first seen) — supplies the metric tuple, so volume/competition/CPC stay a
  * real, self-consistent set rather than a franken-max across rows. `sources` is
  * the union of every probe that surfaced the key; its length is the competitor
- * overlap (how many sources compete for the term). Ideas below MIN_VOLUME or over
- * MAX_KEYWORD_CHARS are dropped first, mirroring the keyword-ideas union policy.
+ * overlap (how many sources compete for the term). Ideas with no measured volume,
+ * or over MAX_KEYWORD_CHARS, are dropped first, mirroring the keyword-ideas union
+ * policy — no volume floor beyond zero, so a local geo still reports its real
+ * (small) numbers instead of an empty landscape.
  */
 export function aggregate(ideas: readonly ResearchIdea[]): AggregatedKeyword[] {
-  const kept = ideas.filter((i) => i.volume >= MIN_VOLUME && i.phrase.length <= MAX_KEYWORD_CHARS);
+  const kept = ideas.filter((i) => i.volume > 0 && i.phrase.length <= MAX_KEYWORD_CHARS);
   const groups = kept.reduce((map, idea) => {
     const key = comparisonKey(idea.phrase);
     const prev = map.get(key);
@@ -645,12 +647,11 @@ export async function main(
 
   const keywordCount = payload["keyword_count"] as number;
   if (keywordCount === 0) {
-    // Probes ran but every idea filtered below MIN_VOLUME — a real, diagnosable
-    // zero, not a crash. Emit the (empty) payload so the caller sees the request
-    // shape rather than a silent failure.
+    // Probes ran but the Keyword Planner reported no measured volume for anything
+    // they surfaced — a real, diagnosable zero, not a crash. Emit the (empty)
+    // payload so the caller sees the request shape rather than a silent failure.
     process.stderr.write(
-      `Keyword Planner returned no keywords at/above ${MIN_VOLUME} avg monthly searches across ` +
-        `${probes.length} probe(s)\n`,
+      `Keyword Planner returned no keywords with measured volume across ${probes.length} probe(s)\n`,
     );
   } else {
     process.stderr.write(

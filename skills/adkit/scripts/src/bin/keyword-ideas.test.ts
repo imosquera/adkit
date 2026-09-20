@@ -220,13 +220,14 @@ describe("buildCandidateDicts (pure pipeline)", () => {
     expect(dicts.map((d) => d.phrase)).toEqual(["running shoes"]);
   });
 
-  it("filters API ideas below the 1000 volume floor", () => {
+  it("keeps low-volume API ideas, filtering only the unmeasured ones", () => {
     const rows = [
       ideaRow("popular", { avg_monthly_searches: 2000, competition: "LOW" }),
       ideaRow("obscure", { avg_monthly_searches: 500, competition: "LOW" }),
+      ideaRow("no data", { avg_monthly_searches: 0, competition: "LOW" }),
     ];
     const dicts = buildCandidateDicts(rows, []);
-    expect(dicts.map((d) => d.phrase)).toEqual(["popular"]);
+    expect(dicts.map((d) => d.phrase).sort()).toEqual(["obscure", "popular"]);
   });
 
   it("returns [] when there are no rows and no matched seeds", () => {

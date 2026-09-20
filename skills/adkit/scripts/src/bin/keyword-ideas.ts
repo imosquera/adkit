@@ -337,8 +337,8 @@ export async function main(
     return 0;
   }
 
-  // The Keyword Planner union is empty (zero rows, or every idea filtered below
-  // MIN_VOLUME). NEVER emit a silent `[]` + exit 0 — that leaves /adkit gtm with
+  // The Keyword Planner union is empty (zero rows, or every idea reported no
+  // measured volume). NEVER emit a silent `[]` + exit 0 — that leaves /adkit gtm with
   // nothing while looking like success. Echo the request so a genuine zero is
   // diagnosable, then fall back to the seeds undecorated so gtm can still tier them.
   process.stderr.write(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ApiIdea, MIN_VOLUME, comparisonKey, unionCandidates } from "./merge.js";
+import { type ApiIdea, comparisonKey, unionCandidates } from "./merge.js";
 
 function idea(
   phrase: string,
@@ -25,15 +25,13 @@ describe("unionCandidates", () => {
     expect(result).toEqual([]);
   });
 
-  it("drops api below min volume", () => {
-    const result = unionCandidates([], [idea("low vol", MIN_VOLUME - 1)]);
-    expect(result).toEqual([]);
-  });
-
-  it("keeps api at min volume", () => {
-    const result = unionCandidates([], [idea("ok vol", MIN_VOLUME)]);
+  // A local geo's keywords live in the tens, not the thousands: a 25-mile radius
+  // whose whole keyword set totals 470/mo used to come back empty under a 1000/mo
+  // floor, which read as "no demand here" rather than "small market".
+  it("keeps low-volume api phrases (no floor beyond zero)", () => {
+    const result = unionCandidates([], [idea("soccer clinics near me", 10)]);
     expect(result).toHaveLength(1);
-    expect(result[0].volume).toBe(MIN_VOLUME);
+    expect(result[0].volume).toBe(10);
   });
 
   it("drops api phrases over 80 chars", () => {

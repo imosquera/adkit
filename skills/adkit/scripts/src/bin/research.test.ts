@@ -174,12 +174,13 @@ describe("aggregate", () => {
     expect(agg.find((k) => k.phrase === "pipeline tool")?.sources).toEqual(["acme.com"]);
   });
 
-  it("drops ideas below the 1000 volume floor", () => {
+  it("keeps low-volume ideas and drops only the unmeasured ones", () => {
     const agg = aggregate([
       idea({ phrase: "popular", source: "seeds", volume: 2000 }),
-      idea({ phrase: "obscure", source: "seeds", volume: 500 }),
+      idea({ phrase: "obscure", source: "seeds", volume: 10 }),
+      idea({ phrase: "no data", source: "seeds", volume: 0 }),
     ]);
-    expect(agg.map((k) => k.phrase)).toEqual(["popular"]);
+    expect(agg.map((k) => k.phrase).sort()).toEqual(["obscure", "popular"]);
   });
 
   it("takes the metric tuple from the highest-volume row (self-consistent)", () => {
