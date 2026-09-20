@@ -5,6 +5,7 @@
  */
 
 import type { CannibalizationPair } from "./scoring.js";
+import type { ServingDiagnosis } from "./diagnosis.js";
 import type { keywordsByClicksAndCtr, keywordsToPromote, negativesToAdd } from "../lib/cluster.js";
 import type {
   AuctionInsightRow,
@@ -65,19 +66,27 @@ export function renderCreativeSummary(report: CampaignReport[]): string[] {
   return [...lines, `\n${total} creative findings across ${report.length} campaigns`];
 }
 
+/**
+ * `[zero_impressions]` on its own is the symptom the operator already knew, so the
+ * blockers print right under the row — the reason is readable in the terminal
+ * without piping the JSON through jq.
+ */
 export function renderImpressionShare(
   serving: ScoredServing[],
   cannib: CannibalizationPair[],
   days: number,
+  diagnoses: Record<number, ServingDiagnosis> = {},
 ): string[] {
   function row(c: ScoredServing): string[] {
     const tag = c.flags.join(", ") || "serving";
     const isPct = c.impressions ? pct(c.searchImpressionShare) : "  -";
     const lb = pct(c.lostISBudget);
     const lr = pct(c.lostISRank);
+    const blockers = diagnoses[c.campaignId]?.blockers ?? [];
     return [
       `    ${ljust(c.campaignName, 34)} impr=${rjust(String(c.impressions), 6)} IS=${rjust(isPct, 4)} ` +
         `lostBudget=${rjust(lb, 4)} lostRank=${rjust(lr, 4)} conv=${c.conversions.toFixed(0)} [${tag}]`,
+      ...blockers.flatMap((b) => [`        ! ${b.code}: ${b.detail}`, `            fix: ${b.fix}`]),
       ...c.impressionShareRecs.map((rec) => `        -> ${rec}`),
     ];
   }

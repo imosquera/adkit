@@ -549,6 +549,177 @@ export function auditServingQuery(
 }
 
 // ===========================================================================
+// /adkit audit — zero-impression serving diagnosis (src/audit/diagnosis.ts)
+//
+// Run ONLY for campaigns whose windowed impressions are 0, so a healthy run
+// costs nothing extra. These are the serving-ELIGIBILITY reads (why isn't it
+// serving), as opposed to the creative/performance reads above.
+//
+// Note the date fields: this API version exposes `campaign.start_date_time` /
+// `campaign.end_date_time`. The shorter `campaign.start_date`/`end_date` spelling
+// is rejected with UNRECOGNIZED_FIELD — and the start/end-date check is
+// load-bearing for the campaign_pending / campaign_ended blockers, so it is
+// verified against the SDK's own generated field table, not assumed.
+// ===========================================================================
+
+export function diagnosisCampaignQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "campaign",
+    [
+      "campaign.id",
+      "campaign.name",
+      "campaign.status",
+      "campaign.serving_status",
+      "campaign.primary_status",
+      "campaign.primary_status_reasons",
+      "campaign.start_date_time",
+      "campaign.end_date_time",
+      "campaign.network_settings.target_google_search",
+      "campaign.network_settings.target_search_network",
+      "campaign.network_settings.target_content_network",
+      "campaign_budget.amount_micros",
+      "campaign_budget.status",
+      "campaign_budget.delivery_method",
+    ],
+    "campaign.id",
+    campaignIds,
+  );
+}
+
+export function diagnosisAdGroupQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "ad_group",
+    [
+      "campaign.id",
+      "ad_group.id",
+      "ad_group.name",
+      "ad_group.status",
+      "ad_group.primary_status",
+      "ad_group.primary_status_reasons",
+    ],
+    "campaign.id",
+    campaignIds,
+    ["ad_group.status != 'REMOVED'"],
+  );
+}
+
+/** Live ads with their policy verdict — disapproved vs under review vs paused. */
+export function diagnosisAdQuery(campaignIds: ReadonlyArray<string | number>): SearchArgs {
+  return inListQuery(
+    "ad_group_ad",
+    [
+      "campaign.id",
+      "ad_group.id",
+      "ad_group.name",
+      "ad_group_ad.ad.id",
+      "ad_group_ad.status",
+      "ad_group_ad.primary_status",
+      "ad_group_ad.primary_status_reasons",
+      "ad_group_ad.policy_summary.approval_status",
+      "ad_group_ad.policy_summary.review_status",
+      "ad_group_ad.policy_summary.policy_topic_entries",
+    ],
+    "campaign.id",
+    campaignIds,
+    ["ad_group_ad.status != 'REMOVED'"],
+  );
+}
+
+/**
+ * Live keyword criteria (positive AND negative) with approval + system serving
+ * status — RARELY_SERVED is Google's "this term has too little search volume".
+ */
+export function diagnosisKeywordQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "ad_group_criterion",
+    [
+      "campaign.id",
+      "ad_group.id",
+      "ad_group_criterion.negative",
+      "ad_group_criterion.status",
+      "ad_group_criterion.approval_status",
+      "ad_group_criterion.system_serving_status",
+      "ad_group_criterion.keyword.text",
+      "ad_group_criterion.keyword.match_type",
+    ],
+    "campaign.id",
+    campaignIds,
+    ["ad_group_criterion.type = 'KEYWORD'", "ad_group_criterion.status != 'REMOVED'"],
+  );
+}
+
+/** Campaign-level targeting + negatives: LOCATION / PROXIMITY / LANGUAGE / AD_SCHEDULE / KEYWORD. */
+export function diagnosisCampaignCriterionQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "campaign_criterion",
+    [
+      "campaign.id",
+      "campaign_criterion.type",
+      "campaign_criterion.negative",
+      "campaign_criterion.status",
+      "campaign_criterion.display_name",
+      "campaign_criterion.keyword.text",
+      "campaign_criterion.keyword.match_type",
+      "campaign_criterion.location.geo_target_constant",
+      "campaign_criterion.proximity.radius",
+      "campaign_criterion.proximity.radius_units",
+      "campaign_criterion.proximity.address.city_name",
+      "campaign_criterion.proximity.address.postal_code",
+      "campaign_criterion.language.language_constant",
+      "campaign_criterion.ad_schedule.day_of_week",
+      "campaign_criterion.ad_schedule.start_hour",
+      "campaign_criterion.ad_schedule.end_hour",
+    ],
+    "campaign.id",
+    campaignIds,
+    ["campaign_criterion.status != 'REMOVED'"],
+  );
+}
+
+/** Negative-keyword LISTS attached to the campaign (an over-broad one is a classic total block). */
+export function diagnosisSharedSetQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "campaign_shared_set",
+    ["campaign.id", "shared_set.id", "shared_set.name", "shared_set.type", "shared_set.member_count"],
+    "campaign.id",
+    campaignIds,
+    ["campaign_shared_set.status != 'REMOVED'"],
+  );
+}
+
+/** The member terms of those lists, so the overlap-with-own-keywords check can run. */
+export function diagnosisSharedCriterionQuery(
+  sharedSetIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "shared_criterion",
+    ["shared_set.id", "shared_criterion.keyword.text", "shared_criterion.keyword.match_type"],
+    "shared_set.id",
+    sharedSetIds,
+    ["shared_criterion.type = 'KEYWORD'"],
+  );
+}
+
+/** Account billing state — an unbilled or cancelled account serves nothing. */
+export function diagnosisBillingQuery(): SearchArgs {
+  return {
+    resource: "billing_setup",
+    fields: ["billing_setup.id", "billing_setup.status"],
+    conditions: [],
+  };
+}
+
+// ===========================================================================
 // /adkit update builders (apply-fixes)
 // ===========================================================================
 

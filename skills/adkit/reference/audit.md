@@ -56,6 +56,31 @@ Two related growth blockers it also flags:
 
 **These are mostly not creative fixes.** Of them, `/adkit update` can raise a budget (for `budget_constrained`), change bid strategy (for `cold_start_throttle`), add negative keywords (helps `rank_constrained` by lifting CTR → Quality Score → Ad Rank), and close per-ad `pathToExcellent` gaps. Geo/schedule the operator still does in the UI.
 
+## Zero impressions — why isn't it serving
+
+A campaign with zero impressions is flagged `zero_impressions`, and that on its own is the symptom the operator already knew. So whenever a campaign's windowed `metrics.impressions` is **0**, the audit runs one extra set of **serving-eligibility** queries (campaign + budget, ad groups, ads + policy, keywords, campaign criteria, negative-keyword lists, billing) and emits `servingDiagnosis`, keyed by campaign id alongside `serving`. A healthy campaign never triggers it — no cost added to a healthy run, and `--no-serving` skips it with the rest of the serving layer.
+
+The block carries `campaign` (status, `servingStatus`, `primaryStatus` + `primaryStatusReasons` — Google's own literal answer to "why isn't this serving" — `startDate`/`endDate`, `budget`, `networks`), `billing`, per-ad-group counts (`eligibleAds`/`pausedAds`/`disapprovedAds`/`underReviewAds`, `eligibleKeywords`/`rarelyServedKeywords`/`disapprovedKeywords`), `disapprovals` (ad id, approval + review status, policy topic names), `targeting` (locations / proximity radius + units + resolved address / languages / ad schedule), `negatives` (campaign-level count, shared lists, match-type breakdown), `notes` (any resource the developer token couldn't read — that section degrades to a note on stderr and an omitted key, never a failed run), and **`blockers`**.
+
+`blockers` is the point: a ranked list of named causes, each with a `detail` and a `fix`. Every enum is decoded to its string name — the JSON never carries a bare `status: 2`. (The per-ad records carry `statusName` alongside the raw `status` for the same reason.)
+
+| code | what it means | who fixes it |
+| --- | --- | --- |
+| `account_not_billed` | `billing_setup.status` isn't APPROVED — an unbilled or cancelled account serves nothing | Billing (UI) |
+| `campaign_pending` / `campaign_ended` | start date in the future / end date in the past | UI (campaign settings) |
+| `budget_removed` / `budget_paused` | budget removed, paused, or zero | `/adkit update` (`budgets`) |
+| `campaign_paused` | the campaign itself is PAUSED/REMOVED | `/adkit update` (`campaignStatus`) |
+| `ad_groups_paused` / `ad_group_removed` | every live ad group is paused / there are none | `/adkit update` (`adGroupStatus`, `adGroups`) |
+| `ads_paused` / `no_eligible_ads` | every RSA in an ad group is PAUSED, or the group has no live ad | `/adkit update` (`adStatus`) — **note `/adkit create` publishes RSAs PAUSED by design, so this is the single most likely cause of a freshly-published campaign showing zero impressions** |
+| `ads_disapproved` / `ads_under_review` | policy disapproval (with topic names) / still in review | UI / wait |
+| `keywords_disapproved` / `keywords_rarely_served` | every keyword disapproved / at least half are RARELY_SERVED (too little search volume) | UI / `/adkit research` for higher-volume terms |
+| `no_keywords` | no live positive keywords — nothing to match | `/adkit update` (`keywords`) |
+| `negatives_block_everything` | a campaign or shared-list negative whose words are all contained in **every** one of the campaign's own keywords | `/adkit update` (`negatives`) |
+| `targeting_too_narrow` | the only geo targeting is a proximity radius under 15 miles | UI / republish geo with `/adkit create` |
+| `no_blocker_found` | every eligibility signal is green, and the verdict names what was checked | Nobody — it's a **volume/bid** question, not a config one; stop hunting for a switch |
+
+The blockers also print on **stderr**, directly under the `[zero_impressions]` row, so the reason is readable without piping JSON through jq.
+
 ## Auction Insights — who you're losing share to
 
 `rank_constrained` above says *that* a campaign is losing impression share to Ad Rank; this layer (on by default alongside impression share, `--no-serving` to skip, same `--days` window) says *to whom*. It pulls the Auction Insights report (`auction_insight_domain`) and reports, per serving campaign, an `auctionInsights` block: `{campaignId: [{domain, impressionShare, overlapRate, positionAboveRate, topOfPageRate, outrankingShare}]}`, sorted by impression share descending. A campaign with no Auction Insights rows gets no entry — no evidence, no flag.
@@ -107,7 +132,7 @@ ads.sh audit --customer <10-digit> --banned "VAT,USD,EUR,Portugal"
 ads.sh audit --customer <10-digit> --campaign <id>
 ```
 
-- JSON report → **stdout** (per-campaign findings, per-ad `issues`, `keywords`, `actionItems`, `pathToExcellent`, plus each ad's full `headlines`/`descriptions` **text** so `/adkit update` can preserve good copy when authoring rewrites/appends; plus the serving-layer `serving`/`keywordCpc`/`clusterSplits`/`addNegatives`/`promoteKeywords`/`auctionInsights`/`qualityScore`/`landingPageHealth`/`psi`). Redirect it: `> /tmp/audit.json`.
+- JSON report → **stdout** (per-campaign findings, per-ad `issues`, `keywords`, `actionItems`, `pathToExcellent`, plus each ad's full `headlines`/`descriptions` **text** so `/adkit update` can preserve good copy when authoring rewrites/appends; plus the serving-layer `serving`/`servingDiagnosis` (only for zero-impression campaigns — see *Zero impressions* above)/`keywordCpc`/`clusterSplits`/`addNegatives`/`promoteKeywords`/`auctionInsights`/`qualityScore`/`landingPageHealth`/`psi`). Redirect it: `> /tmp/audit.json`.
 - Human summary → **stderr** (the table with `-> path to EXCELLENT` lines).
 - Flags: `--all` (include paused/removed), `--no-serving` (skip the impression-share layer), `--days 7|14|30` (IS window), `--banned "a,b,c"` (phrases that signal copy leaked from another product — substring-based; product-specific, no universal default, always pass the phrases you expect from neighbouring products in the account), `--differentiation-profile <path.json>` (the per-run me-too/differentiation profile that drives `undifferentiated_copy` — absent ⇒ nothing flagged; see *Professional-lane signal* above), `--psi-key <key>` (operator-supplied PageSpeed Insights API key; env `PAGESPEED_API_KEY` is used when the flag is absent — see *Landing page health* below).
 - Resolve a campaign name in `$ARGUMENTS` to an id by matching against the JSON's `campaignName` (or pass the id directly).
@@ -122,6 +147,7 @@ After the text report, always publish the audit as a self-contained HTML dashboa
 
 Build the dashboard from the same run's JSON — no new queries:
 
+- **Serving blockers — first, above everything else.** When any campaign has a `servingDiagnosis`, put its `blockers` (code, detail, fix) at the top of the KPI strip, above ad strength. A campaign serving nothing makes every creative metric below it moot.
 - **KPI strip** — search impression share, ad strength distribution, wasted spend (sum of `addNegatives` cost), keyword CPC spread (min/max across `keywordCpc`).
 - **Impression-share breakdown** — per-campaign `searchImpressionShare`, `lostISBudget`, `lostISRank`, with the `budget_constrained`/`rank_constrained` recommendation.
 - **Ad-strength / RSA-coverage grid** — one cell per ad: current strength, headline/description counts vs the 15/4 target, keyword-inclusion and pinning flags.

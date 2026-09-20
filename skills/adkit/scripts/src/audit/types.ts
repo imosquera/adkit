@@ -15,7 +15,10 @@ export interface ScoredAd {
   adId: number;
   adGroup: string;
   strength: AdStrengthName;
+  /** Raw AdGroupAdStatus as the API returned it (an ordinal on this client) — read `statusName`. */
   status: string;
+  /** Decoded AdGroupAdStatus name (ENABLED/PAUSED/…), or null when the API omitted it. */
+  statusName: string | null;
   headlines: string[];
   descriptions: string[];
   finalUrl: string | null;

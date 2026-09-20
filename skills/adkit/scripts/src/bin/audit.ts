@@ -24,7 +24,8 @@
 import { readFileSync } from "node:fs";
 import { isMainModule } from "../cli/entry.js";
 import { formatGoogleAdsError } from "../ads/errors.js";
-import { adStrengthName } from "../ads/enums.js";
+import { adStrengthName, enumName } from "../ads/enums.js";
+import { enums } from "google-ads-api";
 import { parseArgs } from "node:util";
 import { loadConfig, resolveTier } from "../lib/config.js";
 
@@ -64,8 +65,28 @@ import {
   auditQualityScoreQuery,
   auditSearchTermsQuery,
   auditServingQuery,
+  diagnosisAdGroupQuery,
+  diagnosisAdQuery,
+  diagnosisBillingQuery,
+  diagnosisCampaignCriterionQuery,
+  diagnosisCampaignQuery,
+  diagnosisKeywordQuery,
+  diagnosisSharedCriterionQuery,
+  diagnosisSharedSetQuery,
   priorWindow,
 } from "../gaql/builders.js";
+import {
+  buildServingDiagnosis,
+  type RawBillingRow,
+  type RawCampaignCriterionRow,
+  type RawDiagnosisAdGroupRow,
+  type RawDiagnosisAdRow,
+  type RawDiagnosisCampaignRow,
+  type RawDiagnosisKeywordRow,
+  type RawSharedCriterionRow,
+  type RawSharedSetRow,
+  type ServingDiagnosis,
+} from "../audit/diagnosis.js";
 import type { AdsClient } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
 import { MCC_CUSTOMER_ID_ENV } from "../cli/args.js";
@@ -329,6 +350,11 @@ function scoreAd(
     adGroup: r.ad_group.name,
     strength,
     status: a.status,
+    // `status` stays whatever the API gave (a bare AdGroupAdStatus ordinal on this
+    // client) for compatibility; `statusName` is the decoded one a report can
+    // actually read — "is this ad paused or disapproved?" was unanswerable from a
+    // `status: 2` and is the first question a zero-impression run asks.
+    statusName: enumName(enums.AdGroupAdStatus, a.status),
     // Full asset text (not just counts) so /adkit update can preserve good copy when
     // authoring rewrites/appends instead of re-fetching it live.
     headlines: hs,
@@ -670,6 +696,108 @@ export function withAuctionInsightFindings(
   ];
   if (newFlags.length === sc.flags.length) return sc;
   return { ...sc, flags: newFlags, impressionShareRecs: newRecs };
+}
+
+// ---------------------------------------------------------------------------
+// Zero-impression serving diagnosis — the IO edge. The derivation is pure and
+// lives in audit/diagnosis.ts.
+//
+// A zero-impression campaign is exactly when an operator runs an audit, and
+// `zero_impressions` with no diagnosis is the least useful possible answer. This
+// asks Google the serving-ELIGIBILITY questions the rest of the audit never does
+// — and only for campaigns whose windowed impressions are 0, so a healthy run
+// pays nothing for it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Run one diagnosis read, degrading a permission/field rejection to `[]` plus a
+ * note instead of failing the audit — the same contract
+ * {@link auctionInsightsOrSkip} uses (the developer token 403s on whole
+ * resources for some accounts). A missing section costs one blocker check, not
+ * the run.
+ */
+async function diagnosisRows<Row>(
+  label: string,
+  fetch: () => Promise<Row[]>,
+  notes: string[],
+): Promise<Row[]> {
+  try {
+    return await fetch();
+  } catch (exc) {
+    notes.push(`${label} unavailable — ${formatGoogleAdsError(exc)}`);
+    return [];
+  }
+}
+
+/**
+ * {campaignId: ServingDiagnosis} for the given (zero-impression) campaigns.
+ * `asOf` is injected so the pending/ended date checks are testable.
+ */
+export async function servingDiagnosis(
+  client: AdsClient,
+  customerId: string,
+  campaignIds: number[],
+  asOf: Date = new Date(),
+): Promise<Record<number, ServingDiagnosis>> {
+  if (campaignIds.length === 0) {
+    return {};
+  }
+  const notes: string[] = [];
+  const q = <Row>(label: string, args: SearchArgs) =>
+    diagnosisRows<Row>(label, () => search<Row>(client, customerId, args), notes);
+
+  const [campaignRows, adGroupRows, adRows, keywordRows, criterionRows, sharedSetRows, billingRows] =
+    await Promise.all([
+      q<RawDiagnosisCampaignRow>("campaign eligibility", diagnosisCampaignQuery(campaignIds)),
+      q<RawDiagnosisAdGroupRow>("ad group status", diagnosisAdGroupQuery(campaignIds)),
+      q<RawDiagnosisAdRow>("ad policy", diagnosisAdQuery(campaignIds)),
+      q<RawDiagnosisKeywordRow>("keyword serving status", diagnosisKeywordQuery(campaignIds)),
+      q<RawCampaignCriterionRow>("campaign targeting", diagnosisCampaignCriterionQuery(campaignIds)),
+      q<RawSharedSetRow>("negative keyword lists", diagnosisSharedSetQuery(campaignIds)),
+      q<RawBillingRow>("billing setup", diagnosisBillingQuery()),
+    ]);
+
+  const sharedSetIds = [
+    ...new Set(sharedSetRows.map((r) => r.shared_set.id).filter((id): id is number => Boolean(id))),
+  ];
+  const sharedNegativeRows =
+    sharedSetIds.length > 0
+      ? await q<RawSharedCriterionRow>(
+          "negative list members",
+          diagnosisSharedCriterionQuery(sharedSetIds),
+        )
+      : [];
+
+  const today = asOf.toISOString().slice(0, 10);
+  const forCampaign = <R extends { campaign: { id: number } }>(rows: R[], cid: number) =>
+    rows.filter((r) => r.campaign.id === cid);
+
+  return Object.fromEntries(
+    campaignRows.map((campaign) => {
+      const cid = campaign.campaign.id;
+      const mySets = forCampaign(sharedSetRows, cid);
+      const mySetIds = new Set(mySets.map((s) => s.shared_set.id));
+      return [
+        cid,
+        buildServingDiagnosis(
+          {
+            campaign,
+            adGroups: forCampaign(adGroupRows, cid),
+            ads: forCampaign(adRows, cid),
+            keywords: forCampaign(keywordRows, cid),
+            campaignCriteria: forCampaign(criterionRows, cid),
+            sharedSets: mySets,
+            sharedNegatives: sharedNegativeRows.filter((r) => mySetIds.has(r.shared_set.id)),
+            // A billing setup the token cannot read is absent, not "unapproved" —
+            // guessing would manufacture the account_not_billed blocker.
+            billing: billingRows[0] ?? null,
+            notes,
+          },
+          today,
+        ),
+      ];
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,6 +1433,8 @@ export async function runAudit(
   // envelope so a consumer can tell "no competitors found" from "not fetched".
   let auctionInsightsSkipped: string | null = null;
   let clickCtrCandidates: Record<number, ReturnType<typeof keywordsByClicksAndCtr>> = {};
+  // Keyed by campaign id, and only for campaigns that served nothing in the window.
+  let diagnoses: Record<number, ServingDiagnosis> = {};
   if (!args.noServing) {
     serving = await campaignServing(client, customer, args.days, !args.all, campaignId);
     cannib = cannibalization(serving, kwByCampaign);
@@ -1344,13 +1474,25 @@ export async function runAudit(
     });
 
     clickCtrCandidates = clicksAndCtrCandidates(terms, kwByAdGroupId, keywordCpcMap);
+
+    // The one path where the eligibility queries are worth their cost: a campaign
+    // that served nothing. `zero_impressions` alone is the symptom the operator
+    // already knew.
+    diagnoses = await servingDiagnosis(
+      client,
+      customer,
+      serving.filter((s) => s.impressions === 0).map((s) => s.campaignId),
+    );
+    for (const note of Object.values(diagnoses)[0]?.notes ?? []) {
+      process.stderr.write(`note: ${note}\n`);
+    }
   }
 
   // human summary -> stderr (stdout stays clean JSON for piping)
   emitLines(renderCreativeSummary(report));
   if (!args.noServing) {
     const names = Object.fromEntries(serving.map((c) => [c.campaignId, c.campaignName]));
-    emitLines(renderImpressionShare(serving, cannib, args.days));
+    emitLines(renderImpressionShare(serving, cannib, args.days, diagnoses));
     emitLines(renderKeywordCpc(serving, keywordCpcMap, splits, args.days));
     emitLines(renderAuctionInsights(serving, auctionInsightsMap, args.days));
     emitLines(renderSearchTermCandidates(addNegatives, promoteKeywords, names, args.days));
@@ -1398,6 +1540,7 @@ export async function runAudit(
       customer,
       campaigns: report,
       serving,
+      servingDiagnosis: stringKeyed(diagnoses),
       cannibalization: cannib,
       keywordCpc: stringKeyed(keywordCpcMap),
       auctionInsights: stringKeyed(auctionInsightsMap),

@@ -38,6 +38,7 @@ import {
   resolvePsiKey,
   runAudit,
   searchTerms,
+  servingDiagnosis,
   withAuctionInsightFindings,
 } from "./audit.js";
 import type { KeywordCpc } from "../audit/types.js";
@@ -987,5 +988,90 @@ describe("current-vs-prior-window Auction Insights composition (no cross-run sta
     expect(queryCount).toBe(2);
     expect(current[1].map((r) => r.domain)).toEqual(["newcomer.com"]);
     expect(prior[1]).toEqual(["old-timer.com"]);
+  });
+});
+
+describe("servingDiagnosis (zero-impression eligibility reads)", () => {
+  /** Canned rows for the whole diagnosis read set, keyed by the resource in the GAQL. */
+  const pick = (query: string): unknown[] => {
+    if (query.includes("FROM campaign WHERE")) {
+      return [
+        {
+          campaign: {
+            id: 7,
+            name: "winter-programs-search",
+            status: "ENABLED",
+            serving_status: "SERVING",
+            start_date_time: "2026-09-03",
+            network_settings: { target_google_search: true },
+          },
+          campaign_budget: { amount_micros: 50_000_000, status: "ENABLED" },
+        },
+      ];
+    }
+    if (query.includes("FROM ad_group WHERE")) {
+      return [{ campaign: { id: 7 }, ad_group: { id: 8, name: "Younger Players", status: "ENABLED" } }];
+    }
+    if (query.includes("FROM ad_group_ad")) {
+      return [
+        {
+          campaign: { id: 7 },
+          ad_group: { id: 8, name: "Younger Players" },
+          ad_group_ad: { ad: { id: 9 }, status: "PAUSED" },
+        },
+      ];
+    }
+    if (query.includes("FROM ad_group_criterion")) {
+      return [
+        {
+          campaign: { id: 7 },
+          ad_group: { id: 8 },
+          ad_group_criterion: {
+            negative: false,
+            status: "ENABLED",
+            approval_status: "APPROVED",
+            system_serving_status: "ELIGIBLE",
+            keyword: { text: "winter programs", match_type: "PHRASE" },
+          },
+        },
+      ];
+    }
+    if (query.includes("FROM campaign_shared_set")) {
+      return [{ campaign: { id: 7 }, shared_set: { id: 55, name: "Account negatives", member_count: 46 } }];
+    }
+    if (query.includes("FROM shared_criterion")) {
+      return [{ shared_set: { id: 55 }, shared_criterion: { keyword: { text: "free", match_type: "PHRASE" } } }];
+    }
+    if (query.includes("FROM billing_setup")) {
+      return [{ billing_setup: { status: "APPROVED" } }];
+    }
+    return [];
+  };
+
+  it("keys the diagnosis by campaign id and derives the blocker", async () => {
+    const got = await servingDiagnosis(fakeClient(pick), "123", [7], new Date("2026-09-20T00:00:00Z"));
+    expect(Object.keys(got)).toEqual(["7"]);
+    expect(got[7].blockers.map((b) => b.code)).toContain("ads_paused");
+    expect(got[7].negatives.sharedSets).toEqual([{ name: "Account negatives", memberCount: 46 }]);
+    // Decoded, never a bare ordinal — the whole point of the layer.
+    expect(got[7].adGroups[0].status).toBe("ENABLED");
+  });
+
+  it("costs nothing when no campaign served zero impressions", async () => {
+    let queries = 0;
+    const got = await servingDiagnosis(fakeClient(pick, () => (queries += 1)), "123", []);
+    expect(got).toEqual({});
+    expect(queries).toBe(0);
+  });
+
+  it("degrades an unreadable resource to a note instead of failing the run", async () => {
+    const client = fakeClient((query) => {
+      if (query.includes("FROM billing_setup")) throw new Error("PERMISSION_DENIED");
+      return pick(query);
+    });
+    const got = await servingDiagnosis(client, "123", [7], new Date("2026-09-20T00:00:00Z"));
+    expect(got[7].billing).toBeUndefined();
+    expect(got[7].notes.join()).toContain("billing setup unavailable");
+    expect(got[7].blockers.map((b) => b.code)).toContain("ads_paused");
   });
 });

@@ -18,6 +18,28 @@ export function matchTypeName(mt: string | number): string {
   return typeof mt === "number" ? enums.KeywordMatchType[mt] : mt;
 }
 
+/**
+ * Decode any Google Ads enum value into its string name, given the SDK's own
+ * bidirectional table (e.g. `enums.AdGroupAdStatus`). The SDK returns some enum
+ * fields as their string name and others as the raw ordinal, inconsistently and
+ * per-field (see `matchTypeName`/`adStrengthName` above), so every enum surfaced
+ * in report JSON goes through this once at the fetch boundary — a bare
+ * `status: 2` is unusable in a report.
+ *
+ * An absent value decodes to `null` (honest "not reported"); an out-of-range
+ * ordinal to "UNKNOWN", which is a real member of every Google Ads enum.
+ */
+export function enumName(
+  table: Record<string | number, string | number>,
+  value: string | number | null | undefined,
+): string | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const decoded = typeof value === "number" ? table[value] : value;
+  return typeof decoded === "string" ? decoded : "UNKNOWN";
+}
+
 /** Google Ads `AdStrength` enum names — the decoded form `adStrengthName` proves. */
 export type AdStrengthName =
   | "UNSPECIFIED"
