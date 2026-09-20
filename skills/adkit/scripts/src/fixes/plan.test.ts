@@ -976,6 +976,13 @@ describe("geo", () => {
     });
   }
 
+  it("two blocks for the same campaign contradict each other and are rejected", () => {
+    const errs = validate({ geo: [{ campaignId: "1", locations: ["1014221"] }, { campaignId: 1, locations: ["2840"] }] }, {}, {});
+    expect(errs.some((e) => e.includes("more than one geo block"))).toBe(true);
+    // ...but the same campaign in two DIFFERENT sections is fine.
+    expect(validate({ geo: [{ campaignId: "1", locations: ["1014221"] }], languages: [{ campaignId: "1" }] }, {}, {})).toEqual([]);
+  });
+
   it("a non-object entry is rejected rather than coerced", () => {
     expect(validate({ geo: ["24206941608"] }, {}, {}).some((e) => e.includes("must be an object"))).toBe(true);
   });

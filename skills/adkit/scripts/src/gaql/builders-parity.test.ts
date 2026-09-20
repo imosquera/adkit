@@ -8,6 +8,7 @@ import {
   applyCampaignStatusesQuery,
   applyHeadlinesQuery,
   applyGeoQuery,
+  applyGeoTargetTypesQuery,
   applyLanguagesQuery,
   applyNegativesQuery,
   applyPositiveKeywordsQuery,
@@ -168,6 +169,11 @@ const CASES: ReadonlyArray<[string, string]> = [
       "AND campaign_criterion.status != 'REMOVED'",
   ],
   [
+    toGaql(applyGeoTargetTypesQuery(IDS)),
+    "SELECT campaign.id, campaign.geo_target_type_setting.positive_geo_target_type FROM campaign " +
+      "WHERE campaign.id IN (12345,67890)",
+  ],
+  [
     toGaql(applyHeadlinesQuery(IDS)),
     "SELECT ad_group_ad.ad.id, ad_group_ad.ad.responsive_search_ad.headlines FROM ad_group_ad WHERE ad_group_ad.ad.id IN (12345,67890)",
   ],
@@ -183,6 +189,6 @@ describe("builder GAQL parity (toGaql reproduces the pre-refactor strings)", () 
   });
 
   it("covers every builder family (report, audit, apply-fixes)", () => {
-    expect(CASES.length).toBe(30);
+    expect(CASES.length).toBe(31);
   });
 });

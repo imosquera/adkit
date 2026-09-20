@@ -776,6 +776,7 @@ export const FAILURE_STEPS = [
   "create-keywords",
   "resolve-locations",
   "target-radius",
+  "target-geo-type",
   "create-display-campaign",
   "create-image-assets",
   "create-audiences",

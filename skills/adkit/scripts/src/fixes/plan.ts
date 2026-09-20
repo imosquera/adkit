@@ -22,6 +22,7 @@ import {
   displayPathPairErrors,
   hasPhoneNumber,
   type AdGroup,
+  type GeoChange,
   type Keyword,
 } from "../lib/schema.js";
 import { pyRepr, pyStr } from "../cli/py-format.js";
@@ -427,7 +428,41 @@ function geoErrors(blocks: unknown[]): string[] {
       return `geo campaign ${pyRepr(item["campaignId"])}: ${loc}: ${issue.message}`;
     });
   };
-  return blocks.flatMap(one);
+  // A geo block declares the campaign's WHOLE positive geo set, so two blocks for one
+  // campaign contradict each other: each is diffed against the same live state, and
+  // applying both would try to remove a criterion the first block already removed.
+  const duplicates = [
+    ...new Set(
+      blocks
+        .filter(isObject)
+        .map((b) => String(b["campaignId"]))
+        .filter((id, i, all) => all.indexOf(id) !== i),
+    ),
+  ];
+  return [
+    ...blocks.flatMap(one),
+    ...duplicates.map(
+      (id) =>
+        `geo campaign ${pyRepr(id)}: more than one geo block for the same campaign — ` +
+        "a geo block declares the campaign's whole positive geo set, so merge them into one",
+    ),
+  ];
+}
+
+/**
+ * Parse each `geo` block into the typed {@link GeoChange} the mutation and staging
+ * paths consume. Blocks are assumed already validated by {@link geoErrors}, so a parse
+ * failure here drops the block defensively (mirrors {@link addAdGroupsPlan}).
+ *
+ * This is the ONLY way a geo block should reach either path: re-casting the raw YAML
+ * skips the schema's normalization — `units: MILES` would stay upper-case and publish
+ * as KILOMETERS, and the radius cap would be checked against the wrong unit.
+ */
+export function geoPlan(blocks: Array<Record<string, unknown>>): GeoChange[] {
+  return blocks.flatMap((b) => {
+    const parsed = GeoChangeSchema.safeParse(b);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 function rewritesErrors(rewrites: Array<Record<string, unknown>>): string[] {

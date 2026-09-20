@@ -40,6 +40,7 @@ import {
   targetDevices,
   effectiveLocations,
   resolveLocations,
+  setGeoTargetType,
   targetRadius,
   targetLocations,
   ALL_DEVICES,
@@ -165,6 +166,13 @@ export async function publishV1(
     await step("target-devices", () =>
       targetDevices(client, customerId, results.campaignId!, brief.campaign.devices),
     );
+    // Reconciled only when the brief states one: a fresh campaign already gets it from
+    // the create op, and an omitted field means "Google's PRESENCE default", which a
+    // reused campaign already has unless a brief once set it and then dropped the key.
+    if (brief.campaign.geoTargetType !== undefined) {
+      const geoTargetType = brief.campaign.geoTargetType;
+      await step("target-geo-type", () => setGeoTargetType(client, customerId, results.campaignId!, geoTargetType));
+    }
     if (!existingCampaign) {
       await step("create-negative-keywords", () =>
         createNegativeKeywords(client, customerId, results.campaignId!, brief.campaign.negativeKeywords),
@@ -325,6 +333,13 @@ export async function publishDisplay(
     await step("target-devices", () =>
       targetDevices(client, customerId, results.campaignId!, brief.campaign.devices ?? [...ALL_DEVICES]),
     );
+    // Reconciled only when the brief states one: a fresh campaign already gets it from
+    // the create op, and an omitted field means "Google's PRESENCE default", which a
+    // reused campaign already has unless a brief once set it and then dropped the key.
+    if (brief.campaign.geoTargetType !== undefined) {
+      const geoTargetType = brief.campaign.geoTargetType;
+      await step("target-geo-type", () => setGeoTargetType(client, customerId, results.campaignId!, geoTargetType));
+    }
     const assets = await step("create-image-assets", () => createImageAssets(client, customerId, images));
     results.imageAssetResourceNames = [...assets.values()];
     for (const [idx, briefAg] of brief.adGroups.entries()) {

@@ -1106,6 +1106,7 @@ function locationRow(resourceName: string, geoTargetConstant: string): Record<st
 function geoClient(
   liveRows: Array<Record<string, unknown>>,
   failOn?: (op: AdsMutateOperation) => boolean,
+  liveGeoTargetType?: string,
 ): { client: AdsClient; mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> } {
   const mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }> = [];
   const client: AdsClient = {
@@ -1117,7 +1118,12 @@ function geoClient(
         geo_target_constant: { resource_name: `geoTargetConstants/${g.id}`, id: g.id, canonical_name: g.canonicalName },
       })) as Row[];
     },
-    async searchStructured<Row = unknown>(): Promise<Row[]> {
+    async searchStructured<Row = unknown>(_customerId: string, args: SearchArgs): Promise<Row[]> {
+      if (args.resource === "campaign") {
+        return (liveGeoTargetType === undefined
+          ? []
+          : [{ campaign: { id: 500, geo_target_type_setting: { positive_geo_target_type: liveGeoTargetType } } }]) as Row[];
+      }
       return liveRows as Row[];
     },
     async mutate(customerId: string, operations: AdsMutateOperation[]): Promise<MutateResult> {
@@ -1256,6 +1262,47 @@ describe("geo path", () => {
     const out2 = cap2.text();
     expect(out2).not.toContain("widens reach");
     expect(envelope(out2).geoWideningIncreasesReach).toEqual([]);
+  });
+
+  it("units: MILES publishes MILES (the plan is parsed once, never re-cast raw)", async () => {
+    const { client, mutations } = geoClient([]);
+    currentClient = client;
+
+    const cap = captureStdout();
+    const plan = writeGeoPlan([{ campaignId: "500", radiusTargets: [{ ...wider, units: "MILES" }] }]);
+    expect(await main([plan, "--apply"])).toBe(0);
+    cap.text();
+
+    const proximity = (mutations[0]!.operations[0]!.resource as { proximity: Record<string, unknown> }).proximity;
+    expect(proximity.radius_units).toBe(enums.ProximityRadiusUnits.MILES);
+    expect(proximity.radius).toBe(40);
+  });
+
+  it("a radius over the cap is rejected in the unit the plan actually wrote", async () => {
+    const { client, mutations } = geoClient([]);
+    currentClient = client;
+    const cap = captureStdout();
+    const plan = writeGeoPlan([{ campaignId: "500", radiusTargets: [{ ...wider, radius: 501, units: "MILES" }] }]);
+    expect(await main([plan, "--apply"])).toBe(1);
+    expect(cap.text()).toContain("max is 500 miles");
+    expect(mutations).toEqual([]);
+  });
+
+  it("geoTargetType already set live is skipped — no mutate, no false widening warning", async () => {
+    const { client, mutations } = geoClient([proximityRow("cc/40mi", "21054", 40)], undefined, "PRESENCE_OR_INTEREST");
+    currentClient = client;
+
+    const cap = captureStdout();
+    const plan = writeGeoPlan([
+      { campaignId: "500", radiusTargets: [wider], geoTargetType: "PRESENCE_OR_INTEREST" },
+    ]);
+    expect(await main([plan, "--apply"])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("geo campaign 500: already matches, skipped");
+    expect(out).not.toContain("widens reach");
+    expect(mutations).toEqual([]);
+    expect(envelope(out).geoWideningIncreasesReach).toEqual([]);
   });
 
   it("geoTargetType updates the campaign setting and counts as widening when loosened", async () => {

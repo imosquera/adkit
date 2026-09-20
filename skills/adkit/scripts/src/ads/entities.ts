@@ -840,12 +840,15 @@ export interface GeoCriterionPlan {
  * live. A radius is immutable on a live criterion, so changing one shows up here as a
  * remove of the old plus an add of the new ({@link buildGeoOps} puts both in one batch).
  *
- * `widening` answers "does this reach MORE people than it does now": every live
- * criterion still covered (a radius kept at least its current size, compared in miles
- * so a km target still compares) *and* something added or enlarged — plus the
- * unrestricted case, where dropping all targeting opens the campaign to the world. An
- * account with no geo criteria at all already serves everywhere, so adding the first
- * one only ever narrows.
+ * `widening` gates live spend, so it answers the conservative question: "is this
+ * change PROVABLY a narrowing?" — every target location already live, and every target
+ * radius no bigger than a live one at the same place (compared in miles, so a km
+ * target still compares). Anything else warns, because the reach delta cannot be known
+ * from resource names alone: swapping a city for the state that contains it, or an
+ * address circle for a lat/long one, reads as an unrelated remove + add here but can
+ * multiply reach. Clearing all targeting (serving the whole world) always warns. A
+ * campaign with no geo criteria at all already serves everywhere, so adding its first
+ * criterion only ever narrows.
  */
 export function geoCriterionPlan(
   live: readonly GeoCriterion[],
@@ -861,7 +864,12 @@ export function geoCriterionPlan(
   const liveKeys = new Set(liveProximities.map((c) => proximityKey(c.proximity!)));
 
   const addGeoTargets = [...new Set(geoTargets)].filter((geo) => !liveGeoSet.has(geo));
-  const addRadius = radiusTargets.filter((_, i) => !liveKeys.has(proximityKey(wanted[i]!)));
+  // Deduped within the wanted list as well as against live: Google rejects a duplicate
+  // criterion, which would fail the whole atomic batch.
+  const addRadius = radiusTargets.filter((_, i) => {
+    const key = proximityKey(wanted[i]!);
+    return !liveKeys.has(key) && wanted.findIndex((w) => proximityKey(w) === key) === i;
+  });
   const removeResources = [
     ...liveLocations.filter((c) => !geoTargets.includes(c.location!.geo_target_constant!)),
     ...liveProximities.filter((c) => !wantedKeys.has(proximityKey(c.proximity!))),
@@ -873,18 +881,16 @@ export function geoCriterionPlan(
     ps.reduce((acc, p) => acc.set(proximityWhere(p), Math.max(acc.get(proximityWhere(p)) ?? 0, radiusMiles(p))), new Map<string, number>());
   const liveWidest = widest(liveProximities.map((c) => c.proximity!));
   const wantedWidest = widest(wanted);
-  const covers =
-    liveLocations.every((c) => geoTargets.includes(c.location!.geo_target_constant!)) &&
-    [...liveWidest].every(([where, miles]) => (wantedWidest.get(where) ?? -1) >= miles);
-  const grows =
-    addGeoTargets.length > 0 || [...wantedWidest].some(([where, miles]) => (liveWidest.get(where) ?? -1) < miles);
+  const narrows =
+    geoTargets.every((geo) => liveGeoSet.has(geo)) &&
+    [...wantedWidest].every(([where, miles]) => (liveWidest.get(where) ?? -1) >= miles);
   const unrestricted = geoTargets.length === 0 && radiusTargets.length === 0;
 
   return {
     addGeoTargets,
     addRadius,
     removeResources,
-    widening: live.length > 0 && (unrestricted || (covers && grows)),
+    widening: live.length > 0 && (unrestricted || !narrows),
     changed: addGeoTargets.length > 0 || addRadius.length > 0 || removeResources.length > 0,
   };
 }
@@ -923,14 +929,14 @@ export function buildGeoOps(campaignRn: string, plan: GeoCriterionPlan): AdsMuta
 export async function setGeoTargetType(
   client: AdsClient,
   customerId: string,
-  campaignId: string,
+  campaignRn: string,
   type: GeoTargetType,
 ): Promise<string> {
   const op: AdsMutateOperation = {
     entity: "campaign",
     operation: "update",
     resource: {
-      resource_name: `customers/${customerId}/campaigns/${campaignId}`,
+      resource_name: campaignRn,
       geo_target_type_setting: { positive_geo_target_type: enums.PositiveGeoTargetType[type] },
     },
   };

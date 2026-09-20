@@ -757,6 +757,18 @@ export function applyGeoQuery(
   );
 }
 
+/** The live positive geo target type for every campaign a `geo` plan block names. */
+export function applyGeoTargetTypesQuery(
+  campaignIds: ReadonlyArray<string | number>,
+): SearchArgs {
+  return inListQuery(
+    "campaign",
+    ["campaign.id", "campaign.geo_target_type_setting.positive_geo_target_type"],
+    "campaign.id",
+    campaignIds,
+  );
+}
+
 export function applyLanguagesQuery(
   campaignIds: ReadonlyArray<string | number>,
 ): SearchArgs {

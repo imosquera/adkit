@@ -753,11 +753,13 @@ describe("geoCriterionPlan (replace-set)", () => {
     expect: { add: number; addRadius: number; remove: string[]; changed: boolean; widening: boolean };
   }> = [
     {
+      // The added location is not one of the live ones, so the reach delta is unknowable
+      // from resource names — it warns rather than claiming a narrowing.
       name: "add + remove + skip in one block",
       live: [loc("cc/keep", "geoTargetConstants/1014221"), loc("cc/drop", "geoTargetConstants/2840")],
       geoTargets: ["geoTargetConstants/1014221", "geoTargetConstants/21133"],
       radius: [],
-      expect: { add: 1, addRadius: 0, remove: ["cc/drop"], changed: true, widening: false },
+      expect: { add: 1, addRadius: 0, remove: ["cc/drop"], changed: true, widening: true },
     },
     {
       name: "idempotent re-run: live set already equals the target set",
@@ -788,11 +790,11 @@ describe("geoCriterionPlan (replace-set)", () => {
       expect: { add: 1, addRadius: 0, remove: [], changed: true, widening: true },
     },
     {
-      name: "moving the circle elsewhere is not a widening (live reach is dropped)",
+      name: "moving the circle elsewhere warns: the reach delta is unknowable",
       live: [prox("cc/here", gambrills)],
       geoTargets: [],
       radius: [elsewhere],
-      expect: { add: 0, addRadius: 1, remove: ["cc/here"], changed: true, widening: false },
+      expect: { add: 0, addRadius: 1, remove: ["cc/here"], changed: true, widening: true },
     },
     {
       name: "clearing all targeting (the whole world) is the widest change there is",
@@ -821,6 +823,18 @@ describe("geoCriterionPlan (replace-set)", () => {
     });
   }
 
+  it("dropping a live location without adding anything is provably narrowing", () => {
+    const live = [loc("cc/a", "geoTargetConstants/1014221"), loc("cc/b", "geoTargetConstants/2840")];
+    const plan = geoCriterionPlan(live, ["geoTargetConstants/1014221"], []);
+    expect(plan.removeResources).toEqual(["cc/b"]);
+    expect(plan.widening).toBe(false);
+  });
+
+  it("a duplicate radius target in one block is created once (Google rejects duplicates)", () => {
+    const plan = geoCriterionPlan([], [], [gambrills, gambrills]);
+    expect(plan.addRadius).toHaveLength(1);
+  });
+
   it("compares a km radius against a live miles one in a common unit", () => {
     // 50 km ~= 31 miles: wider than the live 25-mile circle around the same address.
     const km = RadiusTargetSchema.parse({ address: { postalCode: "21054", countryCode: "US" }, radius: 50, units: "KILOMETERS" });
@@ -840,7 +854,7 @@ describe("geoCriterionPlan (replace-set)", () => {
 
   it("setGeoTargetType updates only the positive geo target type", async () => {
     const { client, calls } = makeFake();
-    await setGeoTargetType(client, "123", "456", "PRESENCE_OR_INTEREST");
+    await setGeoTargetType(client, "123", "customers/123/campaigns/456", "PRESENCE_OR_INTEREST");
     expect(calls[0]!.ops[0]).toEqual({
       entity: "campaign",
       operation: "update",

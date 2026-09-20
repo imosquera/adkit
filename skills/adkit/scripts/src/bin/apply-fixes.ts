@@ -45,9 +45,13 @@
  * Two guardrails: a block listing NO locations and NO radius targets clears all geo
  * targeting (the campaign then serves worldwide) and is refused unless it carries
  * `allowUnrestricted: true`; and a set that strictly widens live reach is surfaced
- * loudly (a warning line + `geoWideningIncreasesReach` in the envelope), like ENABLE.
+ * loudly (a warning line + `geoWideningIncreasesReach` in the envelope), like ENABLE —
+ * and the gate is conservative: anything that is not provably a subset of the live set
+ * warns, since containment between two geo target constants is not knowable from their
+ * resource names.
  * `geoTargetType` (PRESENCE / PRESENCE_OR_INTEREST) is a campaign setting rather than a
- * criterion — omitting it leaves the live setting alone. Negative (excluded) locations,
+ * criterion — omitting it, or naming the type the campaign is already set to, leaves
+ * the live setting alone. Negative (excluded) locations,
  * ad schedule, and per-location bid modifiers are out of scope.
  *
  * A new ad group (`adGroups`) is authored in the same shape a /adkit create brief ad
@@ -95,7 +99,7 @@ import {
   type ApplyPlanComputed,
   type ResolvedPlanGroup,
 } from "../adbriefs/apply-plan.js";
-import { parseBrief, type AdGroup, type Brief, type GeoTargetType, type RadiusTarget } from "../lib/schema.js";
+import { parseBrief, type AdGroup, type Brief, type GeoTargetType } from "../lib/schema.js";
 
 import {
   createAdGroup,
@@ -130,6 +134,7 @@ import {
   biddingPlan,
   campaignStatusPlan,
   coerceKeyword,
+  geoPlan,
   keyStr,
   negKey,
   newNegatives,
@@ -150,6 +155,7 @@ import {
   applyBudgetsQuery,
   applyCampaignStatusesQuery,
   applyGeoQuery,
+  applyGeoTargetTypesQuery,
   applyHeadlinesQuery,
   applyLanguagesQuery,
   applyNegativesQuery,
@@ -258,6 +264,10 @@ interface AdGroupNameRow {
 interface GeoRow {
   campaign: { id: number };
   campaign_criterion: GeoCriterion;
+}
+
+interface GeoTargetTypeRow {
+  campaign: { id: number; geo_target_type_setting?: { positive_geo_target_type?: string | number } };
 }
 
 interface LanguageRow {
@@ -553,6 +563,27 @@ export async function liveGeoCriteria(
     (acc, r) => acc.set(r.campaign.id, [...(acc.get(r.campaign.id) ?? []), r.campaign_criterion]),
     new Map<number, GeoCriterion[]>(),
   );
+}
+
+/**
+ * campaignId -> its live positive geo target type. A campaign that has never had the
+ * setting written reports Google's own default, so an absent row is treated as
+ * unknown (never as "already PRESENCE") and the plan's type is applied.
+ */
+export async function liveGeoTargetTypes(
+  client: AdsClient,
+  customerId: string,
+  campaignIds: ReadonlyArray<string | number>,
+): Promise<Map<number, GeoTargetType | undefined>> {
+  if (campaignIds.length === 0) {
+    return new Map();
+  }
+  const rows = await client.searchStructured<GeoTargetTypeRow>(customerId, applyGeoTargetTypesQuery(campaignIds));
+  return rows.reduce((acc, r) => {
+    const raw = r.campaign.geo_target_type_setting?.positive_geo_target_type;
+    const name = typeof raw === "number" ? enums.PositiveGeoTargetType[raw] : raw;
+    return acc.set(r.campaign.id, name === "PRESENCE" || name === "PRESENCE_OR_INTEREST" ? name : undefined);
+  }, new Map<number, GeoTargetType | undefined>());
 }
 
 /** adId -> live RSA headline texts, for an appendHeadlines merge. */
@@ -1033,6 +1064,11 @@ export async function main(
     customer,
     section(plan, "geo").map((g) => g.campaignId as string | number),
   );
+  const liveGeoTypes = await liveGeoTargetTypes(
+    client,
+    customer,
+    section(plan, "geo").map((g) => g.campaignId as string | number),
+  );
   const liveLangs = await liveLanguages(
     client,
     customer,
@@ -1103,21 +1139,24 @@ export async function main(
   // block resolves in ONE read through the same `resolve-locations` step /adkit create
   // publishes through, so an unknown name rejects the whole plan (naming what it could
   // not resolve) before anything mutates — never a silently dropped target.
+  // Parsed ONCE here (never re-cast from the raw YAML downstream): the schema
+  // normalizes `units` and enforces the radius caps, and both the mutation and the
+  // brief staging below consume these typed blocks.
+  const geoBlocks = geoPlan(section(plan, "geo"));
   let geoActions: GeoAction[];
   try {
-    const geoLocationNames = [
-      ...new Set(section(plan, "geo").flatMap((g) => (Array.isArray(g.locations) ? (g.locations as string[]) : []))),
-    ];
+    const geoLocationNames = [...new Set(geoBlocks.flatMap((g) => g.locations ?? []))];
     const resolvedGeo = new Map(
       (await resolveLocations(client, customer, geoLocationNames)).map((rn, i) => [geoLocationNames[i]!, rn]),
     );
-    geoActions = section(plan, "geo").map((g) => ({
+    geoActions = geoBlocks.map((g) => ({
       campaignId: g.campaignId,
-      geoTargetType: g.geoTargetType as GeoTargetType | undefined,
+      // Undefined, or a type the campaign is already set to, leaves the setting alone.
+      geoTargetType: g.geoTargetType === liveGeoTypes.get(asId(g.campaignId)) ? undefined : g.geoTargetType,
       plan: geoCriterionPlan(
         liveGeo.get(asId(g.campaignId)) ?? [],
-        (Array.isArray(g.locations) ? (g.locations as string[]) : []).map((l) => resolvedGeo.get(l)!),
-        Array.isArray(g.radiusTargets) ? (g.radiusTargets as RadiusTarget[]) : [],
+        (g.locations ?? []).map((l) => resolvedGeo.get(l)!),
+        g.radiusTargets ?? [],
       ),
     }));
   } catch (exc) {
@@ -1145,7 +1184,7 @@ export async function main(
   // live (spec.md 048 FR-002). resolvePlanGroups reads plan.bidding directly, so a
   // stagingPlan with only biddingChanges substituted is passed in place of the raw
   // plan; every other section is staged from the plan unchanged.
-  const stagingPlan = { ...plan, bidding: biddingChanges };
+  const stagingPlan = { ...plan, bidding: biddingChanges, geo: geoBlocks };
   const planGroups = resolvePlanGroups(stagingPlan, stateIndex);
   const unresolvedIds = planGroups.find((g) => g.slug === "")?.unresolvedIds ?? [];
   const staged = stageResolvedGroups(
@@ -1701,7 +1740,7 @@ export async function main(
         await client.mutate(customer, ops);
       }
       if (g.geoTargetType !== undefined) {
-        await setGeoTargetType(client, customer, pyStr(g.campaignId), g.geoTargetType);
+        await setGeoTargetType(client, customer, campaignRn, g.geoTargetType);
       }
       console.log(
         ops.length === 0 && g.geoTargetType === undefined
