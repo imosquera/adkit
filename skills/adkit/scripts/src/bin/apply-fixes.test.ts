@@ -117,10 +117,10 @@ function statusClient(live: Record<number, string>): {
   return { client, mutations };
 }
 
-/** Capture everything written to stdout (console.log + emitJson) in order. */
+/** Capture narration (console.error) and stdout (emitJson) interleaved, in order. */
 function captureStdout(): { text: () => string } {
   let buf = "";
-  const log = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+  const log = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
     buf += args.map((a) => String(a)).join(" ") + "\n";
   });
   const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown): boolean => {

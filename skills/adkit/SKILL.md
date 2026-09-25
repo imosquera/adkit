@@ -42,3 +42,4 @@ Read the [shared conventions](reference/conventions.md) once before any subcomma
 | `report` | Analysis | Pull performance metrics and generate a markdown + Chart.js dashboard | [reference/report.md](reference/report.md) |
 | `research` | Analysis | Research competitors + keywords: seed from competitors/campaign, expand to adjacent keywords/competitors, rank the landscape by theme (volume, cost, competitiveness) | [reference/research.md](reference/research.md) |
 | `gtm` | Planning | Generate keyword tiers and RSA ad copy for a processed idea | [reference/gtm.md](reference/gtm.md) |
+| `gaql` / `keywords` | Analysis | Ad-hoc read: `ads.sh gaql "<SELECT …>"` prints rows as JSON; `ads.sh keywords [--json]` lists keywords. Ad-hoc queries go through `ads.sh gaql`, never a new `.ts` file | [reference/conventions.md](reference/conventions.md#ad-hoc-reads-gaql-and-keywords) |

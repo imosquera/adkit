@@ -44,6 +44,7 @@ import {
   PROJECT_YAML_SHAPE,
   projectConfigExists,
   projectConfigPath,
+  projectRoot,
   SECRETS_YAML_SHAPE,
   secretsExist,
   secretsPath,
@@ -158,7 +159,7 @@ export async function promptAll(fields: readonly ConfigField[]): Promise<Map<str
  * place; 1 when the guardrail refuses the credentials path).
  */
 export async function main(): Promise<number> {
-  const repoDir = process.cwd();
+  const repoDir = projectRoot();
   const added = ensureGitignored(repoDir);
   if (added.length > 0) {
     process.stdout.write(gitignoredLine(added, join(repoDir, ".gitignore")));
