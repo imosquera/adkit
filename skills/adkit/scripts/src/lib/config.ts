@@ -31,6 +31,7 @@
  * resolve to `{}`.
  */
 
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -113,9 +114,22 @@ export const SECRETS_FILENAME = ".adkit.secrets.yaml";
 /** The legacy combined file: both halves in one git-ignored file. Still read; never written by `init`. */
 export const LEGACY_CONFIG_FILENAME = ".adkit.yaml";
 
-/** Path to the committed preferences file, resolved against the current working directory. */
+/** Where config files live: the cwd's git toplevel (so a subdirectory works), else the cwd. */
+export function projectRoot(): string {
+  try {
+    const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (top) {
+      return top;
+    }
+  } catch {
+    // not in a git repo, or git missing
+  }
+  return process.cwd();
+}
+
+/** Path to the committed preferences file, at {@link projectRoot}. */
 export function projectConfigPath(): string {
-  return join(process.cwd(), PROJECT_CONFIG_FILENAME);
+  return join(projectRoot(), PROJECT_CONFIG_FILENAME);
 }
 
 /** The `ADKIT_CONFIG` / `GOOGLE_ADS_CREDENTIALS` override, when either names a secrets file. */
@@ -130,12 +144,12 @@ function secretsPathOverride(): string | undefined {
  * `render-yaml` create the new file rather than reviving the old one.
  */
 export function secretsPath(): string {
-  return secretsPathOverride() ?? join(process.cwd(), SECRETS_FILENAME);
+  return secretsPathOverride() ?? join(projectRoot(), SECRETS_FILENAME);
 }
 
-/** Path to the legacy combined config, resolved against the current working directory. */
+/** Path to the legacy combined config, at {@link projectRoot}. */
 export function legacyConfigPath(): string {
-  return join(process.cwd(), LEGACY_CONFIG_FILENAME);
+  return join(projectRoot(), LEGACY_CONFIG_FILENAME);
 }
 
 /**
@@ -149,7 +163,7 @@ export function activeSecretsPath(): string {
   if (override) {
     return override;
   }
-  const secrets = join(process.cwd(), SECRETS_FILENAME);
+  const secrets = join(projectRoot(), SECRETS_FILENAME);
   if (existsSync(secrets)) {
     return secrets;
   }

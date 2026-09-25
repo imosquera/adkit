@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -153,6 +154,15 @@ describe("paths, existence, and the merge order (temp cwd)", () => {
     expect(projectConfigPath()).toBe(join(process.cwd(), "adkit.yaml"));
     expect(secretsPath()).toBe(join(process.cwd(), ".adkit.secrets.yaml"));
     expect(legacyConfigPath()).toBe(join(process.cwd(), ".adkit.yaml"));
+  });
+
+  it("resolves from the git toplevel when run in a subdirectory", () => {
+    execFileSync("git", ["init", "-q"]);
+    const root = process.cwd();
+    mkdirSync(join(root, "sub", "deeper"), { recursive: true });
+    process.chdir(join(root, "sub", "deeper"));
+    expect(projectConfigPath()).toBe(join(root, "adkit.yaml"));
+    expect(secretsPath()).toBe(join(root, ".adkit.secrets.yaml"));
   });
 
   // The out-of-repo placement: nothing in the tree can commit it, and it survives
