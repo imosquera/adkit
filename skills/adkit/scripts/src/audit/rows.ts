@@ -36,7 +36,8 @@ export interface TextAsset {
 }
 
 export interface CampaignRow {
-  campaign: { id: number; name: string; status: string };
+  // Absent on rows from callers that predate the field; treated as SEARCH.
+  campaign: { id: number; name: string; status: string; advertising_channel_type?: string | number };
 }
 
 export interface KeywordRow {

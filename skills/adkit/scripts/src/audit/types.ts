@@ -40,6 +40,7 @@ export interface CampaignReport {
   campaignId: number;
   campaignName: string;
   status: string;
+  channelType: string;
   keywords: number;
   sitelinks: number;
   callouts: number;

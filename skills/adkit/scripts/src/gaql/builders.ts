@@ -412,7 +412,7 @@ export function auditCampaignsQuery(
 ): SearchArgs {
   return {
     resource: "campaign",
-    fields: ["campaign.id", "campaign.name", "campaign.status"],
+    fields: ["campaign.id", "campaign.name", "campaign.status", "campaign.advertising_channel_type"],
     conditions: campaignScope(onlyEnabled, campaignId),
     orderings: ["campaign.name"],
   };
@@ -477,6 +477,19 @@ export function auditAdGroupAdQuery(campId: string): SearchArgs {
       "ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD'",
     ],
     orderings: ["ad_group.name"],
+  };
+}
+
+/** Live (non-removed) responsive display ads per ad group of one Display campaign. */
+export function auditDisplayAdQuery(campId: string): SearchArgs {
+  return {
+    resource: "ad_group_ad",
+    fields: ["ad_group.name", "ad_group_ad.ad.id"],
+    conditions: [
+      `campaign.id = ${gaqlId(campId)}`,
+      "ad_group_ad.status != 'REMOVED'",
+      "ad_group_ad.ad.type = 'RESPONSIVE_DISPLAY_AD'",
+    ],
   };
 }
 

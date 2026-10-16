@@ -16,6 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { enums } from "google-ads-api";
 
 import { KEEP_YAML_MCC, type AdsClient, type AdsMutateOperation, type MutateResult } from "../lib/auth.js";
 import { toGaql, type SearchArgs } from "../gaql/search-args.js";
@@ -342,6 +343,29 @@ describe("auditCampaign keyword-count finding", () => {
     const result = await auditCampaign(client, "123", camp, [], agKeywords, emptyProfile);
     expect(result.keywords).toBe(MIN_KEYWORDS);
     expect(result.campaignFindings.some((f) => f.issue === "keywords_under")).toBe(false);
+  });
+});
+
+describe("auditCampaign on a Display campaign", () => {
+  const emptyProfile = { competitors: [], axes: [], genericPhrases: [] };
+  // The SDK returns advertising_channel_type as its raw ordinal.
+  const camp = {
+    campaign: { id: 1, name: "x", status: "ENABLED", advertising_channel_type: enums.AdvertisingChannelType.DISPLAY },
+  };
+  const client = fakeClient((query) =>
+    query.includes("FROM ad_group_ad")
+      ? [{ ad_group: { name: "Winter" }, ad_group_ad: { ad: { id: 5 } } }]
+      : query.includes("FROM ad_group")
+        ? [{ ad_group: { name: "Winter" } }, { ad_group: { name: "Empty" } }]
+        : [],
+  );
+
+  it("raises no Search-only findings and flags only ad groups with no RDA", async () => {
+    const result = await auditCampaign(client, "123", camp, [], {}, emptyProfile);
+    expect(result.channelType).toBe("DISPLAY");
+    expect(result.campaignFindings.map((f) => [f.issue, f.detail])).toEqual([
+      ["rda_missing", "ad group 'Empty': 0 responsive display ads"],
+    ]);
   });
 });
 

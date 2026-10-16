@@ -57,6 +57,7 @@ import {
   auctionInsightDomainQuery,
   auditAdGroupAdQuery,
   auditCampaignsQuery,
+  auditDisplayAdQuery,
   auditExtCountQuery,
   auditKeywordMetricsQuery,
   auditKeywordsQuery,
@@ -387,6 +388,10 @@ export async function auditCampaign(
   profile: DifferentiationProfile,
 ): Promise<CampaignReport> {
   const cid = camp.campaign.id;
+  const channelType = enumName(enums.AdvertisingChannelType, camp.campaign.advertising_channel_type) ?? "SEARCH";
+  if (channelType !== "SEARCH") {
+    return auditNonSearchCampaign(client, customerId, camp, channelType);
+  }
   const sitelinks = await extCount(client, customerId, String(cid), "SITELINK");
   const callouts = await extCount(client, customerId, String(cid), "CALLOUT");
   const rows = (
@@ -489,11 +494,53 @@ export async function auditCampaign(
     campaignId: cid,
     campaignName: camp.campaign.name,
     status: camp.campaign.status,
+    channelType,
     keywords: keywordCount,
     sitelinks,
     callouts,
     campaignFindings: findings,
     ads: adsOut,
+  };
+}
+
+/**
+ * Keywords, sitelinks, callouts and RSAs are Search-only levers, so a Display (or
+ * any other non-Search) campaign gets none of those findings. Display ad groups are
+ * checked for at least one live responsive display ad instead.
+ */
+async function auditNonSearchCampaign(
+  client: AdsClient,
+  customerId: string,
+  camp: CampaignRow,
+  channelType: string,
+): Promise<CampaignReport> {
+  const cid = String(camp.campaign.id);
+  const rdaFindings: CampaignFinding[] =
+    channelType === "DISPLAY"
+      ? await (async () => {
+          const adGroups = await search<AdGroupNameRow>(client, customerId, applyAdGroupNamesQuery([cid]));
+          const rdas = await search<AdGroupNameRow>(client, customerId, auditDisplayAdQuery(cid));
+          const withAds = new Set(rdas.map((r) => r.ad_group.name));
+          return [...new Set(adGroups.map((r) => r.ad_group.name))]
+            .filter((name) => !withAds.has(name))
+            .map((adGroupName) => ({
+              level: "campaign",
+              issue: "rda_missing",
+              detail: `ad group '${adGroupName}': 0 responsive display ads`,
+              items: { [adGroupName]: ["0"] },
+            }));
+        })()
+      : [];
+  return {
+    campaignId: camp.campaign.id,
+    campaignName: camp.campaign.name,
+    status: camp.campaign.status,
+    channelType,
+    keywords: 0,
+    sitelinks: 0,
+    callouts: 0,
+    campaignFindings: rdaFindings,
+    ads: [],
   };
 }
 

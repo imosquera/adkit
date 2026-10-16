@@ -90,15 +90,15 @@ const CASES: ReadonlyArray<[string, string]> = [
   ],
   [
     toGaql(auditCampaignsQuery(true, null)),
-    "SELECT campaign.id, campaign.name, campaign.status FROM campaign WHERE campaign.status = 'ENABLED' ORDER BY campaign.name",
+    "SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type FROM campaign WHERE campaign.status = 'ENABLED' ORDER BY campaign.name",
   ],
   [
     toGaql(auditCampaignsQuery(false, "12345")),
-    "SELECT campaign.id, campaign.name, campaign.status FROM campaign WHERE campaign.id = 12345 ORDER BY campaign.name",
+    "SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type FROM campaign WHERE campaign.id = 12345 ORDER BY campaign.name",
   ],
   [
     toGaql(auditCampaignsQuery(false, null)),
-    "SELECT campaign.id, campaign.name, campaign.status FROM campaign ORDER BY campaign.name",
+    "SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type FROM campaign ORDER BY campaign.name",
   ],
   [
     toGaql(auditExtCountQuery("12345", "SITELINK")),
