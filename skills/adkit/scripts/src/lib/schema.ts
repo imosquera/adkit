@@ -612,6 +612,24 @@ export const DisplayAudiencesSchema = z
   .strict();
 export type DisplayAudiences = z.infer<typeof DisplayAudiencesSchema>;
 
+export const AGE_RANGES = ["18-24", "25-34", "35-44", "45-54", "55-64", "65+", "unknown"] as const;
+export const PARENTAL_STATUSES = ["parent", "not-parent", "unknown"] as const;
+
+const distinctNonEmpty = <T extends readonly [string, ...string[]]>(values: T) =>
+  z
+    .array(z.enum(values))
+    .min(1)
+    .refine((xs) => new Set(xs).size === xs.length, { message: "must not repeat a value" });
+
+/** Who to show to; omitted = everyone. Publish excludes the complement. */
+export const DisplayDemographicsSchema = z
+  .object({
+    ageRanges: distinctNonEmpty(AGE_RANGES).optional(),
+    parentalStatus: distinctNonEmpty(PARENTAL_STATUSES).optional(),
+  })
+  .strict();
+export type DisplayDemographics = z.infer<typeof DisplayDemographicsSchema>;
+
 export const DisplayAdGroupSchema = z
   .object({
     name: z.string().min(1),
@@ -619,6 +637,7 @@ export const DisplayAdGroupSchema = z
     audiences: DisplayAudiencesSchema.default({}),
     // Google's audience expansion beyond the listed audiences.
     optimizedTargeting: z.boolean().default(false),
+    demographics: DisplayDemographicsSchema.optional(),
     responsiveDisplayAds: z.array(ResponsiveDisplayAdSchema).min(1),
   })
   .strict()
@@ -780,6 +799,7 @@ export const FAILURE_STEPS = [
   "create-display-campaign",
   "create-image-assets",
   "create-audiences",
+  "create-demographic-exclusions",
   "create-responsive-display-ad",
 ] as const;
 export type FailureStep = (typeof FAILURE_STEPS)[number];

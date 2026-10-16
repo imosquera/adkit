@@ -24,6 +24,7 @@ import {
   createDisplayCampaign,
   createImageAssets,
   createMissingAudiences,
+  createMissingDemographicExclusions,
   createResponsiveDisplayAd,
   createKeywords,
   createNegativeKeywords,
@@ -269,6 +270,7 @@ export interface DisplayExecAdGroup {
   name: string;
   adGroupId: string | null;
   audienceResourceNames: readonly string[];
+  demographicExclusionResourceNames: readonly string[];
   responsiveDisplayAdIds: readonly string[];
 }
 
@@ -282,7 +284,7 @@ export interface DisplayExecResults {
 
 /**
  * Publish a display brief: budget → Display campaign (PAUSED) → US/CA + devices →
- * image assets → per ad group (ad group → audiences → responsive display ads, PAUSED).
+ * image assets → per ad group (ad group → audiences → demographic exclusions → responsive display ads, PAUSED).
  * `images` must hold every image the brief references, already checked against the
  * slot specs (see images.ts). Same reuse/idempotency contract and the same deliberate
  * mutable-accumulator exception as {@link publishV1}.
@@ -303,6 +305,7 @@ export async function publishDisplay(
       name: ag.name,
       adGroupId: null,
       audienceResourceNames: [],
+      demographicExclusionResourceNames: [],
       responsiveDisplayAdIds: [],
     })),
   };
@@ -364,6 +367,11 @@ export async function publishDisplay(
       slot.audienceResourceNames = await step(
         "create-audiences",
         () => createMissingAudiences(client, customerId, briefAg, slot.adGroupId!),
+        briefAg.name,
+      );
+      slot.demographicExclusionResourceNames = await step(
+        "create-demographic-exclusions",
+        () => createMissingDemographicExclusions(client, customerId, briefAg, slot.adGroupId!),
         briefAg.name,
       );
       // Sequential for the same CONCURRENT_MODIFICATION reason as publishV1's RSAs.

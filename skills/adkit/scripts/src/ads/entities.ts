@@ -29,6 +29,7 @@ import type {
   ResponsiveDisplayAd,
   ResponsiveSearchAd,
 } from "../lib/schema.js";
+import { AGE_RANGES, PARENTAL_STATUSES } from "../lib/schema.js";
 import type { ImageLibrary } from "./images.js";
 import { StepError, gaqlStringLiteral } from "./errors.js";
 
@@ -1324,6 +1325,79 @@ export async function createMissingAudiences(
       entity: "ad_group_criterion",
       operation: "create",
       resource: { ad_group: adGroupRn, status: enums.AdGroupCriterionStatus.ENABLED, [field]: { [nested]: rn } },
+    }));
+  return ops.length === 0 ? [] : (await client.mutate(customerId, ops)).results.map((r) => r.resource_name);
+}
+
+const AGE_RANGE_ENUM: Record<(typeof AGE_RANGES)[number], number> = {
+  "18-24": enums.AgeRangeType.AGE_RANGE_18_24,
+  "25-34": enums.AgeRangeType.AGE_RANGE_25_34,
+  "35-44": enums.AgeRangeType.AGE_RANGE_35_44,
+  "45-54": enums.AgeRangeType.AGE_RANGE_45_54,
+  "55-64": enums.AgeRangeType.AGE_RANGE_55_64,
+  "65+": enums.AgeRangeType.AGE_RANGE_65_UP,
+  unknown: enums.AgeRangeType.AGE_RANGE_UNDETERMINED,
+};
+const PARENTAL_STATUS_ENUM: Record<(typeof PARENTAL_STATUSES)[number], number> = {
+  parent: enums.ParentalStatusType.PARENT,
+  "not-parent": enums.ParentalStatusType.NOT_A_PARENT,
+  unknown: enums.ParentalStatusType.UNDETERMINED,
+};
+
+type DemographicField = "age_range" | "parental_status";
+
+/** Pure: the negative criteria for every age range / parental status the brief does NOT list. */
+export function demographicExclusions(adGroup: DisplayAdGroup): Array<[DemographicField, number]> {
+  const d = adGroup.demographics;
+  const complement = <K extends string>(all: readonly K[], shown: readonly K[] | undefined) =>
+    shown === undefined ? [] : all.filter((v) => !shown.includes(v));
+  return [
+    ...complement(AGE_RANGES, d?.ageRanges).map((v): [DemographicField, number] => ["age_range", AGE_RANGE_ENUM[v]]),
+    ...complement(PARENTAL_STATUSES, d?.parentalStatus).map((v): [DemographicField, number] => [
+      "parental_status",
+      PARENTAL_STATUS_ENUM[v],
+    ]),
+  ];
+}
+
+/** Add the ad group's demographic exclusions it doesn't already have live. Returns the created resource names. */
+export async function createMissingDemographicExclusions(
+  client: AdsClient,
+  customerId: string,
+  adGroup: DisplayAdGroup,
+  adGroupRn: string,
+): Promise<string[]> {
+  const wanted = demographicExclusions(adGroup);
+  if (wanted.length === 0) {
+    return [];
+  }
+  const query =
+    "SELECT ad_group_criterion.age_range.type, ad_group_criterion.parental_status.type FROM ad_group_criterion " +
+    `WHERE ad_group_criterion.ad_group = '${gaqlStringLiteral(adGroupRn)}' ` +
+    "AND ad_group_criterion.negative = TRUE AND ad_group_criterion.status != 'REMOVED'";
+  type Row = { ad_group_criterion: Partial<Record<DemographicField, { type?: number | string }>> };
+  const rows = await client.search<Row>(customerId, query);
+  // GAQL rows may carry enums as numbers or names.
+  const asNumber = (field: DemographicField, t: number | string) =>
+    typeof t === "number"
+      ? t
+      : field === "age_range"
+        ? enums.AgeRangeType[t as keyof typeof enums.AgeRangeType]
+        : enums.ParentalStatusType[t as keyof typeof enums.ParentalStatusType];
+  const live = new Set(
+    rows.flatMap((r) =>
+      (["age_range", "parental_status"] as const).flatMap((f) => {
+        const t = r.ad_group_criterion[f]?.type;
+        return t === undefined ? [] : [`${f}:${asNumber(f, t)}`];
+      }),
+    ),
+  );
+  const ops: AdsMutateOperation[] = wanted
+    .filter(([field, type]) => !live.has(`${field}:${type}`))
+    .map(([field, type]) => ({
+      entity: "ad_group_criterion",
+      operation: "create",
+      resource: { ad_group: adGroupRn, status: enums.AdGroupCriterionStatus.ENABLED, negative: true, [field]: { type } },
     }));
   return ops.length === 0 ? [] : (await client.mutate(customerId, ops)).results.map((r) => r.resource_name);
 }

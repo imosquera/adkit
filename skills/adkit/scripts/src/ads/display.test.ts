@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js";
 import { DisplayBriefSchema, parseAnyBrief, type DisplayBrief } from "../lib/schema.js";
 import { briefImageIssues, imageDimensions, type LoadedImage } from "./images.js";
-import { findMissingResponsiveDisplayAds } from "./entities.js";
+import { enums } from "google-ads-api";
+import { createMissingDemographicExclusions, demographicExclusions, findMissingResponsiveDisplayAds } from "./entities.js";
+import { displayDryRunSummary } from "../bin/create.js";
 import { publishDisplay } from "./publish.js";
 
 const IMG = "gs://adkit-images/ads/wide.png";
@@ -161,5 +163,62 @@ describe("findMissingResponsiveDisplayAds", () => {
     ]) {
       expect(await findMissingResponsiveDisplayAds(clientWith([row]), "1", "ag", ads, assets)).toHaveLength(1);
     }
+  });
+});
+
+describe("display demographics", () => {
+  const withDemographics = (demographics: unknown) =>
+    displayBrief({ adGroups: [{ ...displayBrief().adGroups[0], demographics }] });
+
+  it("accepts listed age ranges and parental statuses", () => {
+    const ag = withDemographics({ ageRanges: ["25-34", "unknown"], parentalStatus: ["parent"] }).adGroups[0]!;
+    expect(ag.demographics).toEqual({ ageRanges: ["25-34", "unknown"], parentalStatus: ["parent"] });
+  });
+
+  it("rejects empty lists, duplicates, unknown values and extra keys", () => {
+    expect(() => withDemographics({ ageRanges: [] })).toThrow();
+    expect(() => withDemographics({ parentalStatus: ["parent", "parent"] })).toThrow(/must not repeat/);
+    expect(() => withDemographics({ ageRanges: ["13-17"] })).toThrow();
+    expect(() => withDemographics({ genders: ["female"] })).toThrow();
+  });
+
+  it("excludes the complement of the listed values, nothing when omitted", () => {
+    expect(demographicExclusions(displayBrief().adGroups[0]!)).toEqual([]);
+    const ag = withDemographics({ ageRanges: ["25-34", "35-44", "45-54", "unknown"], parentalStatus: ["parent", "unknown"] })
+      .adGroups[0]!;
+    expect(demographicExclusions(ag)).toEqual([
+      ["age_range", enums.AgeRangeType.AGE_RANGE_18_24],
+      ["age_range", enums.AgeRangeType.AGE_RANGE_55_64],
+      ["age_range", enums.AgeRangeType.AGE_RANGE_65_UP],
+      ["parental_status", enums.ParentalStatusType.NOT_A_PARENT],
+    ]);
+  });
+
+  it("creates only the negative criteria not already live", async () => {
+    const calls: AdsMutateOperation[][] = [];
+    const client: AdsClient = {
+      search: async <Row>() =>
+        [{ ad_group_criterion: { age_range: { type: "AGE_RANGE_18_24" } } }] as Row[],
+      searchStructured: async <Row>() => [] as Row[],
+      mutate: async (_c, ops) => {
+        calls.push(ops);
+        return { results: ops.map((_, i) => ({ resource_name: `rn/${i}` })) };
+      },
+    };
+    const ag = withDemographics({ ageRanges: ["25-34", "35-44", "45-54", "55-64", "65+", "unknown"] }).adGroups[0]!;
+    expect(await createMissingDemographicExclusions(client, "1", ag, "ag")).toEqual([]);
+    expect(calls).toEqual([]);
+
+    const ag2 = withDemographics({ parentalStatus: ["parent", "unknown"] }).adGroups[0]!;
+    await createMissingDemographicExclusions(client, "1", ag2, "ag");
+    expect(calls[0]!.map((op) => op.resource)).toEqual([
+      { ad_group: "ag", status: enums.AdGroupCriterionStatus.ENABLED, negative: true, parental_status: { type: enums.ParentalStatusType.NOT_A_PARENT } },
+    ]);
+  });
+
+  it("counts the exclusions in the dry-run plan", () => {
+    const summary = displayDryRunSummary(withDemographics({ parentalStatus: ["parent"] }), new Map());
+    expect(summary["willPublish"]).toContain("audiences → demographic exclusions →");
+    expect(summary["willPublish"]).toContain("2 demographic exclusions total");
   });
 });

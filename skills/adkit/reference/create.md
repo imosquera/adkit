@@ -227,6 +227,9 @@ adGroups:
       userInterests: ["80432"]      # affinity + in-market segments
       customAudiences: ["987654"]   # custom audiences created in Audience manager
     optimizedTargeting: false     # true lets Google expand beyond the listed audiences
+    demographics:                 # omit = everyone
+      ageRanges: ["25-34", "35-44", "45-54", "unknown"]   # 18-24, 25-34, 35-44, 45-54, 55-64, 65+, unknown; omit = all ages
+      parentalStatus: ["parent", "unknown"]                # parent, not-parent, unknown; omit = everyone
     responsiveDisplayAds:
       - marketingImages: ["gs://my-images-bucket/ads/konnect-wide.png"]
         squareMarketingImages: ["gs://my-images-bucket/ads/konnect-square.png"]
@@ -240,6 +243,8 @@ adGroups:
 ```
 
 Audience ids are the numeric ids from Tools → Audience manager, or GAQL: `SELECT user_interest.user_interest_id, user_interest.name FROM user_interest`, `SELECT user_list.id, user_list.name FROM user_list`, `SELECT custom_audience.id, custom_audience.name FROM custom_audience`. Each ad group needs at least one audience, or `optimizedTargeting: true`.
+
+`demographics` lists who to **show** to; adkit excludes the rest (as negative age-range / parental-status criteria on the ad group). Keep `unknown` in each list: Google can't infer age or parental status for a large share of people, and dropping it collapses reach. A rerun adds missing exclusions but never removes one, so widening a list later means removing the stale exclusion in the UI.
 
 ## Execution
 

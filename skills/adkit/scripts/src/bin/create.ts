@@ -26,6 +26,7 @@ import { parse as yamlParse, stringify as yamlStringify, YAMLParseError } from "
 import { z } from "zod";
 
 import { publishDisplay, publishV1 } from "../ads/publish.js";
+import { demographicExclusions } from "../ads/entities.js";
 import { loadDisplayImages, type ImageLibrary } from "../ads/images.js";
 import {
   AdbriefsError,
@@ -386,14 +387,17 @@ function searchDryRunSummary(brief: Exclude<AnyBrief, DisplayBrief>): Record<str
 }
 
 /** Pure: the display-specific dry-run fields. */
-function displayDryRunSummary(brief: DisplayBrief, images: ImageLibrary): Record<string, unknown> {
+export function displayDryRunSummary(brief: DisplayBrief, images: ImageLibrary): Record<string, unknown> {
   const adCount = brief.adGroups.reduce((n, ag) => n + ag.responsiveDisplayAds.length, 0);
+  const exclusionCount = brief.adGroups.reduce((n, ag) => n + demographicExclusions(ag).length, 0);
   return {
     imageCount: images.size,
     displayAdCount: adCount,
+    demographicExclusionCount: exclusionCount,
     willPublish:
       `budget → display campaign(PAUSED) → ${images.size} image assets → ${brief.adGroups.length}x ` +
-      `(ad-group → audiences → responsive display ads(PAUSED)); ${adCount} ads total. ` +
+      `(ad-group → audiences → demographic exclusions → responsive display ads(PAUSED)); ${adCount} ads total, ` +
+      `${exclusionCount} demographic exclusions total. ` +
       "Existing campaign of the same name is reused.",
   };
 }
