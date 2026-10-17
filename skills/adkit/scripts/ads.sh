@@ -2,7 +2,7 @@
 # Thin launcher: ensures node deps exist, then runs one of the src/bin/* entry
 # points directly from TypeScript via tsx (no build step, no dist/).
 # Usage: ads.sh <subcommand> [args...]
-#   subcommands: init | preflight | create | keyword-ideas | research | report | audit | update | render-yaml | bootstrap-secrets
+#   subcommands: init | preflight | create | keyword-ideas | research | report | audit | update | render-yaml | bootstrap-secrets | gaql | keywords
 #   (apply-fixes is a deprecated alias for update)
 set -euo pipefail
 
@@ -13,14 +13,14 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd -P )"
 
 if [ "$#" -lt 1 ]; then
-  echo "usage: ads.sh <init|preflight|create|keyword-ideas|research|report|audit|update|render-yaml|bootstrap-secrets> [args...]" >&2
+  echo "usage: ads.sh <init|preflight|create|keyword-ideas|research|report|audit|update|render-yaml|bootstrap-secrets|gaql|keywords> [args...]" >&2
   exit 1
 fi
 
 cmd="$1"; shift
 case "$cmd" in
   update|apply-fixes) mod="apply-fixes" ;;  # apply-fixes is a deprecated alias for update
-  init|preflight|create|keyword-ideas|research|report|audit|render-yaml|bootstrap-secrets) mod="$cmd" ;;
+  init|preflight|create|keyword-ideas|research|report|audit|render-yaml|bootstrap-secrets|gaql|keywords) mod="$cmd" ;;
   *) echo "unknown subcommand: $cmd" >&2; exit 1 ;;
 esac
 
@@ -41,8 +41,8 @@ fi
 # resolve, matching the Python wrapper's behavior. tsx transpiles the .ts entry on the
 # fly; stdout stays clean for the JSON envelope (tsx prints nothing on a successful run).
 # Exec the bin directly (its shebang selects node) — layout-agnostic vs `node <bin>`.
-# The true root is git's toplevel (correct in a linked worktree too); fall back to the
-# fixed layout (<root>/skills/adkit/scripts → three levels up) when git is unavailable.
-REPO_ROOT="$( git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || ( cd "${SCRIPT_DIR}/../../.." && pwd ) )"
+# The root is the caller's git toplevel (so a subdirectory works), else the skill's own
+# repo, else the fixed layout (<root>/skills/adkit/scripts → three levels up).
+REPO_ROOT="$( git rev-parse --show-toplevel 2>/dev/null || git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || ( cd "${SCRIPT_DIR}/../../.." && pwd ) )"
 cd "$REPO_ROOT"
 exec "$SCRIPT_DIR/node_modules/.bin/tsx" "$SCRIPT_DIR/src/bin/${mod}.ts" "$@"

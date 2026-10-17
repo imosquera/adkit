@@ -18,7 +18,21 @@ ads.sh <subcommand> [args…]
 
 - `ads.sh` resolves `node` (Node ≥ 24, https://nodejs.org), ensures the npm deps are installed on first run (`npm ci`, falling back to `npm install`), then runs the entry point directly from TypeScript via `tsx` (`node_modules/.bin/tsx src/bin/<cmd>.ts`). No build step and no `dist/` — `tsx` transpiles on the fly, so a source edit takes effect on the next run.
 - **No persistent server, no MCP** — every invocation is a single Node process.
-- Subcommands: `init`, `preflight`, `create`, `audit`, `update`, `keyword-ideas`, `report`, `render-yaml`, `bootstrap-secrets` (`apply-fixes` is a deprecated alias for `update`).
+- Subcommands: `init`, `preflight`, `create`, `audit`, `update`, `keyword-ideas`, `report`, `render-yaml`, `bootstrap-secrets`, `gaql`, `keywords` (`apply-fixes` is a deprecated alias for `update`).
+- Config resolves from the caller's git toplevel (else the cwd), so `ads.sh` works from any subdirectory; `ADKIT_CONFIG` overrides the secrets-file path.
+
+## Ad-hoc reads: `gaql` and `keywords`
+
+**Ad-hoc queries go through `ads.sh gaql`, never a new `.ts` file.**
+
+```bash
+ads.sh gaql "SELECT campaign.id, campaign.name FROM campaign" [--customer ID] [--manager ID]   # rows as a JSON array
+ads.sh keywords [--json] [--customer ID] [--manager ID]   # campaign, ad group, keyword, match type, status
+```
+
+- `gaql` prints the SDK rows verbatim (nested snake_case; some enums arrive as numbers). Pipe straight to `jq`.
+- `keywords` lists non-removed positive keywords; tab-separated by default, a JSON array (enums decoded) with `--json`.
+- Both are read-only and resolve the customer like every other command. Failure is an `ok:false` envelope with exit 1.
 
 ## `target_customer_id` vs `mcc_customer_id`
 
@@ -47,7 +61,7 @@ Machine-readable subcommands return a single JSON object on **stdout**:
 ```
 
 - On `"ok": false`, surface `error.step` and `error.message` **verbatim** to the operator; do not paraphrase or fabricate a result.
-- Human-readable summaries (tables, progress) go to **stderr** — redirect stdout (`> /tmp/out.json`) when you want only the payload.
+- Human-readable narration (tables, progress, `update`'s planned actions) goes to **stderr**; stdout carries only the data, so `ads.sh … | jq` works.
 - Non-zero exit always pairs with an `ok:false` / `failure` payload that names the failing step.
 
 ## Credentials, project config, & preflight
