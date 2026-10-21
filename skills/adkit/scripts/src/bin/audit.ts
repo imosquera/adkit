@@ -66,6 +66,8 @@ import {
   auditQualityScoreQuery,
   auditSearchTermsQuery,
   auditServingQuery,
+  brandAssetCampaignQuery,
+  brandAssetCustomerQuery,
   diagnosisAdGroupQuery,
   diagnosisAdQuery,
   diagnosisBillingQuery,
@@ -88,6 +90,14 @@ import {
   type RawSharedSetRow,
   type ServingDiagnosis,
 } from "../audit/diagnosis.js";
+import {
+  BRAND_ASSETS_FIX,
+  BRAND_ASSETS_MISSING,
+  brandAssetsDetail,
+  missingBrandAssets,
+  type RawCampaignBrandAssetRow,
+  type RawCustomerBrandAssetRow,
+} from "../audit/brand-assets.js";
 import type { AdsClient } from "../lib/auth.js";
 import { loadReadClient } from "../lib/mcp-client.js";
 import { MCC_CUSTOMER_ID_ENV } from "../cli/args.js";
@@ -515,21 +525,12 @@ async function auditNonSearchCampaign(
   channelType: string,
 ): Promise<CampaignReport> {
   const cid = String(camp.campaign.id);
-  const rdaFindings: CampaignFinding[] =
+  const displayFindings: CampaignFinding[] =
     channelType === "DISPLAY"
-      ? await (async () => {
-          const adGroups = await search<AdGroupNameRow>(client, customerId, applyAdGroupNamesQuery([cid]));
-          const rdas = await search<AdGroupNameRow>(client, customerId, auditDisplayAdQuery(cid));
-          const withAds = new Set(rdas.map((r) => r.ad_group.name));
-          return [...new Set(adGroups.map((r) => r.ad_group.name))]
-            .filter((name) => !withAds.has(name))
-            .map((adGroupName) => ({
-              level: "campaign",
-              issue: "rda_missing",
-              detail: `ad group '${adGroupName}': 0 responsive display ads`,
-              items: { [adGroupName]: ["0"] },
-            }));
-        })()
+      ? [
+          ...(await displayBrandAssetFindings(client, customerId, cid)),
+          ...(await displayRdaFindings(client, customerId, cid)),
+        ]
       : [];
   return {
     campaignId: camp.campaign.id,
@@ -539,9 +540,56 @@ async function auditNonSearchCampaign(
     keywords: 0,
     sitelinks: 0,
     callouts: 0,
-    campaignFindings: rdaFindings,
+    campaignFindings: displayFindings,
     ads: [],
   };
+}
+
+/** `rda_missing` for each live ad group of a Display campaign with no responsive display ad. */
+async function displayRdaFindings(
+  client: AdsClient,
+  customerId: string,
+  cid: string,
+): Promise<CampaignFinding[]> {
+  const adGroups = await search<AdGroupNameRow>(client, customerId, applyAdGroupNamesQuery([cid]));
+  const rdas = await search<AdGroupNameRow>(client, customerId, auditDisplayAdQuery(cid));
+  const withAds = new Set(rdas.map((r) => r.ad_group.name));
+  return [...new Set(adGroups.map((r) => r.ad_group.name))]
+    .filter((name) => !withAds.has(name))
+    .map((adGroupName) => ({
+      level: "campaign",
+      issue: "rda_missing",
+      detail: `ad group '${adGroupName}': 0 responsive display ads`,
+      items: { [adGroupName]: ["0"] },
+    }));
+}
+
+/**
+ * `brand_assets_missing` for a Display campaign with no business name / logo
+ * brand asset linked at campaign or account level (#85) — Google reports its
+ * responsive display ads Incomplete and serves them almost nowhere.
+ */
+async function displayBrandAssetFindings(
+  client: AdsClient,
+  customerId: string,
+  cid: string,
+): Promise<CampaignFinding[]> {
+  const [campaignRows, customerRows] = await Promise.all([
+    search<RawCampaignBrandAssetRow>(client, customerId, brandAssetCampaignQuery([cid])),
+    search<RawCustomerBrandAssetRow>(client, customerId, brandAssetCustomerQuery()),
+  ]);
+  const missing = missingBrandAssets({ campaign: campaignRows, customer: customerRows });
+  return missing === null
+    ? []
+    : [
+        {
+          level: "campaign",
+          issue: BRAND_ASSETS_MISSING,
+          detail: brandAssetsDetail(missing),
+          fix: BRAND_ASSETS_FIX,
+          items: { brandAssets: [...missing] },
+        },
+      ];
 }
 
 // ---------------------------------------------------------------------------
@@ -763,16 +811,17 @@ export function withAuctionInsightFindings(
  * resources for some accounts). A missing section costs one blocker check, not
  * the run.
  */
-async function diagnosisRows<Row>(
+async function diagnosisRows<Row, Fallback = Row[]>(
   label: string,
   fetch: () => Promise<Row[]>,
   notes: string[],
-): Promise<Row[]> {
+  fallback: Fallback = [] as Fallback,
+): Promise<Row[] | Fallback> {
   try {
     return await fetch();
   } catch (exc) {
     notes.push(`${label} unavailable — ${formatGoogleAdsError(exc)}`);
-    return [];
+    return fallback;
   }
 }
 
@@ -790,19 +839,34 @@ export async function servingDiagnosis(
     return {};
   }
   const notes: string[] = [];
-  const q = <Row>(label: string, args: SearchArgs) =>
+  const q = <Row>(label: string, args: SearchArgs): Promise<Row[]> =>
     diagnosisRows<Row>(label, () => search<Row>(client, customerId, args), notes);
+  // Brand-asset links degrade to null, not [] — an unreadable link table must not
+  // manufacture a brand_assets_missing blocker.
+  const qOrNull = <Row>(label: string, args: SearchArgs): Promise<Row[] | null> =>
+    diagnosisRows<Row, null>(label, () => search<Row>(client, customerId, args), notes, null);
 
-  const [campaignRows, adGroupRows, adRows, keywordRows, criterionRows, sharedSetRows, billingRows] =
-    await Promise.all([
-      q<RawDiagnosisCampaignRow>("campaign eligibility", diagnosisCampaignQuery(campaignIds)),
-      q<RawDiagnosisAdGroupRow>("ad group status", diagnosisAdGroupQuery(campaignIds)),
-      q<RawDiagnosisAdRow>("ad policy", diagnosisAdQuery(campaignIds)),
-      q<RawDiagnosisKeywordRow>("keyword serving status", diagnosisKeywordQuery(campaignIds)),
-      q<RawCampaignCriterionRow>("campaign targeting", diagnosisCampaignCriterionQuery(campaignIds)),
-      q<RawSharedSetRow>("negative keyword lists", diagnosisSharedSetQuery(campaignIds)),
-      q<RawBillingRow>("billing setup", diagnosisBillingQuery()),
-    ]);
+  const [
+    campaignRows,
+    adGroupRows,
+    adRows,
+    keywordRows,
+    criterionRows,
+    sharedSetRows,
+    billingRows,
+    campaignBrandRows,
+    customerBrandRows,
+  ] = await Promise.all([
+    q<RawDiagnosisCampaignRow>("campaign eligibility", diagnosisCampaignQuery(campaignIds)),
+    q<RawDiagnosisAdGroupRow>("ad group status", diagnosisAdGroupQuery(campaignIds)),
+    q<RawDiagnosisAdRow>("ad policy", diagnosisAdQuery(campaignIds)),
+    q<RawDiagnosisKeywordRow>("keyword serving status", diagnosisKeywordQuery(campaignIds)),
+    q<RawCampaignCriterionRow>("campaign targeting", diagnosisCampaignCriterionQuery(campaignIds)),
+    q<RawSharedSetRow>("negative keyword lists", diagnosisSharedSetQuery(campaignIds)),
+    q<RawBillingRow>("billing setup", diagnosisBillingQuery()),
+    qOrNull<RawCampaignBrandAssetRow>("campaign brand assets", brandAssetCampaignQuery(campaignIds)),
+    qOrNull<RawCustomerBrandAssetRow>("account brand assets", brandAssetCustomerQuery()),
+  ]);
 
   const sharedSetIds = [
     ...new Set(sharedSetRows.map((r) => r.shared_set.id).filter((id): id is number => Boolean(id))),
@@ -838,6 +902,10 @@ export async function servingDiagnosis(
             // A billing setup the token cannot read is absent, not "unapproved" —
             // guessing would manufacture the account_not_billed blocker.
             billing: billingRows[0] ?? null,
+            brandAssets:
+              campaignBrandRows && customerBrandRows
+                ? { campaign: forCampaign(campaignBrandRows, cid), customer: customerBrandRows }
+                : null,
             notes,
           },
           today,

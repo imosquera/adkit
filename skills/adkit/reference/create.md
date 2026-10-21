@@ -198,7 +198,7 @@ Images live in the shared GCS bucket (upload with `/imager mj-generate --dest �
 | `marketingImages` | 1.91:1 (e.g. 1200x628) | 600x314 | 1–15 |
 | `squareMarketingImages` | 1:1 (e.g. 1200x1200) | 300x300 | 1–15 |
 | `logoImages` | 4:1 (e.g. 1200x300) | 512x128 | 0–5 |
-| `squareLogoImages` | 1:1 | 128x128 | 0–5 |
+| `squareLogoImages` | 1:1 | 128x128 | 1–5 (first becomes the business logo) |
 
 PNG, JPEG or GIF, ≤5 MB, 1% ratio tolerance.
 
@@ -238,13 +238,15 @@ adGroups:
         headlines: [{ text: "Ship faster" }]                  # 1–5, ≤30 chars
         longHeadline: { text: "Ship faster with fewer integrations" }   # ≤90
         descriptions: [{ text: "Live in 30 days. Book a demo." }]        # 1–5, ≤90
-        businessName: "Konnect"                               # ≤25
+        businessName: "Konnect"                               # 1–25; becomes the campaign business name
         finalUrl: https://www.example.com/ideas/published-slug
 ```
 
 Audience ids are the numeric ids from Tools → Audience manager, or GAQL: `SELECT user_interest.user_interest_id, user_interest.name FROM user_interest`, `SELECT user_list.id, user_list.name FROM user_list`, `SELECT custom_audience.id, custom_audience.name FROM custom_audience`. Each ad group needs at least one audience, or `optimizedTargeting: true`.
 
 `demographics` lists who to **show** to; adkit excludes the rest (as negative age-range / parental-status criteria on the ad group). Keep `unknown` in each list: Google can't infer age or parental status for a large share of people, and dropping it collapses reach. A rerun adds missing exclusions but never removes one, so widening a list later means removing the stale exclusion in the UI.
+
+**Brand assets.** Without campaign-level brand assets Google marks RDAs **Incomplete** and they never serve — even with the in-ad `businessName` set. So `create` links two to the campaign, taken from the **first ad group's first RDA**: a `BUSINESS_NAME` text asset (its `businessName`) and a `BUSINESS_LOGO` image asset (its first `squareLogoImages` entry). That's why every RDA needs ≥1 square logo — a brief without one fails at dry run with "list at least one square (1:1) logo — it becomes the campaign's business logo". This runs as the last publish step, `link-brand-assets`; on a reused campaign it reconciles: no-op if already correct, replaces a business name with different text, adds a missing logo (other logos are kept). The dry-run plan line ends `→ brand assets (business name, logo)` and the summary carries `brandAssets: { businessName, logoUrl }`. Caveats: Google approves the business name only if it exactly matches the verified domain or verified legal advertiser name (advertiser verification required). Google's docs don't explicitly confirm campaign-level brand assets for Display — if the API rejects the link, the publish fails at `link-brand-assets` **after** the campaign and ads already exist (rerun after fixing; they're reused).
 
 ## Execution
 

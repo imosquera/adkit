@@ -17,6 +17,14 @@
 
 import { enums } from "google-ads-api";
 import { enumName } from "../ads/enums.js";
+import {
+  BRAND_ASSETS_FIX,
+  BRAND_ASSETS_MISSING,
+  brandAssetsDetail,
+  missingBrandAssets,
+  type BrandAssetField,
+  type BrandAssetRows,
+} from "./brand-assets.js";
 
 // ---------------------------------------------------------------------------
 // Output shapes.
@@ -61,6 +69,8 @@ export interface ProximityTarget {
 export interface ServingDiagnosis {
   campaign: {
     status: string | null;
+    /** AdvertisingChannelType name; SEARCH when the row didn't report one. */
+    channelType: string;
     servingStatus: string | null;
     primaryStatus: string | null;
     primaryStatusReasons: string[];
@@ -71,6 +81,12 @@ export interface ServingDiagnosis {
   };
   /** Absent (undefined) when billing_setup was not readable — see `notes`. */
   billing?: { status: string | null };
+  /**
+   * Display only: the brand assets (business name / logo) linked at neither
+   * campaign nor account level — `[]` when both are linked. Absent for
+   * non-Display campaigns and when the asset links were not readable.
+   */
+  missingBrandAssets?: BrandAssetField[];
   adGroups: AdGroupDiagnosis[];
   disapprovals: Disapproval[];
   targeting: {
@@ -100,6 +116,7 @@ export interface RawDiagnosisCampaignRow {
     id: number;
     name?: string;
     status?: Enum;
+    advertising_channel_type?: Enum;
     serving_status?: Enum;
     primary_status?: Enum;
     primary_status_reasons?: Enum[];
@@ -196,6 +213,8 @@ export interface DiagnosisRows {
   sharedSets: RawSharedSetRow[];
   sharedNegatives: RawSharedCriterionRow[];
   billing: RawBillingRow | null;
+  /** This campaign's + the account's brand-asset links; `null` = unreadable. */
+  brandAssets: BrandAssetRows | null;
   notes: string[];
 }
 
@@ -377,9 +396,12 @@ export function buildServingDiagnosis(rows: DiagnosisRows, today: string): Servi
     };
   });
 
+  const channelType = name(enums.AdvertisingChannelType, cp.advertising_channel_type) ?? "SEARCH";
+
   const diagnosis: Omit<ServingDiagnosis, "blockers"> = {
     campaign: {
       status: name(enums.CampaignStatus, cp.status),
+      channelType,
       servingStatus: name(enums.CampaignServingStatus, cp.serving_status),
       primaryStatus: name(enums.CampaignPrimaryStatus, cp.primary_status),
       primaryStatusReasons: names(cp.primary_status_reasons, enums.CampaignPrimaryStatusReason),
@@ -398,6 +420,9 @@ export function buildServingDiagnosis(rows: DiagnosisRows, today: string): Servi
     },
     ...(rows.billing
       ? { billing: { status: name(enums.BillingSetupStatus, rows.billing.billing_setup.status) } }
+      : {}),
+    ...(channelType === "DISPLAY" && rows.brandAssets
+      ? { missingBrandAssets: [...(missingBrandAssets(rows.brandAssets) ?? [])] }
       : {}),
     adGroups,
     disapprovals: ads
@@ -462,6 +487,12 @@ export function deriveBlockers(
       : [];
 
   const adGroupAds = (g: AdGroupDiagnosis) => ads.filter((a) => a.adGroupId === g.id);
+  // Keywords, keyword negatives and RSAs are Search-only levers; a Display
+  // campaign has none of them, so their absence is not a blocker there.
+  const isSearch = d.campaign.channelType === "SEARCH";
+  const isDisplay = d.campaign.channelType === "DISPLAY";
+  const adNoun = isDisplay ? "responsive display ads" : isSearch ? "RSAs" : "ads";
+  const [firstMissingBrand, ...restMissingBrand] = d.missingBrandAssets ?? [];
 
   const candidates: Array<Blocker | null> = [
     d.billing && d.billing.status !== null && d.billing.status !== "APPROVED"
@@ -510,7 +541,9 @@ export function deriveBlockers(
       ? {
           code: "ad_group_removed",
           detail: "the campaign has no live ad groups",
-          fix: "Add an ad group with keywords and RSAs (`/adkit update`'s `adGroups` lever, then publish ads).",
+          fix: isDisplay
+            ? "Add an ad group with a responsive display ad (under `responsiveDisplayAds` in the `type: display` brief, then rerun `/adkit create`)."
+            : "Add an ad group with keywords and RSAs (`/adkit update`'s `adGroups` lever, then publish ads).",
         }
       : liveAdGroups.every((g) => g.status === "PAUSED")
         ? {
@@ -525,7 +558,7 @@ export function deriveBlockers(
         (g): Blocker => ({
           code: "no_eligible_ads",
           detail: `ad group '${g.name}' has no live ads`,
-          fix: "Publish RSAs into the ad group — an ad group with no ad cannot serve.",
+          fix: `Publish ${adNoun} into the ad group — an ad group with no ad cannot serve.`,
         }),
       ),
     ...liveAdGroups
@@ -533,8 +566,10 @@ export function deriveBlockers(
       .map(
         (g): Blocker => ({
           code: "ads_paused",
-          detail: `${g.pausedAds} of ${adGroupAds(g).length} RSAs in '${g.name}' are PAUSED`,
-          fix: "Enable the ads. `/adkit create` publishes RSAs PAUSED by design, so this is the most likely cause of a freshly-published campaign showing zero impressions — flip them on with `/adkit update`'s `adStatus` lever once the copy has been reviewed.",
+          detail: `${g.pausedAds} of ${adGroupAds(g).length} ${adNoun} in '${g.name}' are PAUSED`,
+          fix: isSearch
+            ? "Enable the ads. `/adkit create` publishes RSAs PAUSED by design, so this is the most likely cause of a freshly-published campaign showing zero impressions — flip them on with `/adkit update`'s `adStatus` lever once the copy has been reviewed."
+            : "Enable the ads (`/adkit update`'s `adStatus` lever, or the Ads UI).",
         }),
       ),
     d.disapprovals.length > 0
@@ -553,27 +588,36 @@ export function deriveBlockers(
           fix: "Wait — Google review typically clears within one business day. Nothing to change.",
         }
       : null,
-    disapprovedKws.length > 0 && disapprovedKws.length === positives.length
+    firstMissingBrand !== undefined
+      ? {
+          code: BRAND_ASSETS_MISSING,
+          detail: brandAssetsDetail([firstMissingBrand, ...restMissingBrand]),
+          fix: BRAND_ASSETS_FIX,
+        }
+      : null,
+    isSearch && disapprovedKws.length > 0 && disapprovedKws.length === positives.length
       ? {
           code: "keywords_disapproved",
           detail: `all ${positives.length} keyword(s) are DISAPPROVED`,
           fix: "Review the keyword policy violations in the Ads UI and replace the offending terms.",
         }
       : null,
-    positives.length === 0
-      ? {
-          code: "no_keywords",
-          detail: "the campaign has no live positive keywords",
-          fix: "Add keywords (`/adkit update`'s `keywords` lever) — a search campaign with no keyword matches no search.",
-        }
-      : rarely.length / positives.length >= RARELY_SERVED_SHARE
+    !isSearch
+      ? null
+      : positives.length === 0
         ? {
-            code: "keywords_rarely_served",
-            detail: `${rarely.length}/${positives.length} keywords are RARELY_SERVED (too little search volume)`,
-            fix: "Replace the low-volume terms with broader head terms — run `/adkit research` for volume-backed candidates.",
+            code: "no_keywords",
+            detail: "the campaign has no live positive keywords",
+            fix: "Add keywords (`/adkit update`'s `keywords` lever) — a search campaign with no keyword matches no search.",
           }
-        : null,
-    blockingNegatives.length > 0
+        : rarely.length / positives.length >= RARELY_SERVED_SHARE
+          ? {
+              code: "keywords_rarely_served",
+              detail: `${rarely.length}/${positives.length} keywords are RARELY_SERVED (too little search volume)`,
+              fix: "Replace the low-volume terms with broader head terms — run `/adkit research` for volume-backed candidates.",
+            }
+          : null,
+    isSearch && blockingNegatives.length > 0
       ? {
           code: "negatives_block_everything",
           detail: `negative(s) ${blockingNegatives.slice(0, 5).join(", ")} block every one of the campaign's ${positives.length} keyword(s)`,
@@ -600,9 +644,16 @@ export function deriveBlockers(
       code: "no_blocker_found",
       detail:
         "every eligibility signal is green — checked billing, campaign status/dates, budget, " +
-        `ad-group status, ad status + policy approval, ${positives.length} keyword(s) ` +
-        "(approval + serving status), negatives, and geo/language/schedule targeting",
-      fix: "This is a volume or bid question, not a config one: the setup can serve but isn't winning auctions. Raise bids/budget, broaden keywords, or check that the terms have real search volume (`/adkit research`).",
+        "ad-group status, ad status + policy approval, " +
+        (isSearch
+          ? `${positives.length} keyword(s) (approval + serving status), negatives, `
+          : isDisplay && d.missingBrandAssets
+            ? "brand assets (business name + logo), "
+            : "") +
+        "and geo/language/schedule targeting",
+      fix: isSearch
+        ? "This is a volume or bid question, not a config one: the setup can serve but isn't winning auctions. Raise bids/budget, broaden keywords, or check that the terms have real search volume (`/adkit research`)."
+        : "This is a reach or bid question, not a config one: the setup can serve but isn't winning auctions. Raise bids/budget or broaden the audience and placement targeting.",
     },
   ];
 }

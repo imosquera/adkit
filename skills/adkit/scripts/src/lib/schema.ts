@@ -584,7 +584,12 @@ export const ResponsiveDisplayAdSchema = z
     marketingImages: z.array(ImageRefSchema).min(1).max(MAX_RDA_IMAGES), // landscape 1.91:1
     squareMarketingImages: z.array(ImageRefSchema).min(1).max(MAX_RDA_IMAGES), // 1:1
     logoImages: z.array(ImageRefSchema).max(MAX_RDA_LOGOS).default([]), // 4:1
-    squareLogoImages: z.array(ImageRefSchema).max(MAX_RDA_LOGOS).default([]), // 1:1
+    // 1:1. Required: the first square logo of the brief's first ad is also linked to the
+    // campaign as its BUSINESS_LOGO brand asset, without which Google marks RDAs Incomplete.
+    squareLogoImages: z
+      .array(ImageRefSchema)
+      .nonempty({ message: "list at least one square (1:1) logo — it becomes the campaign's business logo" })
+      .max(MAX_RDA_LOGOS),
     headlines: z.array(HeadlineSchema).min(1).max(MAX_RDA_TEXTS),
     longHeadline: DescriptionSchema,
     descriptions: z.array(DescriptionSchema).min(1).max(MAX_RDA_TEXTS),
@@ -638,7 +643,7 @@ export const DisplayAdGroupSchema = z
     // Google's audience expansion beyond the listed audiences.
     optimizedTargeting: z.boolean().default(false),
     demographics: DisplayDemographicsSchema.optional(),
-    responsiveDisplayAds: z.array(ResponsiveDisplayAdSchema).min(1),
+    responsiveDisplayAds: z.array(ResponsiveDisplayAdSchema).nonempty(),
   })
   .strict()
   .superRefine((ag, ctx) => {
@@ -678,7 +683,7 @@ export const DisplayBriefSchema = z
     version: z.number().int().gte(1),
     customerId: z.string().regex(CUSTOMER_ID_PATTERN, { message: "must be 10 digits" }).optional(),
     campaign: DisplayCampaignSchema,
-    adGroups: z.array(DisplayAdGroupSchema).min(1).max(MAX_AD_GROUPS),
+    adGroups: z.array(DisplayAdGroupSchema).max(MAX_AD_GROUPS).nonempty(),
   })
   .strict()
   .refine((b) => new Set(b.adGroups.map((ag) => ag.name)).size === b.adGroups.length, {
@@ -801,6 +806,7 @@ export const FAILURE_STEPS = [
   "create-audiences",
   "create-demographic-exclusions",
   "create-responsive-display-ad",
+  "link-brand-assets",
 ] as const;
 export type FailureStep = (typeof FAILURE_STEPS)[number];
 

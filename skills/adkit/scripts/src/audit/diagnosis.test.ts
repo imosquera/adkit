@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { enums } from "google-ads-api";
 
 import {
   buildServingDiagnosis,
@@ -87,9 +88,40 @@ function healthy(): DiagnosisRows {
     sharedSets: [],
     sharedNegatives: [],
     billing: { billing_setup: { status: "APPROVED" } },
+    brandAssets: null,
     notes: [],
   };
 }
+
+/**
+ * A healthy zero-impression Display campaign: live RDAs, no keywords (Display has
+ * none), and the given brand-asset links.
+ */
+function display(brandAssets: DiagnosisRows["brandAssets"]): DiagnosisRows {
+  const r = healthy();
+  return {
+    ...r,
+    campaign: {
+      ...r.campaign,
+      campaign: {
+        ...r.campaign.campaign,
+        name: "winter-programs-display",
+        advertising_channel_type: enums.AdvertisingChannelType.DISPLAY, // raw ordinal, as the SDK returns it
+        network_settings: { target_content_network: true },
+      },
+    },
+    keywords: [],
+    brandAssets,
+  };
+}
+
+const ACCOUNT_BRAND = {
+  campaign: [],
+  customer: [
+    { customer_asset: { field_type: enums.AssetFieldType.BUSINESS_NAME } },
+    { customer_asset: { field_type: enums.AssetFieldType.BUSINESS_LOGO } },
+  ],
+};
 
 const codes = (rows: DiagnosisRows): string[] =>
   buildServingDiagnosis(rows, TODAY).blockers.map((b) => b.code);
@@ -271,6 +303,58 @@ describe("blocker derivation", () => {
     const paused = buildServingDiagnosis(rows, TODAY).blockers.find((b) => b.code === "ads_paused");
     expect(paused?.detail).toBe("2 of 2 RSAs in 'Younger Players' are PAUSED");
     expect(paused?.fix).toContain("/adkit create");
+  });
+});
+
+describe("Display campaigns (#85)", () => {
+  it("reports brand_assets_missing — and no Search-only blocker — with no brand assets linked", () => {
+    const d = buildServingDiagnosis(display({ campaign: [], customer: [] }), TODAY);
+    expect(d.campaign.channelType).toBe("DISPLAY");
+    expect(d.missingBrandAssets).toEqual(["BUSINESS_NAME", "BUSINESS_LOGO"]);
+    expect(d.blockers.map((b) => b.code)).toEqual(["brand_assets_missing"]);
+    const [blocker] = d.blockers;
+    expect(blocker.detail).toContain("business name (BUSINESS_NAME) or business logo (BUSINESS_LOGO)");
+    expect(blocker.fix).toContain("/adkit create");
+  });
+
+  it("names only the missing field when the campaign links the other", () => {
+    const d = buildServingDiagnosis(
+      display({
+        campaign: [{ campaign: { id: CID }, campaign_asset: { field_type: "BUSINESS_LOGO" } }],
+        customer: [],
+      }),
+      TODAY,
+    );
+    expect(d.missingBrandAssets).toEqual(["BUSINESS_NAME"]);
+    expect(d.blockers.find((b) => b.code === "brand_assets_missing")?.detail).not.toContain("BUSINESS_LOGO");
+  });
+
+  it("finds no blocker when the account links both brand assets", () => {
+    const d = buildServingDiagnosis(display(ACCOUNT_BRAND), TODAY);
+    expect(d.missingBrandAssets).toEqual([]);
+    expect(d.blockers.map((b) => b.code)).toEqual(["no_blocker_found"]);
+    expect(d.blockers[0].detail).not.toContain("keyword");
+    expect(d.blockers[0].detail).toContain("brand assets");
+  });
+
+  it("invents no brand blocker when the asset links were unreadable", () => {
+    const d = buildServingDiagnosis(display(null), TODAY);
+    expect(d.missingBrandAssets).toBeUndefined();
+    expect(d.blockers.map((b) => b.code)).toEqual(["no_blocker_found"]);
+  });
+
+  it("speaks of responsive display ads, not RSAs, in ad blockers", () => {
+    const rows = { ...display(ACCOUNT_BRAND), ads: [ad(1, { status: "PAUSED" })] };
+    const paused = buildServingDiagnosis(rows, TODAY).blockers.find((b) => b.code === "ads_paused");
+    expect(paused?.detail).toBe("1 of 1 responsive display ads in 'Younger Players' are PAUSED");
+  });
+
+  it("leaves a Search campaign's keyword blockers and missing brand assets alone", () => {
+    const rows = { ...healthy(), keywords: [], brandAssets: { campaign: [], customer: [] } };
+    const d = buildServingDiagnosis(rows, TODAY);
+    expect(d.campaign.channelType).toBe("SEARCH");
+    expect(d.missingBrandAssets).toBeUndefined();
+    expect(d.blockers.map((b) => b.code)).toEqual(["no_keywords"]);
   });
 });
 

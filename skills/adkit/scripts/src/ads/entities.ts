@@ -1259,6 +1259,95 @@ export async function createImageAssets(
 }
 
 /**
+ * The campaign's brand identity: the business name and the square logo (an image URL
+ * from the brief, uploaded by {@link createImageAssets}). Google marks responsive
+ * display ads Incomplete unless both are linked to the campaign as brand assets —
+ * `responsive_display_ad.business_name` on the ad alone is not enough.
+ */
+export interface BrandAssets {
+  businessName: string;
+  logoUrl: string;
+}
+
+/**
+ * Pure: the brand assets a display brief implies — taken from its first ad group's
+ * first ad (a campaign carries one business name). The schema guarantees both exist.
+ */
+export function brandAssets(brief: DisplayBrief): BrandAssets {
+  const ad = brief.adGroups[0].responsiveDisplayAds[0];
+  return { businessName: ad.businessName, logoUrl: ad.squareLogoImages[0] };
+}
+
+/** One live brand-asset link on a campaign, as {@link linkBrandAssets} reads it. */
+interface BrandAssetLinkRow {
+  campaign_asset?: { resource_name?: string; field_type?: string | number; asset?: string };
+  asset?: { text_asset?: { text?: string } };
+}
+
+/** Pure: a field type as the API returns it (enum name or number), normalized to the number. */
+function fieldTypeNumber(t: string | number | undefined): number | undefined {
+  return typeof t === "number" ? t : t === undefined ? undefined : enums.AssetFieldType[t as keyof typeof enums.AssetFieldType];
+}
+
+/**
+ * Link the BUSINESS_NAME (text asset) and BUSINESS_LOGO (image asset `logoAssetRn`)
+ * brand assets to `campaignRn`. Reconciles against the live links, so it is safe on
+ * a reused campaign: a business name already linked with the same text and a logo
+ * already linked to the same asset (image assets dedupe by content) are left alone;
+ * a linked business name with different text is replaced (a campaign takes one);
+ * other logos are kept (a campaign takes several). Returns the created link names.
+ */
+export async function linkBrandAssets(
+  client: AdsClient,
+  customerId: string,
+  campaignRn: string,
+  brand: BrandAssets,
+  logoAssetRn: string,
+): Promise<string[]> {
+  const query =
+    "SELECT campaign_asset.resource_name, campaign_asset.field_type, campaign_asset.asset, asset.text_asset.text " +
+    "FROM campaign_asset " +
+    `WHERE campaign_asset.campaign = '${gaqlStringLiteral(campaignRn)}' ` +
+    "AND campaign_asset.field_type IN ('BUSINESS_NAME', 'BUSINESS_LOGO') AND campaign_asset.status != 'REMOVED'";
+  const rows = await client.search<BrandAssetLinkRow>(customerId, query);
+  const live = rows.flatMap((r) => (r.campaign_asset ? [{ ...r.campaign_asset, text: r.asset?.text_asset?.text }] : []));
+  const ofType = (t: number) => live.filter((l) => fieldTypeNumber(l.field_type) === t);
+  const names = ofType(enums.AssetFieldType.BUSINESS_NAME);
+  const nameOk = names.some((l) => l.text === brand.businessName);
+  const logoOk = ofType(enums.AssetFieldType.BUSINESS_LOGO).some((l) => l.asset === logoAssetRn);
+  const nameAssetRn = nameOk
+    ? null
+    : (
+        await client.mutate(customerId, [
+          { entity: "asset", operation: "create", resource: { text_asset: { text: brand.businessName } } },
+        ])
+      ).results[0]!.resource_name;
+  const link = (asset: string, fieldType: number): AdsMutateOperation => ({
+    entity: "campaign_asset",
+    operation: "create",
+    resource: { campaign: campaignRn, asset, field_type: fieldType },
+  });
+  const ops: AdsMutateOperation[] = [
+    ...(nameAssetRn === null
+      ? []
+      : [
+          ...names.map((l): AdsMutateOperation => ({
+            entity: "campaign_asset",
+            operation: "remove",
+            resource: { resource_name: l.resource_name },
+          })),
+          link(nameAssetRn, enums.AssetFieldType.BUSINESS_NAME),
+        ]),
+    ...(logoOk ? [] : [link(logoAssetRn, enums.AssetFieldType.BUSINESS_LOGO)]),
+  ];
+  if (ops.length === 0) {
+    return [];
+  }
+  const results = (await client.mutate(customerId, ops)).results;
+  return ops.flatMap((op, i) => (op.operation === "create" ? [results[i]!.resource_name] : []));
+}
+
+/**
  * Create the display ad group under `campaignRn`. Audience criteria restrict reach
  * (`bid_only: false`) unless the brief puts them in observation mode.
  */

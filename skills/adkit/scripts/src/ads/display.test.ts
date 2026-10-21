@@ -3,7 +3,13 @@ import type { AdsClient, AdsMutateOperation, MutateResult } from "../lib/auth.js
 import { DisplayBriefSchema, parseAnyBrief, type DisplayBrief } from "../lib/schema.js";
 import { briefImageIssues, imageDimensions, type LoadedImage } from "./images.js";
 import { enums } from "google-ads-api";
-import { createMissingDemographicExclusions, demographicExclusions, findMissingResponsiveDisplayAds } from "./entities.js";
+import {
+  brandAssets,
+  createMissingDemographicExclusions,
+  demographicExclusions,
+  findMissingResponsiveDisplayAds,
+  linkBrandAssets,
+} from "./entities.js";
 import { displayDryRunSummary } from "../bin/create.js";
 import { publishDisplay } from "./publish.js";
 
@@ -25,6 +31,7 @@ function displayBrief(overrides: Record<string, unknown> = {}): DisplayBrief {
           {
             marketingImages: [IMG],
             squareMarketingImages: [SQ],
+            squareLogoImages: [SQ],
             headlines: [{ text: "Ship faster" }],
             longHeadline: { text: "Ship faster with fewer integrations" },
             descriptions: [{ text: "Live in 30 days." }],
@@ -70,6 +77,14 @@ describe("display brief parsing", () => {
       }),
     ).toThrow(/at least one audience/);
   });
+
+  it("rejects an ad with no square logo (it becomes the campaign's business logo)", () => {
+    const ad = displayBrief().adGroups[0]!.responsiveDisplayAds[0]!;
+    const withLogos = (squareLogoImages: unknown) =>
+      displayBrief({ adGroups: [{ ...displayBrief().adGroups[0], responsiveDisplayAds: [{ ...ad, squareLogoImages }] }] });
+    expect(() => withLogos([])).toThrow(/square \(1:1\) logo/);
+    expect(() => withLogos(undefined)).toThrow();
+  });
 });
 
 describe("image checks", () => {
@@ -102,7 +117,8 @@ describe("publishDisplay", () => {
     const outcome = await publishDisplay(client, "1234567890", displayBrief(), library([1200, 628], [300, 300]));
 
     expect(outcome.failure).toBeNull();
-    // budget, campaign, location, image assets, ad group, audiences, ad (all devices → no device op)
+    // budget, campaign, location, image assets, ad group, audiences, ad, then the brand
+    // assets: business-name text asset + both campaign links (all devices → no device op)
     expect(calls.map((ops) => ops[0]!.entity)).toEqual([
       "campaign_budget",
       "campaign",
@@ -111,7 +127,15 @@ describe("publishDisplay", () => {
       "ad_group",
       "ad_group_criterion",
       "ad_group_ad",
+      "asset",
+      "campaign_asset",
     ]);
+    expect(calls[7]![0]!.resource).toEqual({ text_asset: { text: "Konnect" } });
+    expect(calls[8]!.map((op) => op.resource)).toEqual([
+      { campaign: "rn/2/0", asset: "rn/8/0", field_type: enums.AssetFieldType.BUSINESS_NAME },
+      { campaign: "rn/2/0", asset: "rn/4/1", field_type: enums.AssetFieldType.BUSINESS_LOGO },
+    ]);
+    expect(outcome.results.brandAssetLinkResourceNames).toEqual(["rn/9/0", "rn/9/1"]);
     expect(calls[5]!.map((op) => op.resource)).toEqual([
       expect.objectContaining({ user_interest: { user_interest_category: "customers/1234567890/userInterests/80432" } }),
       expect.objectContaining({ user_list: { user_list: "customers/1234567890/userLists/111" } }),
@@ -135,6 +159,7 @@ describe("findMissingResponsiveDisplayAds", () => {
         responsive_display_ad: {
           marketing_images: [{ asset: "customers/1/assets/10" }],
           square_marketing_images: [{ asset: "customers/1/assets/11" }],
+          square_logo_images: [{ asset: "customers/1/assets/11" }],
           headlines: [{ text: "Ship faster" }],
           long_headline: { text: "Ship faster with fewer integrations" },
           descriptions: [{ text: "Live in 30 days." }],
@@ -220,5 +245,65 @@ describe("display demographics", () => {
     const summary = displayDryRunSummary(withDemographics({ parentalStatus: ["parent"] }), new Map());
     expect(summary["willPublish"]).toContain("audiences → demographic exclusions →");
     expect(summary["willPublish"]).toContain("2 demographic exclusions total");
+  });
+});
+
+describe("brand assets", () => {
+  const CAMPAIGN = "customers/1/campaigns/5";
+  const LOGO = "customers/1/assets/11";
+  const recording = (rows: unknown[]) => {
+    const calls: AdsMutateOperation[][] = [];
+    const client: AdsClient = {
+      search: async <Row>() => rows as Row[],
+      searchStructured: async <Row>() => [] as Row[],
+      mutate: async (_c, ops) => {
+        calls.push(ops);
+        return { results: ops.map((_, i) => ({ resource_name: `rn/${calls.length}/${i}` })) };
+      },
+    };
+    return { client, calls };
+  };
+  const nameRow = (text: string, rn = "customers/1/campaignAssets/5~20~BUSINESS_NAME") => ({
+    campaign_asset: { resource_name: rn, field_type: "BUSINESS_NAME", asset: "customers/1/assets/20" },
+    asset: { text_asset: { text } },
+  });
+  const logoRow = (asset: string) => ({
+    campaign_asset: { resource_name: `customers/1/campaignAssets/5~x~BUSINESS_LOGO`, field_type: "BUSINESS_LOGO", asset },
+  });
+
+  it("takes the business name and first square logo from the first ad", () => {
+    expect(brandAssets(displayBrief())).toEqual({ businessName: "Konnect", logoUrl: SQ });
+  });
+
+  it("is a no-op when the campaign already links the same name and logo", async () => {
+    const { client, calls } = recording([nameRow("Konnect"), logoRow(LOGO)]);
+    expect(await linkBrandAssets(client, "1", CAMPAIGN, { businessName: "Konnect", logoUrl: SQ }, LOGO)).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("replaces a business name with different text and adds a missing logo, keeping other logos", async () => {
+    const { client, calls } = recording([nameRow("Old name"), logoRow("customers/1/assets/99")]);
+    const created = await linkBrandAssets(client, "1", CAMPAIGN, { businessName: "Konnect", logoUrl: SQ }, LOGO);
+    expect(calls[0]).toEqual([{ entity: "asset", operation: "create", resource: { text_asset: { text: "Konnect" } } }]);
+    expect(calls[1]).toEqual([
+      { entity: "campaign_asset", operation: "remove", resource: { resource_name: "customers/1/campaignAssets/5~20~BUSINESS_NAME" } },
+      { entity: "campaign_asset", operation: "create", resource: { campaign: CAMPAIGN, asset: "rn/1/0", field_type: enums.AssetFieldType.BUSINESS_NAME } },
+      { entity: "campaign_asset", operation: "create", resource: { campaign: CAMPAIGN, asset: LOGO, field_type: enums.AssetFieldType.BUSINESS_LOGO } },
+    ]);
+    expect(created).toEqual(["rn/2/1", "rn/2/2"]);
+  });
+
+  it("links only the missing logo when the name is already right", async () => {
+    const { client, calls } = recording([nameRow("Konnect")]);
+    await linkBrandAssets(client, "1", CAMPAIGN, { businessName: "Konnect", logoUrl: SQ }, LOGO);
+    expect(calls).toEqual([
+      [{ entity: "campaign_asset", operation: "create", resource: { campaign: CAMPAIGN, asset: LOGO, field_type: enums.AssetFieldType.BUSINESS_LOGO } }],
+    ]);
+  });
+
+  it("shows the brand assets in the dry-run plan", () => {
+    const summary = displayDryRunSummary(displayBrief(), new Map());
+    expect(summary["willPublish"]).toContain("→ brand assets (business name, logo)");
+    expect(summary["brandAssets"]).toEqual({ businessName: "Konnect", logoUrl: SQ });
   });
 });

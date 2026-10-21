@@ -34,6 +34,8 @@ export interface CampaignFinding {
   detail: string;
   need?: number;
   items?: Record<string, string[]>;
+  /** How to resolve it, when the finding has one fixed remedy. */
+  fix?: string;
 }
 
 export interface CampaignReport {

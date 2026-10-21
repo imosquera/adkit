@@ -493,6 +493,35 @@ export function auditDisplayAdQuery(campId: string): SearchArgs {
   };
 }
 
+const BRAND_FIELD_TYPES = "('BUSINESS_NAME', 'BUSINESS_LOGO')";
+
+/**
+ * Live campaign-level brand assets (business name / logo) for the given
+ * campaigns. A Display campaign with neither these nor account-level ones is
+ * reported Incomplete by Google and serves nothing (#85).
+ */
+export function brandAssetCampaignQuery(campaignIds: ReadonlyArray<string | number>): SearchArgs {
+  return inListQuery(
+    "campaign_asset",
+    ["campaign.id", "campaign_asset.field_type"],
+    "campaign.id",
+    campaignIds,
+    [`campaign_asset.field_type IN ${BRAND_FIELD_TYPES}`, "campaign_asset.status != 'REMOVED'"],
+  );
+}
+
+/** Live account-level brand assets (business name / logo); they cover every campaign. */
+export function brandAssetCustomerQuery(): SearchArgs {
+  return {
+    resource: "customer_asset",
+    fields: ["customer_asset.field_type"],
+    conditions: [
+      `customer_asset.field_type IN ${BRAND_FIELD_TYPES}`,
+      "customer_asset.status != 'REMOVED'",
+    ],
+  };
+}
+
 /**
  * Per-URL mobile/AMP click quality and page-speed score from landing_page_view,
  * over the window. Caller flags mobile_friendly_clicks_percentage < 1.0 (always)
@@ -584,6 +613,7 @@ export function diagnosisCampaignQuery(
       "campaign.id",
       "campaign.name",
       "campaign.status",
+      "campaign.advertising_channel_type",
       "campaign.serving_status",
       "campaign.primary_status",
       "campaign.primary_status_reasons",

@@ -17,6 +17,8 @@
 
 import {
   archiveCampaignsByName,
+  brandAssets,
+  linkBrandAssets,
   createAdGroup,
   createCallouts,
   createCampaignBudget,
@@ -279,12 +281,16 @@ export interface DisplayExecResults {
   budgetId: string | null;
   campaignId: string | null;
   imageAssetResourceNames: readonly string[];
+  // campaign_asset links created THIS run for the BUSINESS_NAME / BUSINESS_LOGO brand
+  // assets ([] on a reused campaign that already had both).
+  brandAssetLinkResourceNames: readonly string[];
   adGroups: DisplayExecAdGroup[];
 }
 
 /**
  * Publish a display brief: budget → Display campaign (PAUSED) → US/CA + devices →
- * image assets → per ad group (ad group → audiences → demographic exclusions → responsive display ads, PAUSED).
+ * image assets → per ad group (ad group → audiences → demographic exclusions → responsive display ads, PAUSED)
+ * → brand assets (business name, logo).
  * `images` must hold every image the brief references, already checked against the
  * slot specs (see images.ts). Same reuse/idempotency contract and the same deliberate
  * mutable-accumulator exception as {@link publishV1}.
@@ -301,6 +307,7 @@ export async function publishDisplay(
     budgetId: null,
     campaignId: null,
     imageAssetResourceNames: [],
+    brandAssetLinkResourceNames: [],
     adGroups: brief.adGroups.map((ag) => ({
       name: ag.name,
       adGroupId: null,
@@ -395,6 +402,14 @@ export async function publishDisplay(
         briefAg.name,
       );
     }
+    // Without linked BUSINESS_NAME + BUSINESS_LOGO brand assets Google marks the RDAs
+    // Incomplete and they never serve (#85). Reconciled on reused campaigns too. Runs
+    // last: Google's docs don't list Display among the campaign types that take brand
+    // assets, so if the link is rejected the rest of the campaign is already in place.
+    const brand = brandAssets(brief);
+    results.brandAssetLinkResourceNames = await step("link-brand-assets", () =>
+      linkBrandAssets(client, customerId, results.campaignId!, brand, assets.get(brand.logoUrl)!),
+    );
   } catch (exc) {
     if (exc instanceof StepError) {
       const failure: Failure = { step: exc.step, message: exc.message, raw: exc.raw, adGroupName: exc.adGroupName };

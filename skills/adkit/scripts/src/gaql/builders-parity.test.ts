@@ -21,6 +21,8 @@ import {
   auditPolicyTopicsQuery,
   auditQualityScoreQuery,
   auditServingQuery,
+  brandAssetCampaignQuery,
+  brandAssetCustomerQuery,
   campaignDailyQuery,
   campaignTotalsQuery,
   geoQuery,
@@ -99,6 +101,14 @@ const CASES: ReadonlyArray<[string, string]> = [
   [
     toGaql(auditCampaignsQuery(false, null)),
     "SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type FROM campaign ORDER BY campaign.name",
+  ],
+  [
+    toGaql(brandAssetCampaignQuery(IDS)),
+    "SELECT campaign.id, campaign_asset.field_type FROM campaign_asset WHERE campaign.id IN (12345,67890) AND campaign_asset.field_type IN ('BUSINESS_NAME', 'BUSINESS_LOGO') AND campaign_asset.status != 'REMOVED'",
+  ],
+  [
+    toGaql(brandAssetCustomerQuery()),
+    "SELECT customer_asset.field_type FROM customer_asset WHERE customer_asset.field_type IN ('BUSINESS_NAME', 'BUSINESS_LOGO') AND customer_asset.status != 'REMOVED'",
   ],
   [
     toGaql(auditExtCountQuery("12345", "SITELINK")),
@@ -189,6 +199,6 @@ describe("builder GAQL parity (toGaql reproduces the pre-refactor strings)", () 
   });
 
   it("covers every builder family (report, audit, apply-fixes)", () => {
-    expect(CASES.length).toBe(31);
+    expect(CASES.length).toBe(33);
   });
 });

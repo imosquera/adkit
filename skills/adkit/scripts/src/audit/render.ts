@@ -46,7 +46,10 @@ export function renderCreativeSummary(report: CampaignReport[]): string[] {
       `\n${c.campaignName} (${c.campaignId}) [${c.status}] ` +
         `keywords=${c.keywords} sitelinks=${c.sitelinks} callouts=${c.callouts}`,
     ];
-    const findingLines = c.campaignFindings.map((f) => `  ! ${f.issue}: ${f.detail}`);
+    const findingLines = c.campaignFindings.flatMap((f) => [
+      `  ! ${f.issue}: ${f.detail}`,
+      ...(f.fix ? [`      fix: ${f.fix}`] : []),
+    ]);
     const adLines = c.ads.flatMap((a) => [
       `    [${ljust(a.strength, 9)}] ${ljust(a.adGroup, 34)} ${a.headlines.length}H/${a.descriptions.length}D  ` +
         `${a.issues.map((i) => i.issue).join(", ") || "ok"}`,
