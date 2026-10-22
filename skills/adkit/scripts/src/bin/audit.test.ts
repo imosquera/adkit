@@ -352,61 +352,54 @@ describe("auditCampaign on a Display campaign", () => {
   const camp = {
     campaign: { id: 1, name: "x", status: "ENABLED", advertising_channel_type: enums.AdvertisingChannelType.DISPLAY },
   };
-  const { BUSINESS_NAME, BUSINESS_LOGO } = enums.AssetFieldType;
-  const displayClient = (brand: { campaign?: unknown[]; customer?: unknown[] }) =>
-    fakeClient((query) =>
-      query.includes("FROM ad_group_ad")
-        ? [{ ad_group: { name: "Winter" }, ad_group_ad: { ad: { id: 5 } } }]
+  const displayClient = (adGroupAd: Record<string, unknown>, queries: string[] = []) =>
+    fakeClient((query) => {
+      queries.push(query);
+      return query.includes("FROM ad_group_ad")
+        ? [{ ad_group: { name: "Winter" }, ad_group_ad: { ad: { id: 5 }, status: "ENABLED", ...adGroupAd } }]
         : query.includes("FROM ad_group")
           ? [{ ad_group: { name: "Winter" } }, { ad_group: { name: "Empty" } }]
-          : query.includes("FROM campaign_asset")
-            ? (brand.campaign ?? [])
-            : query.includes("FROM customer_asset")
-              ? (brand.customer ?? [])
-              : [],
-    );
-  // Account-level brand assets, as the SDK returns them (raw ordinals).
-  const accountBrand = [
-    { customer_asset: { field_type: BUSINESS_NAME } },
-    { customer_asset: { field_type: BUSINESS_LOGO } },
-  ];
+          : [];
+    });
 
   it("raises no Search-only findings and flags only ad groups with no RDA", async () => {
-    const result = await auditCampaign(displayClient({ customer: accountBrand }), "123", camp, [], {}, emptyProfile);
-    expect(result.channelType).toBe("DISPLAY");
-    expect(result.campaignFindings.map((f) => [f.issue, f.detail])).toEqual([
-      ["rda_missing", "ad group 'Empty': 0 responsive display ads"],
-    ]);
-  });
-
-  it("flags brand_assets_missing when no business name / logo is linked at either level (#85)", async () => {
-    const result = await auditCampaign(displayClient({}), "123", camp, [], {}, emptyProfile);
-    const finding = result.campaignFindings.find((f) => f.issue === "brand_assets_missing");
-    expect(finding?.items).toEqual({ brandAssets: ["BUSINESS_NAME", "BUSINESS_LOGO"] });
-    expect(finding?.detail).toContain("business name (BUSINESS_NAME) or business logo (BUSINESS_LOGO)");
-    expect(finding?.fix).toContain("/adkit create");
-    expect(result.campaignFindings.map((f) => f.issue)).not.toContain("keywords_under");
-  });
-
-  it("names only the missing field when the other is linked to the campaign", async () => {
+    const queries: string[] = [];
     const result = await auditCampaign(
-      displayClient({ campaign: [{ campaign: { id: 1 }, campaign_asset: { field_type: "BUSINESS_NAME" } }] }),
+      displayClient({ ad_strength: enums.AdStrength.GOOD }, queries),
       "123",
       camp,
       [],
       {},
       emptyProfile,
     );
-    const finding = result.campaignFindings.find((f) => f.issue === "brand_assets_missing");
-    expect(finding?.items).toEqual({ brandAssets: ["BUSINESS_LOGO"] });
+    expect(result.channelType).toBe("DISPLAY");
+    expect(result.campaignFindings.map((f) => [f.issue, f.detail])).toEqual([
+      ["rda_missing", "ad group 'Empty': 0 responsive display ads"],
+    ]);
+    // Brand assets don't apply to Display (#86) — never read.
+    expect(queries.some((q) => q.includes("_asset"))).toBe(false);
   });
 
-  it("raises no brand_assets_missing when the account links both", async () => {
-    const result = await auditCampaign(displayClient({ customer: accountBrand }), "123", camp, [], {}, emptyProfile);
-    expect(result.campaignFindings.map((f) => f.issue)).not.toContain("brand_assets_missing");
+  it("flags ads_not_generated with Google's action items when an RDA's ad strength is NO_ADS (#86)", async () => {
+    const result = await auditCampaign(
+      displayClient({
+        ad_strength: enums.AdStrength.NO_ADS,
+        action_items: ["Add a square logo", "Add a square logo", "Add a description"],
+      }),
+      "123",
+      camp,
+      [],
+      {},
+      emptyProfile,
+    );
+    const finding = result.campaignFindings.find((f) => f.issue === "ads_not_generated");
+    expect(finding?.items).toEqual({ Winter: ["Add a square logo", "Add a description"] });
+    expect(finding?.detail).toContain('"Add a square logo"; "Add a description"');
+    expect(finding?.fix).toContain("/adkit create");
+    expect(result.campaignFindings.map((f) => f.issue)).not.toContain("keywords_under");
   });
 
-  it("never checks brand assets on a Search campaign", async () => {
+  it("never reads display ads or brand assets on a Search campaign", async () => {
     const queries: string[] = [];
     const client = fakeClient((query) => {
       queries.push(query);
@@ -414,7 +407,8 @@ describe("auditCampaign on a Display campaign", () => {
     });
     const search = { campaign: { id: 1, name: "x", status: "ENABLED" } };
     const result = await auditCampaign(client, "123", search, [], {}, emptyProfile);
-    expect(result.campaignFindings.map((f) => f.issue)).not.toContain("brand_assets_missing");
+    expect(result.campaignFindings.map((f) => f.issue)).not.toContain("ads_not_generated");
+    expect(queries.some((q) => q.includes("RESPONSIVE_DISPLAY_AD"))).toBe(false);
     expect(queries.some((q) => q.includes("_asset.field_type IN"))).toBe(false);
   });
 });
@@ -1138,41 +1132,54 @@ describe("servingDiagnosis (zero-impression eligibility reads)", () => {
     expect(queries).toBe(0);
   });
 
-  it("diagnoses a Display campaign with no brand assets as brand_assets_missing, not no_keywords (#85)", async () => {
-    const displayPick = (query: string): unknown[] =>
-      query.includes("FROM campaign WHERE")
-        ? (pick(query) as Array<{ campaign: Record<string, unknown> }>).map((r) => ({
-            ...r,
-            campaign: { ...r.campaign, advertising_channel_type: enums.AdvertisingChannelType.DISPLAY },
-          }))
+  const asDisplay = (query: string): unknown[] =>
+    (pick(query) as Array<{ campaign: Record<string, unknown> }>).map((r) => ({
+      ...r,
+      campaign: { ...r.campaign, advertising_channel_type: enums.AdvertisingChannelType.DISPLAY },
+    }));
+  const displayAd = (over: Record<string, unknown>) => [
+    {
+      campaign: { id: 7 },
+      ad_group: { id: 8, name: "Younger Players" },
+      ad_group_ad: { ad: { id: 9 }, status: "ENABLED", ...over },
+    },
+  ];
+
+  it("diagnoses a Display RDA with ad strength NO_ADS as ads_not_generated, not no_keywords (#86)", async () => {
+    const queries: string[] = [];
+    const displayPick = (query: string): unknown[] => {
+      queries.push(query);
+      return query.includes("FROM campaign WHERE")
+        ? asDisplay(query)
         : query.includes("FROM ad_group_criterion")
           ? []
-          : pick(query);
+          : query.includes("FROM ad_group_ad")
+            ? displayAd({ ad_strength: enums.AdStrength.NO_ADS, action_items: ["Add a square logo"] })
+            : pick(query);
+    };
     const got = await servingDiagnosis(fakeClient(displayPick), "123", [7], new Date("2026-09-20T00:00:00Z"));
-    const codes = got[7].blockers.map((b) => b.code);
-    expect(codes).toContain("brand_assets_missing");
-    expect(codes).not.toContain("no_keywords");
+    const blocker = got[7].blockers.find((b) => b.code === "ads_not_generated");
+    expect(blocker?.detail).toContain('"Add a square logo"');
+    expect(got[7].blockers.map((b) => b.code)).not.toContain("no_keywords");
+    expect(queries.find((q) => q.includes("FROM ad_group_ad"))).toContain("ad_group_ad.ad_strength");
+    expect(queries.some((q) => q.includes("_asset"))).toBe(false);
   });
 
-  it("finds no brand blocker when the account links both brand assets", async () => {
+  it("finds no ads_not_generated blocker for a healthy Display campaign", async () => {
     const displayPick = (query: string): unknown[] =>
       query.includes("FROM campaign WHERE")
-        ? (pick(query) as Array<{ campaign: Record<string, unknown> }>).map((r) => ({
-            ...r,
-            campaign: { ...r.campaign, advertising_channel_type: "DISPLAY" },
-          }))
-        : query.includes("FROM customer_asset")
-          ? [{ customer_asset: { field_type: "BUSINESS_NAME" } }, { customer_asset: { field_type: "BUSINESS_LOGO" } }]
+        ? asDisplay(query)
+        : query.includes("FROM ad_group_ad")
+          ? displayAd({ ad_strength: "GOOD", primary_status: "ELIGIBLE", action_items: [] })
           : pick(query);
     const got = await servingDiagnosis(fakeClient(displayPick), "123", [7], new Date("2026-09-20T00:00:00Z"));
-    expect(got[7].missingBrandAssets).toEqual([]);
-    expect(got[7].blockers.map((b) => b.code)).not.toContain("brand_assets_missing");
+    expect(got[7].blockers.map((b) => b.code)).not.toContain("ads_not_generated");
   });
 
-  it("keeps a Search campaign's diagnosis free of brand-asset checks", async () => {
+  it("keeps a Search campaign's diagnosis unchanged", async () => {
     const got = await servingDiagnosis(fakeClient(pick), "123", [7], new Date("2026-09-20T00:00:00Z"));
     expect(got[7].campaign.channelType).toBe("SEARCH");
-    expect(got[7].missingBrandAssets).toBeUndefined();
+    expect(got[7].blockers.map((b) => b.code)).not.toContain("ads_not_generated");
   });
 
   it("degrades an unreadable resource to a note instead of failing the run", async () => {

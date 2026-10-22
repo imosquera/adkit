@@ -584,11 +584,11 @@ export const ResponsiveDisplayAdSchema = z
     marketingImages: z.array(ImageRefSchema).min(1).max(MAX_RDA_IMAGES), // landscape 1.91:1
     squareMarketingImages: z.array(ImageRefSchema).min(1).max(MAX_RDA_IMAGES), // 1:1
     logoImages: z.array(ImageRefSchema).max(MAX_RDA_LOGOS).default([]), // 4:1
-    // 1:1. Required: the first square logo of the brief's first ad is also linked to the
-    // campaign as its BUSINESS_LOGO brand asset, without which Google marks RDAs Incomplete.
+    // 1:1. Required: the ad's logo, which Display shows alongside its business name. Display
+    // campaigns don't take BUSINESS_NAME / BUSINESS_LOGO brand assets; the RDA carries both.
     squareLogoImages: z
       .array(ImageRefSchema)
-      .nonempty({ message: "list at least one square (1:1) logo — it becomes the campaign's business logo" })
+      .nonempty({ message: "list at least one square (1:1) logo — the ad's logo, which Display shows alongside the business name" })
       .max(MAX_RDA_LOGOS),
     headlines: z.array(HeadlineSchema).min(1).max(MAX_RDA_TEXTS),
     longHeadline: DescriptionSchema,
@@ -806,7 +806,6 @@ export const FAILURE_STEPS = [
   "create-audiences",
   "create-demographic-exclusions",
   "create-responsive-display-ad",
-  "link-brand-assets",
 ] as const;
 export type FailureStep = (typeof FAILURE_STEPS)[number];
 

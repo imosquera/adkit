@@ -480,44 +480,26 @@ export function auditAdGroupAdQuery(campId: string): SearchArgs {
   };
 }
 
-/** Live (non-removed) responsive display ads per ad group of one Display campaign. */
+/**
+ * Live (non-removed) responsive display ads per ad group of one Display campaign,
+ * with the signals that say whether Google can generate them (#86).
+ */
 export function auditDisplayAdQuery(campId: string): SearchArgs {
   return {
     resource: "ad_group_ad",
-    fields: ["ad_group.name", "ad_group_ad.ad.id"],
+    fields: [
+      "ad_group.name",
+      "ad_group_ad.ad.id",
+      "ad_group_ad.status",
+      "ad_group_ad.ad_strength",
+      "ad_group_ad.action_items",
+      "ad_group_ad.primary_status",
+      "ad_group_ad.primary_status_reasons",
+    ],
     conditions: [
       `campaign.id = ${gaqlId(campId)}`,
       "ad_group_ad.status != 'REMOVED'",
       "ad_group_ad.ad.type = 'RESPONSIVE_DISPLAY_AD'",
-    ],
-  };
-}
-
-const BRAND_FIELD_TYPES = "('BUSINESS_NAME', 'BUSINESS_LOGO')";
-
-/**
- * Live campaign-level brand assets (business name / logo) for the given
- * campaigns. A Display campaign with neither these nor account-level ones is
- * reported Incomplete by Google and serves nothing (#85).
- */
-export function brandAssetCampaignQuery(campaignIds: ReadonlyArray<string | number>): SearchArgs {
-  return inListQuery(
-    "campaign_asset",
-    ["campaign.id", "campaign_asset.field_type"],
-    "campaign.id",
-    campaignIds,
-    [`campaign_asset.field_type IN ${BRAND_FIELD_TYPES}`, "campaign_asset.status != 'REMOVED'"],
-  );
-}
-
-/** Live account-level brand assets (business name / logo); they cover every campaign. */
-export function brandAssetCustomerQuery(): SearchArgs {
-  return {
-    resource: "customer_asset",
-    fields: ["customer_asset.field_type"],
-    conditions: [
-      `customer_asset.field_type IN ${BRAND_FIELD_TYPES}`,
-      "customer_asset.status != 'REMOVED'",
     ],
   };
 }
@@ -650,7 +632,11 @@ export function diagnosisAdGroupQuery(
   );
 }
 
-/** Live ads with their policy verdict — disapproved vs under review vs paused. */
+/**
+ * Live ads with their policy verdict — disapproved vs under review vs paused —
+ * plus ad strength / action items, which expose a Display ad Google can't
+ * generate (NO_ADS, #86).
+ */
 export function diagnosisAdQuery(campaignIds: ReadonlyArray<string | number>): SearchArgs {
   return inListQuery(
     "ad_group_ad",
@@ -660,6 +646,8 @@ export function diagnosisAdQuery(campaignIds: ReadonlyArray<string | number>): S
       "ad_group.name",
       "ad_group_ad.ad.id",
       "ad_group_ad.status",
+      "ad_group_ad.ad_strength",
+      "ad_group_ad.action_items",
       "ad_group_ad.primary_status",
       "ad_group_ad.primary_status_reasons",
       "ad_group_ad.policy_summary.approval_status",

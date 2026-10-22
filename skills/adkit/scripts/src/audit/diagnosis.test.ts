@@ -88,16 +88,15 @@ function healthy(): DiagnosisRows {
     sharedSets: [],
     sharedNegatives: [],
     billing: { billing_setup: { status: "APPROVED" } },
-    brandAssets: null,
     notes: [],
   };
 }
 
 /**
- * A healthy zero-impression Display campaign: live RDAs, no keywords (Display has
- * none), and the given brand-asset links.
+ * A healthy zero-impression Display campaign: live RDAs Google can generate and
+ * no keywords (Display has none).
  */
-function display(brandAssets: DiagnosisRows["brandAssets"]): DiagnosisRows {
+function display(): DiagnosisRows {
   const r = healthy();
   return {
     ...r,
@@ -110,18 +109,15 @@ function display(brandAssets: DiagnosisRows["brandAssets"]): DiagnosisRows {
         network_settings: { target_content_network: true },
       },
     },
+    ads: [ad(1, { ad_strength: "GOOD" }), ad(2, { ad_strength: "GOOD" })],
     keywords: [],
-    brandAssets,
   };
 }
 
-const ACCOUNT_BRAND = {
-  campaign: [],
-  customer: [
-    { customer_asset: { field_type: enums.AssetFieldType.BUSINESS_NAME } },
-    { customer_asset: { field_type: enums.AssetFieldType.BUSINESS_LOGO } },
-  ],
-};
+const ACTION_ITEMS = [
+  "Add at least one more headline",
+  "Add a square logo",
+];
 
 const codes = (rows: DiagnosisRows): string[] =>
   buildServingDiagnosis(rows, TODAY).blockers.map((b) => b.code);
@@ -306,54 +302,62 @@ describe("blocker derivation", () => {
   });
 });
 
-describe("Display campaigns (#85)", () => {
-  it("reports brand_assets_missing — and no Search-only blocker — with no brand assets linked", () => {
-    const d = buildServingDiagnosis(display({ campaign: [], customer: [] }), TODAY);
+describe("Display campaigns (#85, #86)", () => {
+  it("reports ads_not_generated with Google's action items for an ad with ad strength NO_ADS", () => {
+    const rows = {
+      ...display(),
+      ads: [
+        // Raw ordinal, as the SDK returns ad_strength.
+        ad(1, { ad_strength: enums.AdStrength.NO_ADS, action_items: ACTION_ITEMS }),
+        ad(2, { ad_strength: "NO_ADS", action_items: [ACTION_ITEMS[1]] }),
+      ],
+    };
+    const d = buildServingDiagnosis(rows, TODAY);
     expect(d.campaign.channelType).toBe("DISPLAY");
-    expect(d.missingBrandAssets).toEqual(["BUSINESS_NAME", "BUSINESS_LOGO"]);
-    expect(d.blockers.map((b) => b.code)).toEqual(["brand_assets_missing"]);
+    expect(d.blockers.map((b) => b.code)).toEqual(["ads_not_generated"]);
     const [blocker] = d.blockers;
-    expect(blocker.detail).toContain("business name (BUSINESS_NAME) or business logo (BUSINESS_LOGO)");
-    expect(blocker.fix).toContain("/adkit create");
+    expect(blocker.detail).toContain("2 responsive display ad(s) Google can't generate");
+    // Verbatim and deduped.
+    expect(blocker.detail).toContain('"Add at least one more headline"; "Add a square logo"');
+    expect(blocker.detail.match(/Add a square logo/g)).toHaveLength(1);
+    expect(blocker.fix).toContain("Edit the brief's responsiveDisplayAds and rerun `/adkit create`");
   });
 
-  it("names only the missing field when the campaign links the other", () => {
-    const d = buildServingDiagnosis(
-      display({
-        campaign: [{ campaign: { id: CID }, campaign_asset: { field_type: "BUSINESS_LOGO" } }],
-        customer: [],
-      }),
-      TODAY,
-    );
-    expect(d.missingBrandAssets).toEqual(["BUSINESS_NAME"]);
-    expect(d.blockers.find((b) => b.code === "brand_assets_missing")?.detail).not.toContain("BUSINESS_LOGO");
+  it("also catches AD_GROUP_AD_NO_ADS in primary_status_reasons", () => {
+    const rows = {
+      ...display(),
+      ads: [
+        ad(1, {
+          ad_strength: "PENDING",
+          primary_status: enums.AdGroupAdPrimaryStatus.NOT_ELIGIBLE,
+          primary_status_reasons: [enums.AdGroupAdPrimaryStatusReason.AD_GROUP_AD_NO_ADS],
+        }),
+      ],
+    };
+    const [blocker] = buildServingDiagnosis(rows, TODAY).blockers;
+    expect(blocker.code).toBe("ads_not_generated");
+    expect(blocker.detail).toContain("1 responsive display ad(s)");
+    expect(blocker.detail).toContain("none reported");
   });
 
-  it("finds no blocker when the account links both brand assets", () => {
-    const d = buildServingDiagnosis(display(ACCOUNT_BRAND), TODAY);
-    expect(d.missingBrandAssets).toEqual([]);
+  it("finds no blocker for a healthy Display campaign", () => {
+    const d = buildServingDiagnosis(display(), TODAY);
     expect(d.blockers.map((b) => b.code)).toEqual(["no_blocker_found"]);
     expect(d.blockers[0].detail).not.toContain("keyword");
-    expect(d.blockers[0].detail).toContain("brand assets");
-  });
-
-  it("invents no brand blocker when the asset links were unreadable", () => {
-    const d = buildServingDiagnosis(display(null), TODAY);
-    expect(d.missingBrandAssets).toBeUndefined();
-    expect(d.blockers.map((b) => b.code)).toEqual(["no_blocker_found"]);
+    expect(d.blockers[0].detail).not.toContain("brand asset");
+    expect(d.blockers[0].detail).toContain("ad strength");
   });
 
   it("speaks of responsive display ads, not RSAs, in ad blockers", () => {
-    const rows = { ...display(ACCOUNT_BRAND), ads: [ad(1, { status: "PAUSED" })] };
+    const rows = { ...display(), ads: [ad(1, { status: "PAUSED" })] };
     const paused = buildServingDiagnosis(rows, TODAY).blockers.find((b) => b.code === "ads_paused");
     expect(paused?.detail).toBe("1 of 1 responsive display ads in 'Younger Players' are PAUSED");
   });
 
-  it("leaves a Search campaign's keyword blockers and missing brand assets alone", () => {
-    const rows = { ...healthy(), keywords: [], brandAssets: { campaign: [], customer: [] } };
+  it("leaves a Search campaign's blockers unchanged, even with an ad strength of NO_ADS", () => {
+    const rows = { ...healthy(), keywords: [], ads: [ad(1, { ad_strength: "NO_ADS", action_items: ACTION_ITEMS })] };
     const d = buildServingDiagnosis(rows, TODAY);
     expect(d.campaign.channelType).toBe("SEARCH");
-    expect(d.missingBrandAssets).toBeUndefined();
     expect(d.blockers.map((b) => b.code)).toEqual(["no_keywords"]);
   });
 });

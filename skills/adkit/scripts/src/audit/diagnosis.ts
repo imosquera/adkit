@@ -18,13 +18,13 @@
 import { enums } from "google-ads-api";
 import { enumName } from "../ads/enums.js";
 import {
-  BRAND_ASSETS_FIX,
-  BRAND_ASSETS_MISSING,
-  brandAssetsDetail,
-  missingBrandAssets,
-  type BrandAssetField,
-  type BrandAssetRows,
-} from "./brand-assets.js";
+  ADS_NOT_GENERATED,
+  ADS_NOT_GENERATED_FIX,
+  adsNotGeneratedDetail,
+  notGeneratedAds,
+  parseAdGeneration,
+  type AdGeneration,
+} from "./ads-not-generated.js";
 
 // ---------------------------------------------------------------------------
 // Output shapes.
@@ -81,12 +81,6 @@ export interface ServingDiagnosis {
   };
   /** Absent (undefined) when billing_setup was not readable — see `notes`. */
   billing?: { status: string | null };
-  /**
-   * Display only: the brand assets (business name / logo) linked at neither
-   * campaign nor account level — `[]` when both are linked. Absent for
-   * non-Display campaigns and when the asset links were not readable.
-   */
-  missingBrandAssets?: BrandAssetField[];
   adGroups: AdGroupDiagnosis[];
   disapprovals: Disapproval[];
   targeting: {
@@ -148,6 +142,8 @@ export interface RawDiagnosisAdRow {
   ad_group_ad: {
     ad: { id: number };
     status?: Enum;
+    ad_strength?: Enum;
+    action_items?: string[] | null;
     primary_status?: Enum;
     primary_status_reasons?: Enum[];
     policy_summary?: {
@@ -213,8 +209,6 @@ export interface DiagnosisRows {
   sharedSets: RawSharedSetRow[];
   sharedNegatives: RawSharedCriterionRow[];
   billing: RawBillingRow | null;
-  /** This campaign's + the account's brand-asset links; `null` = unreadable. */
-  brandAssets: BrandAssetRows | null;
   notes: string[];
 }
 
@@ -265,6 +259,8 @@ interface AdView {
   approvalStatus: string | null;
   reviewStatus: string | null;
   policyTopics: string[];
+  /** ad_strength / primary status / action items — the "can Google build it" signals. */
+  generation: AdGeneration;
 }
 
 function adViews(rows: RawDiagnosisAdRow[]): AdView[] {
@@ -280,6 +276,7 @@ function adViews(rows: RawDiagnosisAdRow[]): AdView[] {
       policyTopics: (ps?.policy_topic_entries ?? [])
         .map((e) => e.topic)
         .filter((t): t is string => Boolean(t)),
+      generation: parseAdGeneration(r.ad_group_ad),
     };
   });
 }
@@ -421,9 +418,6 @@ export function buildServingDiagnosis(rows: DiagnosisRows, today: string): Servi
     ...(rows.billing
       ? { billing: { status: name(enums.BillingSetupStatus, rows.billing.billing_setup.status) } }
       : {}),
-    ...(channelType === "DISPLAY" && rows.brandAssets
-      ? { missingBrandAssets: [...(missingBrandAssets(rows.brandAssets) ?? [])] }
-      : {}),
     adGroups,
     disapprovals: ads
       .filter((a) => a.approvalStatus === "DISAPPROVED")
@@ -492,7 +486,8 @@ export function deriveBlockers(
   const isSearch = d.campaign.channelType === "SEARCH";
   const isDisplay = d.campaign.channelType === "DISPLAY";
   const adNoun = isDisplay ? "responsive display ads" : isSearch ? "RSAs" : "ads";
-  const [firstMissingBrand, ...restMissingBrand] = d.missingBrandAssets ?? [];
+  // Display only: an RDA whose assets Google can't assemble ("Incomplete" in the UI).
+  const notGenerated = isDisplay ? notGeneratedAds(ads.map((a) => a.generation)) : null;
 
   const candidates: Array<Blocker | null> = [
     d.billing && d.billing.status !== null && d.billing.status !== "APPROVED"
@@ -572,6 +567,9 @@ export function deriveBlockers(
             : "Enable the ads (`/adkit update`'s `adStatus` lever, or the Ads UI).",
         }),
       ),
+    notGenerated !== null
+      ? { code: ADS_NOT_GENERATED, detail: adsNotGeneratedDetail(notGenerated), fix: ADS_NOT_GENERATED_FIX }
+      : null,
     d.disapprovals.length > 0
       ? {
           code: "ads_disapproved",
@@ -586,13 +584,6 @@ export function deriveBlockers(
           code: "ads_under_review",
           detail: "every live ad is still under review",
           fix: "Wait — Google review typically clears within one business day. Nothing to change.",
-        }
-      : null,
-    firstMissingBrand !== undefined
-      ? {
-          code: BRAND_ASSETS_MISSING,
-          detail: brandAssetsDetail([firstMissingBrand, ...restMissingBrand]),
-          fix: BRAND_ASSETS_FIX,
         }
       : null,
     isSearch && disapprovedKws.length > 0 && disapprovedKws.length === positives.length
@@ -647,8 +638,8 @@ export function deriveBlockers(
         "ad-group status, ad status + policy approval, " +
         (isSearch
           ? `${positives.length} keyword(s) (approval + serving status), negatives, `
-          : isDisplay && d.missingBrandAssets
-            ? "brand assets (business name + logo), "
+          : isDisplay
+            ? "ad strength / Google's ad-generation status, "
             : "") +
         "and geo/language/schedule targeting",
       fix: isSearch
