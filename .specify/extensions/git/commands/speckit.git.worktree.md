@@ -55,7 +55,7 @@ If the user selects **No**, continue without changing directories.
 
 ## Execution
 
-- **Bash**: `.specify/extensions/git/scripts/bash/worktree-add.sh [--path <absolute-path>] [--parent <absolute-path>] <branch> [<start-point>]`
+- **Bash**: `bun .specify/extensions/git/scripts/ts/worktree-add.ts [--path <absolute-path>] [--parent <absolute-path>] <branch> [<start-point>]`
 
 ## Graceful Degradation
 

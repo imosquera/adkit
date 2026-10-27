@@ -3,8 +3,8 @@ schema_version: "1.0"
 preset:
   id: "implement-prelude-skills"
   name: "Implement Prelude Skills"
-  version: "1.0.0"
-  description: "Overrides /speckit-implement so the ponytail:ponytail and caveman skills are invoked (when available locally) as a mandatory prelude before the implementation phase begins."
+  version: "1.1.0"
+  description: "Overrides /speckit-implement so the ponytail:ponytail skill is invoked (when available locally) as a mandatory prelude before the implementation phase begins."
   author: "beadbits"
   repository: "local"
   license: "same-as-project"
@@ -18,11 +18,10 @@ provides:
       name: "speckit.implement"
       strategy: "wrap"
       file: "commands/speckit.implement.md"
-      description: "Implement command with mandatory ponytail + caveman skill prelude"
+      description: "Implement command with mandatory ponytail skill prelude"
 
 tags:
   - "implement"
   - "skills"
   - "ponytail"
-  - "caveman"
   - "governance"

@@ -3,8 +3,8 @@ schema_version: "1.0"
 preset:
   id: "library-research"
   name: "Library Research"
-  version: "1.0.0"
-  description: "Wraps /speckit-plan so that, after the plan is written, the agent researches whether existing libraries can replace hand-rolled build-it-yourself surface area identified in the plan (auth, parsing, queues, retries, etc.) using live web search. Findings and a recommendation per unknown are written to research.md; when a library is a clear win, plan.md is revised in place to reference it instead of a custom build. No-ops gracefully when the plan has no buildable surface area worth researching. Chainable via {CORE_TEMPLATE} so it composes with other speckit.plan wrappers (e.g. parse-dont-validate, spec-minimal)."
+  version: "1.2.0"
+  description: "TypeScript/web half of the library-research pair (library-research-ios is the Swift half; both coexist in a mixed project). Wraps /speckit-plan so that, after the plan is written, the agent researches whether existing npm libraries can replace hand-rolled build-it-yourself surface area that the plan builds in TypeScript/JavaScript (web app, Node/Cloud Functions backend, scripts: auth, parsing, queues, retries, etc.) using live web search; Swift/iOS surface area is out of scope. Findings and a recommendation per unknown are written to this layer's own `## Library research — TypeScript/web` section of the shared research.md, never touching other sections; when a library is a clear win, only the TypeScript/web parts of plan.md are revised in place to reference it instead of a custom build. When the plan has no such surface area on this platform, writes only an N/A line in its own section and leaves plan.md alone. Chainable via {CORE_TEMPLATE} so it composes with other speckit.plan wrappers (e.g. parse-dont-validate, spec-minimal)."
   author: "imosquera"
   repository: "https://github.com/imosquera/speckit-squads"
   license: "MIT"
@@ -13,11 +13,17 @@ requires:
   speckit_version: ">=0.6.0"
 
 provides:
+  scripts:
+    - name: "jev.ts"
+      file: "scripts/ts/jev.ts"
+      command: "speckit.plan"
+      executable: true
+
   templates:
     - type: "command"
       name: "speckit.plan"
       file: "commands/speckit.plan.md"
-      description: "Composable wrapper for /speckit-plan that researches candidate libraries for the plan's technical unknowns via live web search and revises plan.md / writes research.md with findings."
+      description: "Composable wrapper for /speckit-plan that researches npm libraries for the plan's TypeScript/web technical unknowns via live web search, revises the web parts of plan.md, and writes its own section of research.md."
       strategy: "wrap"
 
 tags:

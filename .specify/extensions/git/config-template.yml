@@ -13,6 +13,20 @@ init_commit_message: "[Spec Kit] Initial commit"
 # branch is force-pushed with --force-with-lease.
 squash_before_pr: true
 
+# Copy the tracking issue's labels onto the PR that /speckit-git-pr opens
+# (priority, kind, layer — the triage /speckit-git-issue already applied).
+# `autopilot:*` labels are always skipped: they are picker run-state, not a
+# description of the change. Labels are applied after the PR exists, so a label
+# the repo does not know is a warning, never a lost PR.
+pr_copy_labels: true
+
+# Append an "Agent session" footer to the PR body naming the Claude Code session
+# that produced the branch (`claude --resume <id>`, the git author, and the
+# claude.ai session link when the session was bridged), so a
+# reviewer can continue the work locally. Read from the environment, never from
+# the agent. No-ops outside an agent session.
+pr_session_footer: true
+
 # Paths the auto-commit hook must never stage, and that /speckit-git-pr resets
 # to HEAD before opening a PR.
 #

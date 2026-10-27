@@ -43,9 +43,11 @@ outline.
    Do NOT proceed.
 
    Do NOT read `worktree_path` from `.specify/feature.json`. That field no
-   longer exists: the file is per-worktree state carrying only `source_issue`,
-   and the recorded path used to name the *previous* feature's worktree in any
-   fresh worktree (issue #33).
+   longer exists, and no path is ever resolved from that file: it is per-worktree
+   state whose `source_issue` is the only key our tooling reads (`feature_directory`
+   is written there for core Spec Kit's own resolver). Back when the file was
+   tracked, the recorded path named the *previous* feature's worktree in any fresh
+   worktree (issue #33).
 
 2. Let `WT` be the worktree whose branch matches the current branch, found via
    `git worktree list --porcelain`. When the cwd is already inside that

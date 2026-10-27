@@ -14,7 +14,7 @@ description of the mechanism; do not restate it elsewhere.
 
 ### Documentation Rule (MANDATORY — NO EXCEPTIONS)
 
-The feature directory MUST contain ONLY these files at the top level:
+The feature directory MUST contain ONLY these entries at the top level:
 
 - `spec.md`
 - `plan.md`
@@ -22,6 +22,8 @@ The feature directory MUST contain ONLY these files at the top level:
 - `quickstart.md` (optional but allowed)
 - `research.md` (optional but allowed — e.g. written by the `library-research`
   preset; nothing pre-creates it)
+- `checklists/` (allowed — core Spec Kit's `/speckit-specify` mandates
+  `checklists/requirements.md`)
 
 `data-model.md` and `contracts/` **MUST NOT be created** — not as files, not as
 directories, not in any form. There is no escape hatch. Any content that the
@@ -45,7 +47,7 @@ After the entire core flow above has completed, and before reporting success, ru
 the enforcer as the final step:
 
 ```bash
-.specify/presets/spec-minimal/scripts/bash/enforce-minimal-tree.sh "$SPECIFY_FEATURE_DIRECTORY"
+bun .specify/presets/spec-minimal/scripts/ts/enforce-minimal-tree.ts "$SPECIFY_FEATURE_DIRECTORY"
 ```
 
 The enforcer is self-healing: if a forbidden artifact is on disk it folds the

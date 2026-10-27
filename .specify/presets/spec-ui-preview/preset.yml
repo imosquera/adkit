@@ -3,7 +3,7 @@ schema_version: "1.0"
 preset:
   id: "spec-ui-preview"
   name: "Spec UI Preview"
-  version: "1.0.0"
+  version: "1.1.0"
   description: "Wraps /speckit-specify so that any feature touching user-facing UI carries a mandatory, GitHub-markdown-safe inline HTML preview as part of the requirement. The preview is written into a sentinel-delimited `## UI Preview (Requirement)` section so it can be regenerated idempotently. This preset does one thing: the UI preview. See presets/spec-ui-preview/README.md."
   author: "imosquera"
   repository: "https://github.com/imosquera/speckit-squads"
@@ -13,6 +13,12 @@ requires:
   speckit_version: ">=0.6.0"
 
 provides:
+  scripts:
+    - name: "jev.ts"
+      file: "scripts/ts/jev.ts"
+      command: "speckit.specify"
+      executable: true
+
   templates:
     - type: "command"
       name: "speckit.specify"

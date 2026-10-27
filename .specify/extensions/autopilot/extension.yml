@@ -3,8 +3,8 @@ schema_version: "1.0"
 extension:
   id: autopilot
   name: "Issue Backlog Autopilot"
-  version: "0.3.0"
-  description: "Take the highest-priority eligible open GitHub issue from backlog to a reviewed draft PR by driving the full speckit pipeline unattended (specify → clarify → plan → tasks → implement → review), auto-answering clarify questions and posting progress to the issue at every stage."
+  version: "0.4.0"
+  description: "Take the highest-priority eligible open GitHub issue from backlog to a reviewed draft PR by driving the full speckit pipeline unattended (specify → clarify → plan → tasks → implement → review), auto-answering clarify questions, gating on the project's own build/test commands (web/Node/Python typecheck, tests, lint; or xcodebuild against an iOS Simulator / swift build/test for an iOS/Swift repo), and posting progress to the issue at every stage."
   author: imosquera
   license: MIT
 
@@ -15,38 +15,54 @@ requires:
       required: true
     - name: gh
       required: true
+    - name: xcrun
+      required: false
 
 provides:
   scripts:
-    - name: autopilot-schedule.sh
-      file: scripts/bash/autopilot-schedule.sh
+    - name: autopilot-schedule.ts
+      file: scripts/ts/autopilot-schedule.ts
       executable: true
-    - name: autopilot-run.sh
-      file: scripts/bash/autopilot-run.sh
+    - name: autopilot-run.ts
+      file: scripts/ts/autopilot-run.ts
       executable: true
-    - name: stream-decode.py
-      file: scripts/bash/stream-decode.py
+    - name: stream-decode.ts
+      file: scripts/ts/stream-decode.ts
       executable: true
-    - name: bind-feature-issue.sh
-      file: scripts/bash/bind-feature-issue.sh
-      executable: true
-      command: speckit.autopilot.run
-    - name: fetch-open-issues.sh
-      file: scripts/bash/fetch-open-issues.sh
+    - name: bind-feature-issue.ts
+      file: scripts/ts/bind-feature-issue.ts
       executable: true
       command: speckit.autopilot.run
-    - name: preflight-issues.py
-      file: scripts/bash/preflight-issues.py
+    - name: fetch-open-issues.ts
+      file: scripts/ts/fetch-open-issues.ts
       executable: true
       command: speckit.autopilot.run
-    - name: park-issue.sh
-      file: scripts/bash/park-issue.sh
+    - name: preflight-issues.ts
+      file: scripts/ts/preflight-issues.ts
       executable: true
       command: speckit.autopilot.run
-    - name: check-target-repo.sh
-      file: scripts/bash/check-target-repo.sh
+    - name: park-issue.ts
+      file: scripts/ts/park-issue.ts
       executable: true
       command: speckit.autopilot.run
+    - name: check-target-repo.ts
+      file: scripts/ts/check-target-repo.ts
+      executable: true
+      command: speckit.autopilot.run
+    - name: jev.ts
+      file: scripts/ts/jev.ts
+      executable: true
+      command: speckit.autopilot.run
+    - name: sim-destination.ts
+      file: scripts/ts/sim-destination.ts
+      executable: true
+      command: speckit.autopilot.run
+    - name: resolve-path.ts
+      file: scripts/ts/resolve-path.ts
+      executable: true
+    - name: py.ts
+      file: scripts/ts/py.ts
+      executable: false
 
   commands:
     - name: speckit.autopilot.run

@@ -21,7 +21,9 @@ Run the standard `before_implement` hook chain exactly as the canonical `/specki
 1. Resolve the feature directory as `specs/<branch>`, where `<branch>` is the current
    git branch with any leading path segment stripped (`feat/014-x` → `014-x`), unless
    `SPECIFY_FEATURE_DIRECTORY` or `SPECIFY_FEATURE` overrides it. Do not read the
-   directory from `.specify/feature.json` — it holds only `source_issue` (issue #33).
+   directory from `.specify/feature.json` — a feature's paths are always derived from
+   git, never read out of that file (issue #33). Its `feature_directory` key is there
+   for core Spec Kit's own resolver, not for you.
 2. Read `<feature_dir>/tasks.md`. If the file is missing or has no `## Execution Wave DAG` section, ERROR with:
 
    ```

@@ -26,6 +26,18 @@ core flow's post-execution hooks have not yet fired when you reach this point,
 insert the preview first and then fire them. If a hook already published an issue
 body without the preview, re-run that hook afterward.
 
+First, ask Jev whether the spec touches UI:
+
+```bash
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+bun "$PROJECT_DIR/.specify/presets/spec-ui-preview/scripts/ts/jev.ts" applies-ui --spec "$SPECIFY_FEATURE_DIRECTORY/spec.md"
+```
+
+Exit 0 with `decision: "skip"` → add nothing (see the last paragraph). Exit 0
+with `"applies"` → insert the preview. Exit 3 (or any other exit) → decide from
+the spec yourself, as without Jev. Quote the printed `record` line in your
+final report.
+
 If the feature touches user-facing UI, insert a new top-level `## UI Preview (Requirement)` section immediately after `## User Scenarios & Testing` and before `## Functional Requirements`.
 
 The preview must be a self-contained HTML fragment with inline `style="..."` attributes only. Do not use `<style>`, `<script>`, `<link>`, remote assets, or external fonts.

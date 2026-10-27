@@ -5,8 +5,10 @@ description: "Wraps /speckit-implement to update the agent-os dashboard card"
 ## Dashboard — enter `implement`
 
 ```bash
-REPORT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/.specify/presets/progress-report/scripts/python/progress_report.py"
-python3 "$REPORT" enter implement
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+REPORT="$PROJECT_DIR/.specify/presets/progress-report/scripts/ts/progress_report.ts"
+command -v bun >/dev/null || { echo "progress-report: bun not found on PATH — install bun (https://bun.sh); the dashboard writer is TypeScript run by bun" >&2; exit 1; }
+bun "$REPORT" enter implement
 ```
 
 For a long implement phase, you may refresh the card mid-way so the dashboard's
@@ -18,9 +20,11 @@ progress lands. It's cheap and idempotent.
 ## Dashboard — `implement` done
 
 ```bash
-REPORT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/.specify/presets/progress-report/scripts/python/progress_report.py"
-python3 "$REPORT" done implement --summary "<all tasks complete / what shipped>"
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+REPORT="$PROJECT_DIR/.specify/presets/progress-report/scripts/ts/progress_report.ts"
+command -v bun >/dev/null || { echo "progress-report: bun not found on PATH — install bun (https://bun.sh); the dashboard writer is TypeScript run by bun" >&2; exit 1; }
+bun "$REPORT" done implement --summary "<all tasks complete / what shipped>"
 ```
 
 If implementation stalls on a blocker you can't clear:
-`python3 "$REPORT" block implement --reason "<reason>"`.
+`bun "$REPORT" block implement --reason "<reason>"`.

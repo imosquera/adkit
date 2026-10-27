@@ -1,1 +1,0 @@
-../../../.specify/extensions/review/.specify-dev/agent-commands/claude/speckit-review-pr/SKILL.md

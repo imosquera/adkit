@@ -15,8 +15,10 @@ disable-model-invocation: false
 ## Dashboard — enter `tasks`
 
 ```bash
-REPORT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/.specify/presets/progress-report/scripts/python/progress_report.py"
-python3 "$REPORT" enter tasks
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+REPORT="$PROJECT_DIR/.specify/presets/progress-report/scripts/ts/progress_report.ts"
+command -v bun >/dev/null || { echo "progress-report: bun not found on PATH — install bun (https://bun.sh); the dashboard writer is TypeScript run by bun" >&2; exit 1; }
+bun "$REPORT" enter tasks
 ```
 
 
@@ -88,7 +90,7 @@ You **MUST** consider the user input before proceeding (if not empty).
    - Phase 1: Setup tasks (project initialization)
    - Phase 2: Foundational tasks (blocking prerequisites for all user stories)
    - Phase 3+: One phase per user story (in priority order from spec.md)
-   - Each phase includes: story goal, independent test criteria, tests (if requested), implementation tasks
+   - Each phase includes: story goal, independent test criteria, tests, implementation tasks
    - Final Phase: Polish & cross-cutting concerns
    - All tasks must follow the strict checklist format (see Task Generation Rules below)
    - Clear file paths for each task
@@ -143,8 +145,6 @@ The tasks.md should be immediately executable - each task must be specific enoug
 
 **CRITICAL**: Tasks MUST be organized by user story to enable independent implementation and testing.
 
-**Tests are OPTIONAL**: Only generate test tasks if explicitly requested in the feature specification or if user requests TDD approach.
-
 ### Checklist Format (REQUIRED)
 
 Every task MUST strictly follow this format:
@@ -186,12 +186,12 @@ Every task MUST strictly follow this format:
      - Models needed for that story
      - Services needed for that story
      - Interfaces/UI needed for that story
-     - If tests requested: Tests specific to that story
+     - Tests specific to that story
    - Mark story dependencies (most stories should be independent)
 
 2. **From Contracts**:
    - Map each interface contract → to the user story it serves
-   - If tests requested: Each interface contract → contract test task [P] before implementation in that story's phase
+   - Each interface contract → contract test task [P] before implementation in that story's phase
 
 3. **From Data Model**:
    - Map each entity to the user story(ies) that need it
@@ -208,7 +208,7 @@ Every task MUST strictly follow this format:
 - **Phase 1**: Setup (project initialization)
 - **Phase 2**: Foundational (blocking prerequisites - MUST complete before user stories)
 - **Phase 3+**: User Stories in priority order (P1, P2, P3...)
-  - Within each story: Tests (if requested) → Models → Services → Endpoints → Integration
+  - Within each story: Tests → Models → Services → Endpoints → Integration
   - Each phase should be a complete, independently testable increment
 - **Final Phase**: Polish & Cross-Cutting Concerns
 
@@ -220,15 +220,17 @@ all `pending` since none have run yet). This same list is what `implement` will 
 to `done` task-by-task, so it's the backbone of the card's detail view:
 
 ```bash
-REPORT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/.specify/presets/progress-report/scripts/python/progress_report.py"
-python3 "$REPORT" done tasks \
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+REPORT="$PROJECT_DIR/.specify/presets/progress-report/scripts/ts/progress_report.ts"
+command -v bun >/dev/null || { echo "progress-report: bun not found on PATH — install bun (https://bun.sh); the dashboard writer is TypeScript run by bun" >&2; exit 1; }
+bun "$REPORT" done tasks \
   --summary "<N tasks generated across M workstreams>" \
   --items-json '[{"id":"T001","title":"<task text>","status":"pending"}]'
 ```
 
 Build `--items-json` from the tasks you wrote to `tasks.md` (one object per task).
 During implementation, re-send the same list with statuses flipped to `done`/`active`
-via `python3 "$REPORT" set implement --items-json '[…]'` so the card tracks progress
+via `bun "$REPORT" set implement --items-json '[…]'` so the card tracks progress
 without changing phase statuses.
 
-If task generation is blocked: `python3 "$REPORT" block tasks --reason "<reason>"`.
+If task generation is blocked: `bun "$REPORT" block tasks --reason "<reason>"`.
