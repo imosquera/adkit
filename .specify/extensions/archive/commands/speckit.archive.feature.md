@@ -20,7 +20,7 @@ The archive **can run as part of the feature's PR** — the PR does not have to 
 
 ## Execution
 
-- **Bash**: `.specify/extensions/archive/scripts/bash/archive-feature.sh [--force] [feature_slug]`
+- `bun .specify/extensions/archive/scripts/ts/archive-feature.ts [--force] [feature_slug]`
 
 When `feature_slug` is omitted, the script derives it from the current git branch. `--force` skips the unchecked-tasks gate; it does not bypass the "destination exists" or "already-archived" guards.
 

@@ -11,10 +11,23 @@ This extension provides Git operations as an optional, self-contained module. It
 - **PR creation** for completed feature branches (`--draft` for a human-review handoff:
   opens the PR as a draft and leaves the tracking issue open)
 - **`commit_exclude`** — repo-tracked generated artifacts that CI rebuilds on the
-  default branch are kept out of every auto-commit, and reset to the base branch
-  before a PR opens
+  default branch. One handler, `scrub-commit-exclude.ts`, restores those paths to
+  HEAD — unstaging, discarding tracked edits, dropping untracked output — and is
+  called by `create-pr.ts` and `clean.ts`, so the exclusion holds even where
+  `auto_commit.default` is `false` (issue #62) and no step improvises its own
+  recovery from a background rebuild's churn (issue #55). `auto-commit.ts` does
+  not scrub, so a graph rebuild survives across phases; it only holds the paths
+  out of its own commit (issue #109). A rebuild in flight is
+  waited for rather than raced. `create-pr.ts` additionally resets the paths to
+  the base branch, since the working tree says nothing about what already landed
+  in the branch's history
 - **GitHub issue sync** — when a tracking issue is linked, its body is re-rendered from `spec.md` after every `/speckit-specify` (title untouched) and its `p0`..`p3` / `bug`|`feature` triage labels are kept current; skipped cleanly when there is no linked issue
 - **Auto-commit** after core commands (configurable per-command with custom messages)
+- **Worktree dependency bootstrap**: `install-deps.ts` runs after a worktree is created
+  (best effort, always exit 0, `SPECKIT_SKIP_INSTALL=1` skips it). A directory is
+  installed only where the base checkout already installed it: `node_modules/` gets the
+  lockfile's package manager (bun, pnpm, yarn, npm), `.venv/` gets `uv sync` or
+  `poetry install`. iOS dependencies are covered too, see [iOS projects](#ios-projects)
 
 ## Commands
 
@@ -61,16 +74,42 @@ Creating an issue is the job of `speckit.git.feature`, which owns the numbering 
 
 ### Triage labels: priority and kind
 
-On both paths, `/speckit-git-issue` also keeps two triage labels current on the tracking issue: a priority (`p0`, `p1`, `p2`, `p3`) and a kind (`bug` or `feature`). They are applied by `scripts/bash/label-issue.sh`, which creates any label the repo is missing and keeps each axis exclusive (setting `p1` removes `p0`/`p2`/`p3`).
+On both paths, `/speckit-git-issue` also keeps two triage labels current on the tracking issue: a priority (`p0`, `p1`, `p2`, `p3`) and a kind (`bug` or `feature`). They are applied by `scripts/ts/label-issue.ts`, which creates any label the repo is missing and keeps each axis exclusive (setting `p1` removes `p0`/`p2`/`p3`).
 
 This is the input side of autopilot's picker: `/speckit-autopilot-run` orders its eligible backlog by priority, then bugs before features, then age. Without labels every backlog drains oldest-first, which is why a P0 filed today can otherwise sit behind a year-old chore.
 
 The command **asks** the human for a priority when there is one in the loop, leading with the value it would have inferred so accepting takes one keystroke; when nobody is there — the `after_specify` hook during an unattended autopilot run — it infers and says so instead of blocking. An existing priority set by a human is never overwritten or re-asked. Label failures are warnings, never errors: an unlabelled issue is still a working issue.
 
 ```bash
-.specify/extensions/git/scripts/bash/label-issue.sh 42 --show
-.specify/extensions/git/scripts/bash/label-issue.sh 42 --priority p1 --kind bug
+.specify/extensions/git/scripts/ts/label-issue.ts 42 --show
+.specify/extensions/git/scripts/ts/label-issue.ts 42 --priority p1 --kind bug
 ```
+
+## iOS projects
+
+The same extension serves web/Node/Python and iOS (Swift, Xcode) projects; nothing is
+configured per project kind. What it adds for iOS:
+
+- **Worktree dependencies.** `install-deps.ts` also runs `pod install` where the base
+  checkout has an uncommitted `Pods/` beside a tracked `Podfile.lock`,
+  `carthage bootstrap --use-xcframeworks` where it has an uncommitted `Carthage/Build/`
+  beside `Cartfile.resolved`, `swift package resolve` for a Swift package whose
+  `Package.resolved` is tracked (or whose base checkout has `.build/`), and
+  `xcodebuild -resolvePackageDependencies` for an app whose `.xcodeproj`/`.xcworkspace`
+  tracks a `Package.resolved` (with the workspace's shared scheme, if any). DerivedData is
+  keyed by the checkout path, so a new worktree otherwise starts with no resolved
+  packages. In one directory `pod install` runs before `xcodebuild`, and a failed step
+  stops that directory. A repo with both kinds (a React Native app) gets both: the
+  Node/Python installs run first everywhere, then the iOS steps, because a Podfile may
+  read `node_modules/`. A missing tool (`pod`, `carthage`, `swift`, `xcodebuild`) is
+  named and skipped. `Mintfile` and `Brewfile` are left alone.
+- **Build output is never committed.** Xcode build output and per-user state
+  (`DerivedData/`, `.build/`, `xcuserdata/`, `*.xcuserstate`, `*.xcresult`,
+  `Pods/`; the list is `XCODE_ARTIFACTS` in `git-common.ts`) is held out of every
+  auto-commit when untracked or newly staged, even if the project's `.gitignore` misses
+  it. Paths already committed at HEAD (a team that commits `Pods/`) are left alone.
+  `initialize-repo.ts` writes the same list into a new repo's `.gitignore`. Both apply to
+  every project and do nothing where no such paths exist.
 
 ## Configuration
 
@@ -117,7 +156,5 @@ When Git is not installed or the directory is not a Git repository:
 
 The extension bundles cross-platform scripts:
 
-- `scripts/bash/create-new-feature.sh` — Bash implementation
-- `scripts/bash/git-common.sh` — Shared Git utilities (Bash)
-- `scripts/powershell/create-new-feature.ps1` — PowerShell implementation
-- `scripts/powershell/git-common.ps1` — Shared Git utilities (PowerShell)
+- `scripts/ts/create-new-feature.ts` — implementation
+- `scripts/ts/git-common.ts` — Shared Git utilities (Bash)

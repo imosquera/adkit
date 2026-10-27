@@ -3,7 +3,7 @@ schema_version: "1.0"
 preset:
   id: "explicit-task-dependencies"
   name: "Explicit Task Dependencies"
-  version: "1.1.0"
+  version: "1.2.0"
   description: "Adds explicit (depends on T###) dependency declarations and an Execution Wave DAG to tasks.md, plus a /speckit-implement override that fans each wave's parallel-safe tasks out to subagents in one tool-call batch."
   author: "Quratulain-bilal"
   repository: "https://github.com/Quratulain-bilal/spec-kit-preset-explicit-task-dependencies"

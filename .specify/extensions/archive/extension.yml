@@ -18,8 +18,8 @@ requires:
 
 provides:
   scripts:
-    - name: archive-feature.sh
-      file: scripts/bash/archive-feature.sh
+    - name: archive-feature.ts
+      file: scripts/ts/archive-feature.ts
       executable: true
       command: speckit.archive.feature
 

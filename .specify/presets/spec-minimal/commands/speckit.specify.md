@@ -18,7 +18,7 @@ After the entire core flow above has completed and `spec.md` has been written, a
 before reporting success, run the deterministic section stripper as the final step:
 
 ```bash
-.specify/presets/spec-minimal/scripts/bash/strip-spec-sections.sh "$SPECIFY_FEATURE_DIRECTORY/spec.md"
+bun .specify/presets/spec-minimal/scripts/ts/strip-spec-sections.ts "$SPECIFY_FEATURE_DIRECTORY/spec.md"
 ```
 
 This MUST run **before any post-execution hook renders `spec.md` into a GitHub

@@ -3,11 +3,11 @@ schema_version: "1.0"
 extension:
   id: "review"
   name: "Review Extension"
-  version: "1.2.0"
-  description: "Code review extension combining a GitHub PR-oriented 4-pass review (architecture, implementation, testing/security, simplicity) with specialized post-implementation agents for code quality, comments, tests, error handling, type design, and simplification. The PR review will additionally invoke the `ponytail` skill (DietrichGebert/ponytail marketplace) when it is available locally. Use /speckit-review-run for local-changes review across all agents, or /speckit-review-pr for a synthesized review of a GitHub PR."
+  version: "2.2.0"
+  description: "Multi-agent code review with one engine for every scope — the current feature branch, the working directory, or a GitHub pull request (/speckit-review-run --pr N). Specialized agents cover code quality (incl. security and performance), architecture & API design, comments, tests, error handling, type design, and simplification; the simplify agent runs the `ponytail` review and audit skills (DietrichGebert/ponytail marketplace) when available, and the coordinator applies their behaviour-preserving cuts unless --no-fix. 2.0.0 removes /speckit-review-pr: use /speckit-review-run --pr N. 2.1.0 adds optional Jev assist (the shared jev.ts helper, @typesafe-ai/sdk installed lazily on first use) to dedupe and triage findings when TYPESAFE_API_KEY is set; SPECKIT_JEV=off disables it. 2.2.0 adds Swift/iOS projects: every agent gains a Swift/iOS subsection (crash sites, retain cycles, main-thread UI, Keychain/ATS, SwiftUI performance, accessibility, SwiftUI/MVVM/TCA boundaries, DocC, XCTest/Swift Testing, typed throws, Sendable/actor isolation), the coordinator runs xcodebuild/swift test/swiftlint gates, and Xcode churn (*.pbxproj, *.xcassets, xcuserdata, workspace plumbing, __Snapshots__ images, .DS_Store) moves from changed_files to a new ignored_files list; Package.swift stays reviewable."
   author: "beadbits"
   repository: "local"
-  license: "MIT (upstream agents) and same-as-project (pr command)"
+  license: "MIT (upstream agents) and same-as-project (arch command, PR mode)"
   homepage: "https://github.com/ismaelJimenez/spec-kit-review"
   upstream:
     source: "https://github.com/ismaelJimenez/spec-kit-review"
@@ -29,38 +29,39 @@ provides:
       required: false
 
   scripts:
-    - name: "detect-changed-files.sh"
-      file: "scripts/bash/detect-changed-files.sh"
+    - name: "detect-changed-files.ts"
+      file: "scripts/ts/detect-changed-files.ts"
       executable: true
-    - name: "detect-changed-files.ps1"
-      file: "scripts/powershell/detect-changed-files.ps1"
+    - name: "jev.ts"
+      file: "scripts/ts/jev.ts"
+      command: "speckit.review.run"
       executable: true
 
   commands:
     - name: "speckit.review.run"
       file: "commands/run.md"
-      description: "Comprehensive code review using specialized agents (coordinator)"
+      description: "Comprehensive code review using specialized agents (coordinator) — local changes or a GitHub PR (--pr N)"
+    - name: "speckit.review.arch"
+      file: "commands/arch.md"
+      description: "Architecture & API design review — public interfaces, exported types, contract and backward-compatibility changes, consistency with existing patterns; Swift/iOS: SwiftUI/MVVM/TCA boundaries, @Observable ownership, DI, package boundaries"
     - name: "speckit.review.code"
       file: "commands/code.md"
-      description: "General code quality review — project guideline compliance, bug detection, code quality"
+      description: "General code quality review — project guideline compliance, bug detection, security, performance; Swift/iOS: crash sites, retain cycles, main-thread UI, Keychain/ATS, SwiftUI performance, accessibility"
     - name: "speckit.review.comments"
       file: "commands/comments.md"
-      description: "Code comment accuracy verification, documentation completeness, comment rot detection"
+      description: "Code comment accuracy verification, documentation completeness, comment rot detection (incl. DocC ///)"
     - name: "speckit.review.tests"
       file: "commands/tests.md"
-      description: "Test coverage quality analysis — behavioral coverage, critical gap identification, test resilience evaluation"
+      description: "Test coverage quality analysis — behavioral coverage, critical gap identification, test resilience evaluation (incl. XCTest/Swift Testing, async, UI and snapshot tests)"
     - name: "speckit.review.errors"
       file: "commands/errors.md"
-      description: "Error handling review — silent failure detection, catch block analysis, error logging"
+      description: "Error handling review — silent failure detection, catch block analysis, error logging (incl. Swift throws/typed throws, swallowed try?)"
     - name: "speckit.review.types"
       file: "commands/types.md"
-      description: "Type design analysis — encapsulation, invariant expression, usefulness, and enforcement"
+      description: "Type design analysis — encapsulation, invariant expression, usefulness, and enforcement (incl. Swift value vs reference, Sendable, actor isolation)"
     - name: "speckit.review.simplify"
       file: "commands/simplify.md"
-      description: "Code simplification suggestions — clarity, unnecessary complexity, redundant abstractions"
-    - name: "speckit.review.pr"
-      file: "commands/pr.md"
-      description: "Four-pass PR code review (architecture, implementation, testing/security, simplicity) against a GitHub PR via gh"
+      description: "Code simplification suggestions — clarity, unnecessary complexity, redundant abstractions, ponytail review + audit"
 
 hooks:
   after_implement:
@@ -77,10 +78,13 @@ tags:
   - "testing"
   - "error-handling"
   - "github"
+  - "swift"
+  - "ios"
 
 defaults:
   agents:
     code: true
+    arch: true
     comments: true
     tests: true
     errors: true

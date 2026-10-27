@@ -1,5 +1,5 @@
 ---
-description: "Run ponytail and caveman skills before /speckit-implement"
+description: "Run the ponytail skill before /speckit-implement"
 strategy: "wrap"
 ---
 
@@ -17,23 +17,26 @@ $ARGUMENTS
 
 You **MUST** consider the user input before proceeding (if not empty).
 
-### Prelude — activate review/lens skills (MANDATORY — FIRST STEP)
+### Prelude — activate implementation-discipline skills (MANDATORY — FIRST STEP)
 
 Before the core flow below begins, check the host's available-skills list and
-invoke each of the following via the Skill tool if listed:
+invoke the following via the Skill tool if listed:
 
 - `ponytail:ponytail`
-- `caveman`
 
-Invoke them sequentially (ponytail first, then caveman). Treat any guidance,
-constraints, or context produced by these skills as additional input that the
-implementation must respect.
+Treat any guidance, constraints, or context it produces as additional input that
+the implementation must respect.
+
+The prelude carries **implementation-discipline** skills only — skills that change
+what gets built. A skill that governs prose register or output verbosity does not
+belong here: an implement phase whose output is an audit record (e.g. an
+unattended `/speckit-autopilot-run` posting phase comments to an issue) must stay
+legible, so compressing the record is the opposite of what this preset is for.
 
 **Detection rules.**
 
 - Only invoke a skill if it is explicitly listed as an available/user-invocable skill in this session. Do **not** guess names or attempt to install skills.
-- If a skill is not available, skip it silently and continue. Missing skills are a no-op, not an error.
-- If neither skill is available, proceed directly to the core flow without comment.
+- If the skill is not available, skip it silently and proceed directly to the core flow without comment. A missing skill is a no-op, not an error.
 
 ### Core Flow
 

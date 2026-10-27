@@ -18,9 +18,178 @@ Before the core flow, mark this phase active on the branch-status card. This is 
 no-op when the dashboard repo isn't present, so it never blocks the run:
 
 ```bash
-REPORT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/.specify/presets/progress-report/scripts/python/progress_report.py"
-python3 "$REPORT" enter specify
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+REPORT="$PROJECT_DIR/.specify/presets/progress-report/scripts/ts/progress_report.ts"
+command -v bun >/dev/null || { echo "progress-report: bun not found on PATH — install bun (https://bun.sh); the dashboard writer is TypeScript run by bun" >&2; exit 1; }
+bun "$REPORT" enter specify
 ```
+
+
+## Wrapper Layer
+
+This preset wraps the stock `/speckit-specify` command. Keep the stock workflow
+for branch/worktree setup, feature directory creation, template loading,
+checklist generation, hooks, and reporting.
+
+This layer makes the feature's **actions** a requirement. Which control is the
+next step, what it says, and what it costs to click it wrongly are product
+decisions. Left to implementation they get made by whoever writes the markup,
+one screen at a time, and the result is three competing primaries and a
+`Submit` on the delete dialog.
+
+### Platform Scope
+
+This layer covers **web / browser screens only** (the TypeScript side). If the
+project also installs `button-design-ios`, native app screens belong to its
+`## iOS Actions & Buttons` section; never list them here. When the feature's
+UI is only on the iOS side, write `None — no user-facing web UI.` under
+`## Actions & Buttons`.
+
+### Button Rules (MANDATORY)
+
+Apply these to every user-facing action the feature adds or changes:
+
+1. **Buttons do something; links go somewhere.** Submitting, starting a
+   process, opening a modal → `button`. Navigating to a page or section →
+   `link`. Never style or specify one as the other.
+2. **One primary per screen.** Exactly one action is the next best step and
+   gets visual priority. Everything else is `secondary` (outlined/neutral) or
+   `tertiary` (text-weight). A modal is its own screen.
+3. **Labels are 1–3 words, verb first, and say what happens next.**
+   `Download Report`, not `Submit`/`OK`/`Yes`/`Confirm`/`Click here`. If a label
+   would make sense on any screen of the product, it is too generic.
+4. **Match the moment.** On the step that completes the task, the label names
+   the completion (`Download Report`), not the flow (`Next`).
+5. **Destructive actions name their consequence and carry a safeguard.**
+   `Delete Account`, `Cancel My Subscription`, `Remove File Permanently` —
+   never a bare `Delete`. Each one gets a confirm dialog, a type-to-confirm
+   step for the unrecoverable ones, or an undo.
+6. **Speak the user's language.** No internal feature names or jargon in a
+   label; use the verb a user would say out loud.
+
+### Required Section (MANDATORY)
+
+`spec.md` MUST carry an `## Actions & Buttons` section, placed after
+`## User Scenarios & Testing`. The `git` extension renders it into the tracking
+issue, and `/speckit-plan` is held to it.
+
+```markdown
+## Actions & Buttons
+
+| Screen | Label | Kind | Role | Safeguard |
+|---|---|---|---|---|
+| Export dialog | Download Report | button | primary | — |
+| Export dialog | Cancel | button | secondary | — |
+| Settings | Save Changes | button | primary | — |
+| Settings | Delete Account | button | secondary | type-to-confirm |
+| Delete dialog | Delete Account | button | primary | confirm dialog |
+| Delete dialog | Keep Account | button | secondary | — |
+| Settings | Privacy policy | link | — | — |
+```
+
+- **Kind** is `button` or `link`. **Role** is `primary`, `secondary`, or
+  `tertiary` for a button, and `—` for a link.
+- **Safeguard** is `—` for a non-destructive action. For a destructive one it
+  names the mechanism: `confirm dialog`, `type-to-confirm`, or `undo`.
+- The label is the exact copy the user will read.
+- If the feature has **no user-facing web UI**, write
+  `None — no user-facing web UI.` under the heading. Do not omit the heading: an absent section and a
+  deliberate "none" must read differently.
+
+If the `spec-ui-preview` preset is also installed, its preview must show the
+same hierarchy: one filled primary per screen, secondaries outlined or neutral,
+links as underlined text with no container, and destructive actions in the
+danger color.
+
+### Core Flow
+
+
+## Wrapper Layer
+
+This preset wraps the stock `/speckit-specify` command. Keep the stock workflow
+for branch/worktree setup, feature directory creation, template loading,
+checklist generation, hooks, and reporting.
+
+This layer adds a **minimum-diff mandate**. A short spec and a small change are
+different things, and the second is the expensive one: a spec that faithfully
+restates an issue's seven-file wish list produces a seven-file diff even when
+three of those files had no reason to be touched, because nothing in the
+pipeline ever asked whether the change actually needed them.
+
+### Minimum-Diff Mandate (MANDATORY)
+
+Before writing the spec, **re-derive every file path and precondition the issue
+asserts against current `main`**. Stale references are the norm, not the
+exception, and a correction is cheaper than a wrong spec.
+
+Then specify the smallest change that satisfies the requirements:
+
+- **Prefer extending a file that already exists over adding one.** A new module,
+  a new route file, a new registration seam, or a new config entry each needs a
+  reason stated in the spec — "it is tidier" is not one.
+- **Every file the issue names is a hypothesis, not a requirement.** Drop the
+  ones the change does not actually need — an index for a query the database
+  already serves; a security rule nothing evaluates; a Terraform apply behind it
+  — and record why in `## Corrections to the issue as filed`.
+- **Reuse the existing shape**: the payload builder, the ownership check, the
+  error discriminant, the test helper. A second way to do something the codebase
+  already does is a DRY violation, not a design choice.
+- **No drive-by refactors**, no renames, no formatting churn, no "while I was in
+  here". If a cleanup is genuinely warranted, it is a separate issue.
+- **Success looks like a diff a reviewer can read in one sitting.**
+
+**This is a mandate for the smallest change, not a mandate for small changes.**
+A migration, a rename, a framework upgrade, or a schema change legitimately
+touches many files, and holding one of those to a small diff would be the
+failure, not the discipline. When the change is inherently wide, say so:
+add a `**Scope justification:**` line to `## Scope discipline` naming what makes
+the breadth intrinsic. What is never acceptable is breadth nobody accounted for.
+
+If implementation later shows an excluded file is genuinely required, that is a
+**spec change recorded on the issue** — never a quiet edit.
+
+### Required Sections (MANDATORY)
+
+`spec.md` MUST carry these two sections. They are checked deterministically
+after the core flow, and they exist so that later phases can be held to them:
+the `git` extension renders whatever sections the spec contains into the
+tracking issue, so both survive into the issue body, and `## Scope discipline`
+has a known heading that `/speckit-plan` and the review passes can parse.
+
+```markdown
+## Corrections to the issue as filed
+
+- `path/from/the/issue` — dropped: the query is a single equality filter the
+  database already indexes, so no composite index is needed.
+- The issue says the read happens in the client; it runs in a Cloud Function on
+  the Admin SDK.
+
+## Scope discipline
+
+**MUST NOT touch:**
+
+- `firestore.rules` — the read runs on the Admin SDK, which never consults rules
+- `infra/**` — a rules change would pull a Terraform apply in behind it
+- `src/legacy/**` — unrelated layer
+
+**Scope justification:** <only when the change is inherently wide — what makes
+the breadth intrinsic>
+```
+
+Rules for both sections:
+
+- Each `MUST NOT touch:` entry is a bullet whose path or glob is in **backticks**.
+  `**` spans directory separators, a single `*` does not, and a trailing `/`
+  means the directory and everything under it.
+- Give a short reason per entry. The reason is what stops a later phase from
+  overturning the exclusion by guessing.
+- If the issue was right in every particular, write `None.` under
+  `## Corrections to the issue as filed` rather than inventing a correction.
+- If nothing needs holding out, write `None.` under `## Scope discipline` — an
+  empty heading is worse than no heading, because later phases would be held to
+  nothing while appearing to be held to something.
+
+### Core Flow
 
 
 ## Wrapper Layer
@@ -392,6 +561,18 @@ core flow's post-execution hooks have not yet fired when you reach this point,
 insert the preview first and then fire them. If a hook already published an issue
 body without the preview, re-run that hook afterward.
 
+First, ask Jev whether the spec touches UI:
+
+```bash
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+bun "$PROJECT_DIR/.specify/presets/spec-ui-preview/scripts/ts/jev.ts" applies-ui --spec "$SPECIFY_FEATURE_DIRECTORY/spec.md"
+```
+
+Exit 0 with `decision: "skip"` → add nothing (see the last paragraph). Exit 0
+with `"applies"` → insert the preview. Exit 3 (or any other exit) → decide from
+the spec yourself, as without Jev. Quote the printed `record` line in your
+final report.
+
 If the feature touches user-facing UI, insert a new top-level `## UI Preview (Requirement)` section immediately after `## User Scenarios & Testing` and before `## Functional Requirements`.
 
 The preview must be a self-contained HTML fragment with inline `style="..."` attributes only. Do not use `<style>`, `<script>`, `<link>`, remote assets, or external fonts.
@@ -429,7 +610,7 @@ After the entire core flow above has completed and `spec.md` has been written, a
 before reporting success, run the deterministic section stripper as the final step:
 
 ```bash
-.specify/presets/spec-minimal/scripts/bash/strip-spec-sections.sh "$SPECIFY_FEATURE_DIRECTORY/spec.md"
+bun .specify/presets/spec-minimal/scripts/ts/strip-spec-sections.ts "$SPECIFY_FEATURE_DIRECTORY/spec.md"
 ```
 
 This MUST run **before any post-execution hook renders `spec.md` into a GitHub
@@ -444,6 +625,72 @@ Criteria` idempotently — it is safe to run repeatedly. It leaves every other
 section untouched.
 
 
+### Post-Flight Check (MANDATORY — LAST STEP)
+
+After the entire core flow above has completed and `spec.md` has been written,
+and before reporting success, verify the two sections:
+
+```bash
+bun .specify/presets/diff-minimal/scripts/ts/check-scope-sections.ts "$SPECIFY_FEATURE_DIRECTORY/spec.md"
+```
+
+This MUST run **before any post-execution hook renders `spec.md` into a GitHub
+issue**, so the issue body carries both sections. If a hook has already
+published a body from a spec that failed this check, fix the spec and re-run
+that hook.
+
+The check is read-only — it never edits the spec. Handle the exit code:
+
+- **`0`** — both sections are present and populated. Report success.
+- **`1`** — read the stderr: it names the missing or empty section and shows the
+  expected shape. **Write the missing content into `spec.md` yourself** — do not
+  ask the user to, and do not report success — then re-run the check.
+- **`2`** — bad usage: the invocation above is wrong. Fix the call and re-run.
+
+
+### Applicability Gate (after `spec.md` is written)
+
+Before writing `## Actions & Buttons`, ask Jev whether the spec touches UI:
+
+```bash
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+bun "$PROJECT_DIR/.specify/presets/button-design/scripts/ts/jev.ts" applies-ui --spec "$SPECIFY_FEATURE_DIRECTORY/spec.md"
+```
+
+- **exit 0, `decision: "skip"`**: write only `None — no user-facing web UI.`
+  under `## Actions & Buttons`, then run the post-flight check.
+- **exit 0, `decision: "applies"`**: apply the rules above and write the table.
+  The gate asks about UI in general: if all of it is native iOS UI, still
+  write `None — no user-facing web UI.`
+- **exit 3** (or any other exit): decide from the spec yourself, as without Jev.
+
+Quote the printed `record` line in your final report.
+
+### Post-Flight Check (MANDATORY — LAST STEP)
+
+After the entire core flow above has completed and `spec.md` has been written,
+and before reporting success:
+
+```bash
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+bun "$PROJECT_DIR/.specify/presets/button-design/scripts/ts/check-buttons.ts" spec "$SPECIFY_FEATURE_DIRECTORY/spec.md"
+```
+
+This MUST run **before any post-execution hook renders `spec.md` into a GitHub
+issue**, so the issue body carries a section that passed. If a hook already
+published a body from a failing spec, fix the spec and re-run that hook.
+
+The check is read-only. Handle the exit code:
+
+- **`0`**: the table follows the rules, or the section says `None.`. Notes on
+  stdout (e.g. a screen with buttons but no primary) are advisory. Report
+  success.
+- **`1`**: stderr names each violating row and rule. **Fix `spec.md`
+  yourself.** Rewrite the label, demote the extra primary, or add the
+  safeguard. Then re-run. Do not report success while it fails.
+- **`2`**: bad usage. Fix the call and re-run.
+
+
 ## Dashboard — `specify` done
 
 After the spec is written, mark it done with a one-line summary **and** attach the
@@ -453,8 +700,10 @@ worth grounding them in the actual spec. `--items-json` takes a JSON array of
 `{id, title, status}` objects (id like `US1`; status `done|active|pending|blocked`):
 
 ```bash
-REPORT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/.specify/presets/progress-report/scripts/python/progress_report.py"
-python3 "$REPORT" done specify \
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+REPORT="$PROJECT_DIR/.specify/presets/progress-report/scripts/ts/progress_report.ts"
+command -v bun >/dev/null || { echo "progress-report: bun not found on PATH — install bun (https://bun.sh); the dashboard writer is TypeScript run by bun" >&2; exit 1; }
+bun "$REPORT" done specify \
   --summary "<N requirements captured, M clarifications resolved>" \
   --description "<one-paragraph shape of the feature, optional>" \
   --items-json '[{"id":"US1","title":"As a <role>, I can <capability>","status":"done"}]'
@@ -464,4 +713,4 @@ Build the `--items-json` array from the user stories you actually wrote to `spec
 (one object per story). Omit `--items-json` if the spec has no discrete stories.
 
 If specify can't complete (e.g. an irreducibly ambiguous ask), mark the blocker
-instead so the card shows why: `python3 "$REPORT" block specify --reason "<reason>"`.
+instead so the card shows why: `bun "$REPORT" block specify --reason "<reason>"`.

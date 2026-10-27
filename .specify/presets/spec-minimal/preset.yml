@@ -14,16 +14,16 @@ requires:
 
 provides:
   scripts:
-    - name: "strip-spec-sections.sh"
-      file: "scripts/bash/strip-spec-sections.sh"
+    - name: "strip-spec-sections.ts"
+      file: "scripts/ts/strip-spec-sections.ts"
       executable: true
       command: "speckit.specify"
-    - name: "enforce-minimal-tree.sh"
-      file: "scripts/bash/enforce-minimal-tree.sh"
+    - name: "enforce-minimal-tree.ts"
+      file: "scripts/ts/enforce-minimal-tree.ts"
       executable: true
       command: "speckit.plan"
-    - name: "selftest-enforce-minimal-tree.sh"
-      file: "scripts/bash/selftest-enforce-minimal-tree.sh"
+    - name: "selftest-enforce-minimal-tree.ts"
+      file: "scripts/ts/selftest-enforce-minimal-tree.ts"
       executable: true
 
   templates:

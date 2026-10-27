@@ -10,6 +10,7 @@
 # speckit.review.errors) always run regardless of this setting.
 agents:
   code: true
+  arch: true
   comments: true
   tests: true
   errors: true

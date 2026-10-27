@@ -14,7 +14,7 @@ When numbering is sequential, the script:
 
 1. Creates a stub GitHub issue *before* numbering the branch.
 2. Uses the issue number as `FEATURE_NUM` so the spec dir, branch, and issue all share the same identifier (e.g. `specs/008-user-auth/`, branch `008-user-auth`, issue `#8`).
-3. After the branch + worktree are materialised, prefixes the issue title with `NNN: ` and writes `source_issue` into the new worktree's `.specify/feature.json` so `/speckit-git-pr`, `/speckit-git-commit`, `/speckit-archive-feature`, and `/speckit-git-clean` automatically pick up the linked issue. That is the file's only field and it is gitignored. When a run creates no issue, an *inherited* (still-tracked) file is removed so the previous feature's issue can't leak forward, while a file this worktree already owns is preserved — so re-running against an existing branch keeps its linkage. Everything else about the feature is derived from git at read time (issue #33).
+3. After the branch + worktree are materialised, prefixes the issue title with `NNN: ` and writes `source_issue` into the new worktree's `.specify/feature.json` so `/speckit-git-pr`, `/speckit-git-commit`, `/speckit-archive-feature`, and `/speckit-git-clean` automatically pick up the linked issue. The file is gitignored per-worktree state; besides `source_issue` it carries only a `feature_directory` written for core Spec Kit's own `get_feature_paths()`, which none of our tooling reads. When a run creates no issue, an *inherited* (still-tracked) file is removed so the previous feature's issue can't leak forward, while a file this worktree already owns is preserved — so re-running against an existing branch keeps its linkage. Everything else about the feature is derived from git at read time (issue #33).
 
 If the issue's number ends up below the next free spec number (e.g. issue #5 created while `specs/008-*` already exists), the branch is still numbered using the next free spec number and the issue title is updated to match — so the alignment stays visible.
 
@@ -35,7 +35,7 @@ Pass `--source-issue N` when the tracking issue was filed by a human (or by anot
 tool) and this run must bind to it rather than open a duplicate. The script then:
 
 - skips `gh issue create` entirely,
-- writes `{"source_issue": N}` into the new worktree's gitignored `.specify/feature.json` itself,
+- writes the `source_issue` linkage into the new worktree's gitignored `.specify/feature.json` itself,
 - numbers the branch from `N` (subject to the same next-free-slot guard) unless
   `GIT_BRANCH_NAME`, `--number`, or `--timestamp` already fixes the name,
 - leaves the issue **title alone** — the `NNN: ` prefix is only applied to stub
@@ -50,7 +50,7 @@ forgetting to left downstream commands pointed at the previous feature's issue
 
 ```bash
 GIT_BRANCH_NAME="090-automatic-arrival" \
-  .specify/extensions/git/scripts/bash/create-new-feature.sh \
+  bun .specify/extensions/git/scripts/ts/create-new-feature.ts \
     --json --source-issue 90 --short-name "automatic-arrival" "Automatic arrival detection"
 ```
 
@@ -78,8 +78,7 @@ Generate a concise short name (2-4 words) for the branch — this is the **only*
 
 Then run the script exactly once, passing the short name and the feature description:
 
-- **Bash**: `.specify/extensions/git/scripts/bash/create-new-feature.sh --json --short-name "<short-name>" "<feature description>"`
-- **PowerShell**: `.specify/extensions/git/scripts/powershell/create-new-feature.ps1 -Json -ShortName "<short-name>" "<feature description>"`
+- **Bash**: `bun .specify/extensions/git/scripts/ts/create-new-feature.ts --json --short-name "<short-name>" "<feature description>"`
 
 Everything deterministic is handled by the script:
 - Detecting whether the working directory is a git repo (warns and skips branch creation if not)
@@ -89,7 +88,7 @@ Everything deterministic is handled by the script:
 
 **IMPORTANT**:
 - Do NOT pass `--number` — the script determines the correct next number automatically
-- Always include the JSON flag (`--json` for Bash, `-Json` for PowerShell) so the output can be parsed reliably
+- Always include `--json` so the output can be parsed reliably
 - You must only ever run this script once per feature
 - The JSON output will contain `BRANCH_NAME` and `FEATURE_NUM` (and `SOURCE_ISSUE` / `ISSUE_URL` when an issue was created)
 
@@ -99,5 +98,5 @@ The script outputs JSON with:
 - `BRANCH_NAME`: The branch name (e.g., `003-user-auth` or `20260319-143022-user-auth`)
 - `FEATURE_NUM`: The numeric or timestamp prefix used
 - `WORKTREE_PATH`: The absolute path of the materialised feature worktree
-- `SOURCE_ISSUE` (when an issue was created): The numeric GitHub issue id (also the sole contents of the worktree's `.specify/feature.json`)
+- `SOURCE_ISSUE` (when an issue was created): The numeric GitHub issue id (also written as `source_issue` in the worktree's `.specify/feature.json`)
 - `ISSUE_URL` (when an issue was created): The full URL of the tracking issue
