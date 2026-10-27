@@ -5,8 +5,8 @@ import { enums } from "google-ads-api";
  * string name (EXACT / PHRASE / BROAD / UNSPECIFIED / UNKNOWN).
  *
  * The SDK returns the RAW NUMERIC enum (e.g. 3) for `match_type` on
- * `ad_group_criterion` / `campaign_criterion` rows — NOT the string name — even
- * though some sibling fields (e.g. `campaign.status`) arrive pre-decoded. The
+ * `ad_group_criterion` / `campaign_criterion` rows — NOT the string name — as it
+ * does for `campaign.status` / `ad_group.status` (decoded via `enumName`). The
  * plan side always speaks the string form, so live rows must be decoded to it
  * before their identity keys can match.
  *

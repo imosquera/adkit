@@ -575,28 +575,48 @@ export const ImageRefSchema = z
   .transform((v) => (v.startsWith("gs://") ? `https://storage.googleapis.com/${v.slice("gs://".length)}` : v))
   .pipe(httpsUrl);
 
+// Google's image and logo caps are COMBINED across both shapes (landscape + square), not
+// per shape — a 10 + 10 ad is rejected with collection_size_error TOO_MANY, after its
+// images were already uploaded. Enforced in the superRefine below (#84).
 export const MAX_RDA_IMAGES = 15;
 export const MAX_RDA_LOGOS = 5;
 export const MAX_RDA_TEXTS = 5;
 
 export const ResponsiveDisplayAdSchema = z
   .object({
-    marketingImages: z.array(ImageRefSchema).min(1).max(MAX_RDA_IMAGES), // landscape 1.91:1
-    squareMarketingImages: z.array(ImageRefSchema).min(1).max(MAX_RDA_IMAGES), // 1:1
-    logoImages: z.array(ImageRefSchema).max(MAX_RDA_LOGOS).default([]), // 4:1
+    marketingImages: z.array(ImageRefSchema).min(1), // landscape 1.91:1
+    squareMarketingImages: z.array(ImageRefSchema).min(1), // 1:1
+    logoImages: z.array(ImageRefSchema).default([]), // 4:1
     // 1:1. Required: the ad's logo, which Display shows alongside its business name. Display
     // campaigns don't take BUSINESS_NAME / BUSINESS_LOGO brand assets; the RDA carries both.
     squareLogoImages: z
       .array(ImageRefSchema)
-      .nonempty({ message: "list at least one square (1:1) logo — the ad's logo, which Display shows alongside the business name" })
-      .max(MAX_RDA_LOGOS),
+      .nonempty({ message: "list at least one square (1:1) logo — the ad's logo, which Display shows alongside the business name" }),
     headlines: z.array(HeadlineSchema).min(1).max(MAX_RDA_TEXTS),
     longHeadline: DescriptionSchema,
     descriptions: z.array(DescriptionSchema).min(1).max(MAX_RDA_TEXTS),
     businessName: z.string().min(1).max(25),
     finalUrl: httpsUrl,
   })
-  .strict();
+  .strict()
+  .superRefine((ad, ctx) => {
+    const images = ad.marketingImages.length + ad.squareMarketingImages.length;
+    if (images > MAX_RDA_IMAGES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["marketingImages"],
+        message: `marketingImages + squareMarketingImages: at most ${MAX_RDA_IMAGES} combined (Google's limit), got ${images}`,
+      });
+    }
+    const logos = ad.logoImages.length + ad.squareLogoImages.length;
+    if (logos > MAX_RDA_LOGOS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["logoImages"],
+        message: `logoImages + squareLogoImages: at most ${MAX_RDA_LOGOS} combined (Google's limit), got ${logos}`,
+      });
+    }
+  });
 export type ResponsiveDisplayAd = z.infer<typeof ResponsiveDisplayAdSchema>;
 
 /** A numeric Google Ads id (the trailing segment of a resource name). */

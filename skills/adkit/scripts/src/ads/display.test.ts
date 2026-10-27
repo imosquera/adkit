@@ -79,6 +79,35 @@ describe("display brief parsing", () => {
     expect(() => withLogos([])).toThrow(/square \(1:1\) logo/);
     expect(() => withLogos(undefined)).toThrow();
   });
+
+  // Google caps images and logos across BOTH shapes, not per shape (#84): a 10 + 10 ad
+  // passed the dry run, uploaded its images, then failed with collection_size_error TOO_MANY.
+  describe("combined image and logo caps (#84)", () => {
+    const ad = () => displayBrief().adGroups[0]!.responsiveDisplayAds[0]!;
+    const withAd = (patch: Record<string, unknown>) =>
+      displayBrief({ adGroups: [{ ...displayBrief().adGroups[0], responsiveDisplayAds: [{ ...ad(), ...patch }] }] });
+    const imgs = (n: number) => Array.from({ length: n }, (_, i) => `gs://adkit-images/ads/${i}.png`);
+
+    it("rejects 10 landscape + 10 square marketing images (15 combined)", () => {
+      expect(() => withAd({ marketingImages: imgs(10), squareMarketingImages: imgs(10) })).toThrow(
+        /marketingImages \+ squareMarketingImages: at most 15 combined.*got 20/,
+      );
+    });
+
+    it("accepts exactly 15 marketing images across both shapes", () => {
+      expect(() => withAd({ marketingImages: imgs(8), squareMarketingImages: imgs(7) })).not.toThrow();
+    });
+
+    it("rejects 3 landscape + 3 square logos (5 combined)", () => {
+      expect(() => withAd({ logoImages: imgs(3), squareLogoImages: imgs(3) })).toThrow(
+        /logoImages \+ squareLogoImages: at most 5 combined.*got 6/,
+      );
+    });
+
+    it("accepts exactly 5 logos across both shapes", () => {
+      expect(() => withAd({ logoImages: imgs(2), squareLogoImages: imgs(3) })).not.toThrow();
+    });
+  });
 });
 
 describe("image checks", () => {

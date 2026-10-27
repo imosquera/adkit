@@ -139,6 +139,7 @@ import {
   negKey,
   newNegatives,
   newPositiveKeywords,
+  normalizePlanIds,
   posKey,
   searchPartnersPlan,
   validate,
@@ -163,16 +164,16 @@ import {
   applySearchPartnersQuery,
 } from "../gaql/builders.js";
 import { enums } from "google-ads-api";
-import { matchTypeName } from "../ads/enums.js";
+import { enumName, matchTypeName } from "../ads/enums.js";
 import type { AdsClient, AdsMutateOperation } from "../lib/auth.js";
 import { loadClient } from "../lib/auth.js";
 
 // ---------------------------------------------------------------------------
 // SDK row shapes — only the fields this shell reads. google-ads-api returns
-// nested snake_case records and micros as numbers. Enum fields are NOT uniform:
-// some (e.g. `campaign.status`) arrive as their STRING name, but keyword
-// `match_type` arrives as the RAW NUMERIC enum (e.g. 3). It is typed
-// `string | number` here and decoded via `matchTypeName` at the read site.
+// nested snake_case records and micros as numbers. Enum fields (keyword
+// `match_type`, `campaign.status`, `ad_group.status`, `ad_group_ad.status`) can
+// arrive as the RAW NUMERIC enum (e.g. 2 for ENABLED) rather than the string name.
+// They are typed `string | number` here and decoded to the name at the read site.
 // ---------------------------------------------------------------------------
 
 interface NegativeRow {
@@ -181,16 +182,16 @@ interface NegativeRow {
 }
 
 interface CampaignStatusRow {
-  campaign: { id: number; status: string };
+  campaign: { id: number; status: string | number };
 }
 
 interface AdGroupStatusRow {
-  ad_group: { id: number; status: string };
+  ad_group: { id: number; status: string | number };
 }
 
 interface AdStatusRow {
   ad_group: { id: number };
-  // ad_group_ad.status arrives as the raw numeric enum (decoded via adGroupAdStatusName).
+  // ad_group_ad.status arrives as the raw numeric enum (decoded via enumName).
   ad_group_ad: { ad: { id: number }; status: string | number };
 }
 
@@ -313,7 +314,10 @@ export async function liveCampaignStatuses(
     return new Map();
   }
   const rows = await client.searchStructured<CampaignStatusRow>(customerId, applyCampaignStatusesQuery(campaignIds));
-  return rows.reduce((acc, r) => acc.set(r.campaign.id, r.campaign.status), new Map<number, string>());
+  return rows.reduce(
+    (acc, r) => acc.set(r.campaign.id, enumName(enums.CampaignStatus, r.campaign.status) ?? "UNKNOWN"),
+    new Map<number, string>(),
+  );
 }
 
 /** adGroupId -> current ad_group.status name, so a no-op flip can be skipped. */
@@ -326,7 +330,10 @@ export async function liveAdGroupStatuses(
     return new Map();
   }
   const rows = await client.searchStructured<AdGroupStatusRow>(customerId, applyAdGroupStatusesQuery(adGroupIds));
-  return rows.reduce((acc, r) => acc.set(r.ad_group.id, r.ad_group.status), new Map<number, string>());
+  return rows.reduce(
+    (acc, r) => acc.set(r.ad_group.id, enumName(enums.AdGroupStatus, r.ad_group.status) ?? "UNKNOWN"),
+    new Map<number, string>(),
+  );
 }
 
 /**
@@ -345,21 +352,12 @@ export async function liveAdStatuses(
   const rows = await client.search<AdStatusRow>(customerId, applyAdStatusesQuery(adIds));
   return rows.reduce(
     (acc, r) => {
-      acc.status.set(r.ad_group_ad.ad.id, adGroupAdStatusName(r.ad_group_ad.status));
+      acc.status.set(r.ad_group_ad.ad.id, enumName(enums.AdGroupAdStatus, r.ad_group_ad.status) ?? "UNKNOWN");
       acc.adGroup.set(r.ad_group_ad.ad.id, r.ad_group.id);
       return acc;
     },
     { status: new Map<number, string>(), adGroup: new Map<number, number>() },
   );
-}
-
-/**
- * ad_group_ad.status arrives as the RAW NUMERIC enum (e.g. 3), unlike campaign.status
- * and ad_group.status which arrive as their string name. Decode to the name so the
- * idempotent no-op skip in adStatusPlan compares like-for-like ("ENABLED"/"PAUSED").
- */
-function adGroupAdStatusName(status: string | number): string {
-  return typeof status === "number" ? (enums.AdGroupAdStatus[status] ?? String(status)) : status;
 }
 
 /**
@@ -635,10 +633,12 @@ export interface FixesPlan extends Record<string, unknown> {
  * plan is authored in YAML (the format `/adkit create` and `adbriefs/<slug>.yaml`
  * use); JSON is a subset of YAML, so a legacy `.json` plan parses through this same
  * front door with no second parser. `validate` (zod) remains the sole authority on
- * shape — this only turns text into an object.
+ * shape — this only turns text into an object, then gives every block id one type
+ * (`normalizePlanIds`) so a quoted and an unquoted id mean the same thing downstream.
  */
 export function loadPlan(path: string): FixesPlan {
-  return yamlParse(readFileSync(path, "utf8")) as FixesPlan;
+  // parse-dont-validate: allow PDV004 (plan front door; `validate` is the shape authority)
+  return normalizePlanIds(yamlParse(readFileSync(path, "utf8"))) as FixesPlan;
 }
 
 /** A plan section as a typed array (empty when absent). */
