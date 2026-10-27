@@ -200,6 +200,8 @@ Images live in the shared GCS bucket (upload with `/imager mj-generate --dest �
 | `logoImages` | 4:1 (e.g. 1200x300) | 512x128 | 0–5 |
 | `squareLogoImages` | 1:1 | 128x128 | 1–5 (required: the ad's logo) |
 
+The counts are also capped **combined across both shapes**, as Google enforces them: at most **15 marketing images** (`marketingImages` + `squareMarketingImages`) and at most **5 logos** (`logoImages` + `squareLogoImages`) per ad. A 10 + 10 ad fails the dry run instead of uploading its images and then being rejected.
+
 PNG, JPEG or GIF, ≤5 MB, 1% ratio tolerance.
 
 ```yaml

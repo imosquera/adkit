@@ -11,6 +11,7 @@ import {
   negKey,
   newNegatives,
   newPositiveKeywords,
+  normalizePlanIds,
   posKey,
   searchPartnersPlan,
   validate,
@@ -362,6 +363,59 @@ describe("budget guardrail", () => {
     expect(bad.some((e) => e.includes("positive int"))).toBe(true);
     const missing = validate({ budgets: [{ campaignId: 7, dailyMicros: 1_000_000 }] }, {}, BUDGETS);
     expect(missing.some((e) => e.includes("no current budget"))).toBe(true);
+  });
+});
+
+// ---------- plan id normalization (#84) ----------
+
+describe("normalizePlanIds", () => {
+  it("turns quoted canonical ids into numbers in every section", () => {
+    const plan = normalizePlanIds({
+      customerId: "1111111111",
+      budgets: [{ campaignId: "24362682893", dailyMicros: 30_000_000 }],
+      adGroupStatus: [{ adGroupId: "201266414556", status: "ENABLED" }],
+      adStatus: [{ adId: "123", status: "ENABLED" }],
+      keywords: [{ adGroupId: 789, add: ["x"] }],
+    });
+    expect(plan).toEqual({
+      customerId: "1111111111", // top-level scalars are not plan-block ids
+      budgets: [{ campaignId: 24362682893, dailyMicros: 30_000_000 }],
+      adGroupStatus: [{ adGroupId: 201266414556, status: "ENABLED" }],
+      adStatus: [{ adId: 123, status: "ENABLED" }],
+      keywords: [{ adGroupId: 789, add: ["x"] }],
+    });
+  });
+
+  it("leaves non-canonical ids for validate to judge", () => {
+    const ids = ["0123", "abc", "23x", "", "99999999999999999999"];
+    const plan = normalizePlanIds({ negatives: ids.map((campaignId) => ({ campaignId })) }) as {
+      negatives: Array<{ campaignId: unknown }>;
+    };
+    expect(plan.negatives.map((n) => n.campaignId)).toEqual(ids);
+  });
+
+  it("passes non-object input through untouched", () => {
+    expect(normalizePlanIds(null)).toBeNull();
+    expect(normalizePlanIds("x")).toBe("x");
+  });
+
+  it("a quoted bidding campaignId finds its live bidding state", () => {
+    const live = new Map([[500, { biddingStrategyType: "MAXIMIZE_CONVERSIONS", conversions30d: 50 }]]);
+    const plan = normalizePlanIds({ bidding: [{ campaignId: "500", strategy: "maximize-clicks" }] });
+    // 50 conversions trips the downgrade guard, which can only fire if the live state was found.
+    const errs = validate(plan as Record<string, unknown>, {}, {}, undefined, undefined, undefined, live);
+    expect(errs.some((e) => e.includes("acknowledgeStrategyDowngrade"))).toBe(true);
+  });
+
+  it("a non-canonical id is still rejected after normalization", () => {
+    const plan = normalizePlanIds({ negatives: [{ campaignId: "23x", add: ["free"] }] });
+    expect(validate(plan as Record<string, unknown>, {}, {}).some((e) => e.includes("must be numeric"))).toBe(true);
+  });
+
+  it("a quoted budgets campaignId finds its live budget (live maps are keyed by number)", () => {
+    const live = new Map([[24362682893, { resource: "r", amountMicros: 30_000_000 }]]);
+    const plan = normalizePlanIds({ budgets: [{ campaignId: "24362682893", dailyMicros: 40_000_000 }] });
+    expect(validate(plan as Record<string, unknown>, {}, live)).toEqual([]);
   });
 });
 

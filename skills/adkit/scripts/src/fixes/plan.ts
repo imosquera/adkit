@@ -142,6 +142,37 @@ function asInt(value: unknown): number | null {
   return null;
 }
 
+const PLAN_ID_KEYS = ["campaignId", "adGroupId", "adId"];
+
+/** A canonical digit string ("24362682893") as the number it names; anything else unchanged. */
+function canonicalId(value: unknown): unknown {
+  return typeof value === "string" && /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value))
+    ? Number(value)
+    : value;
+}
+
+/**
+ * Give every plan-block id ONE type, at the plan's parse boundary (#84). YAML reads
+ * `campaignId: 24362682893` as a number but `campaignId: "24362682893"` as a string,
+ * and the live-state maps are keyed by the numeric id — so a quoted id silently missed
+ * its lookup (budgets reported "no current budget found"). Converting canonical digit
+ * strings to numbers here, once, means no section has to remember to coerce. Ids that
+ * aren't canonical ("0123", "abc", beyond the safe-integer range) pass through untouched
+ * for `validate` to judge, so no id is ever rewritten into a different one.
+ */
+export function normalizePlanIds(raw: unknown): unknown {
+  if (!isObject(raw)) {
+    return raw;
+  }
+  const normalizeBlock = (block: unknown): unknown =>
+    isObject(block)
+      ? { ...block, ...Object.fromEntries(PLAN_ID_KEYS.filter((k) => k in block).map((k) => [k, canonicalId(block[k])])) }
+      : block;
+  return Object.fromEntries(
+    Object.entries(raw).map(([key, value]) => [key, Array.isArray(value) ? value.map(normalizeBlock) : value]),
+  );
+}
+
 /** Live-state maps: {id -> Set of keyStr("text", "matchType") identity keys}. */
 /**
  * The live keyword identities per id. The I/O shell may hand this in several shapes:

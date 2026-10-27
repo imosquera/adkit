@@ -55,8 +55,9 @@ vi.mock("../adbriefs/store.js", async (importOriginal) => {
   };
 });
 
-const { main, loadPlan, livePositiveKeywords, liveNegatives, rsaUpdateOp } = await import("./apply-fixes.js");
-const { validate } = await import("../fixes/plan.js");
+const { main, loadPlan, livePositiveKeywords, liveNegatives, liveCampaignStatuses, liveAdGroupStatuses, rsaUpdateOp } =
+  await import("./apply-fixes.js");
+const { validate, campaignStatusPlan, adGroupStatusPlan } = await import("../fixes/plan.js");
 
 // ---------------------------------------------------------------------------
 // rsaUpdateOp — the field-mask shape depends on which fields are present.
@@ -94,7 +95,7 @@ describe("rsaUpdateOp", () => {
  * campaignStatus-only plan triggers). `mutations` records every mutate batch so an
  * --apply run can be asserted; each returns a synthetic resource_name per op.
  */
-function statusClient(live: Record<number, string>): {
+function statusClient(live: Record<number, string | number>): {
   client: AdsClient;
   mutations: Array<{ customerId: string; operations: AdsMutateOperation[] }>;
 } {
@@ -490,8 +491,8 @@ describe("campaignStatus path", () => {
     // JSON envelope carries the change + the loud live-spend key.
     const payload = JSON.parse(out.slice(out.indexOf("{")));
     expect(payload.applied).toBe(false);
-    expect(payload.enableStartsLiveSpend).toEqual(["100"]);
-    expect(payload.campaignStatusChanges[0].campaignId).toBe("100");
+    expect(payload.enableStartsLiveSpend).toEqual([100]);
+    expect(payload.campaignStatusChanges[0].campaignId).toBe(100);
   });
 
   it("idempotent skip (no-op flip is never mutated)", async () => {
@@ -508,7 +509,36 @@ describe("campaignStatus path", () => {
     const payload = JSON.parse(out.slice(out.indexOf("{")));
     expect(payload.applied).toBe(true);
     expect(payload.campaignStatusChanges).toEqual([]);
-    expect(payload.campaignStatusSkipped[0].campaignId).toBe("100");
+    expect(payload.campaignStatusSkipped[0].campaignId).toBe(100);
+  });
+
+  it("numeric live status: an already-ENABLED (2) campaign is skipped with no live-spend warning (#84)", async () => {
+    const { client, mutations } = statusClient({ 100: enums.CampaignStatus.ENABLED });
+    currentClient = client;
+    const plan = writePlan([{ campaignId: "100", status: "ENABLED" }]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("already ENABLED, skipped");
+    expect(out).not.toContain("WARNING: ENABLE starts live spend");
+    expect(mutations).toEqual([]);
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.enableStartsLiveSpend).toEqual([]);
+  });
+
+  it("numeric live status: a PAUSED (3) campaign prints the name, never a bare ordinal (#84)", async () => {
+    const { client } = statusClient({ 100: enums.CampaignStatus.PAUSED });
+    currentClient = client;
+    const plan = writePlan([{ campaignId: "100", status: "ENABLED" }]);
+
+    const cap = captureStdout();
+    expect(await main([plan])).toBe(0);
+    const out = cap.text();
+
+    expect(out).toContain("status PAUSED -> ENABLED");
+    expect(out).toContain("WARNING: ENABLE starts live spend");
   });
 
   it("apply of a PAUSE flip mutates and does not warn about live spend", async () => {
@@ -547,7 +577,7 @@ describe("searchPartners path", () => {
     const payload = JSON.parse(out.slice(out.indexOf("{")));
     expect(payload.applied).toBe(false);
     expect(payload.searchPartnersEnableIncreasesReach).toEqual([]);
-    expect(payload.searchPartnersChanges[0].campaignId).toBe("100");
+    expect(payload.searchPartnersChanges[0].campaignId).toBe(100);
   });
 
   it("dry-run turning ON warns and carries the envelope key", async () => {
@@ -563,7 +593,7 @@ describe("searchPartners path", () => {
     expect(out).toContain("WARNING: search partners ON increases reach");
     expect(mutations).toEqual([]);
     const payload = JSON.parse(out.slice(out.indexOf("{")));
-    expect(payload.searchPartnersEnableIncreasesReach).toEqual(["100"]);
+    expect(payload.searchPartnersEnableIncreasesReach).toEqual([100]);
   });
 
   it("idempotent skip (no-op flip is never mutated)", async () => {
@@ -580,7 +610,7 @@ describe("searchPartners path", () => {
     const payload = JSON.parse(out.slice(out.indexOf("{")));
     expect(payload.applied).toBe(true);
     expect(payload.searchPartnersChanges).toEqual([]);
-    expect(payload.searchPartnersSkipped[0].campaignId).toBe("100");
+    expect(payload.searchPartnersSkipped[0].campaignId).toBe(100);
   });
 
   it("apply mutates only network_settings.target_search_network", async () => {
@@ -1444,10 +1474,74 @@ describe("rewrites display path", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Live campaign / ad-group status decode (#84) — the SDK returns campaign.status and
+// ad_group.status as the RAW enum ordinal (2 = ENABLED), so an undecoded map never
+// matched "ENABLED" and the idempotent skip + live-spend warning both misfired.
+// ---------------------------------------------------------------------------
+
+describe("live campaign / ad-group status decode (#84)", () => {
+  it("decodes numeric campaign.status to its name and passes names through", async () => {
+    const live = await liveCampaignStatuses(
+      rowsClient([
+        { campaign: { id: 1, status: enums.CampaignStatus.ENABLED } },
+        { campaign: { id: 2, status: enums.CampaignStatus.PAUSED } },
+        { campaign: { id: 3, status: "ENABLED" } },
+      ]),
+      "1111111111",
+      [1, 2, 3],
+    );
+    expect([...live]).toEqual([
+      [1, "ENABLED"],
+      [2, "PAUSED"],
+      [3, "ENABLED"],
+    ]);
+  });
+
+  it("an already-ENABLED campaign (live status 2) is skipped, not re-enabled", async () => {
+    const live = await liveCampaignStatuses(
+      rowsClient([{ campaign: { id: 24362682893, status: 2 } }]),
+      "1111111111",
+      [24362682893],
+    );
+    const [changes, skips] = campaignStatusPlan([{ campaignId: 24362682893, status: "ENABLED" }], live);
+    expect(changes).toEqual([]);
+    expect(skips).toHaveLength(1);
+  });
+
+  it("an out-of-range status decodes to UNKNOWN and is a change, never a skip", async () => {
+    const live = await liveCampaignStatuses(rowsClient([{ campaign: { id: 1, status: 99 } }]), "1111111111", [1]);
+    expect(live.get(1)).toBe("UNKNOWN");
+    const [changes] = campaignStatusPlan([{ campaignId: 1, status: "ENABLED" }], live);
+    expect(changes).toHaveLength(1);
+  });
+
+  it("decodes numeric ad_group.status; a PAUSED (3) group is a named change", async () => {
+    const live = await liveAdGroupStatuses(
+      rowsClient([
+        { ad_group: { id: 201266414556, status: enums.AdGroupStatus.ENABLED } },
+        { ad_group: { id: 7, status: enums.AdGroupStatus.PAUSED } },
+      ]),
+      "1111111111",
+      [201266414556, 7],
+    );
+    const [changes, skips] = adGroupStatusPlan(
+      [
+        { adGroupId: 201266414556, status: "ENABLED" },
+        { adGroupId: 7, status: "ENABLED" },
+      ],
+      live,
+    );
+    expect(skips.map((g) => g.adGroupId)).toEqual([201266414556]);
+    expect(changes).toEqual([{ adGroupId: 7, status: "ENABLED", current: "PAUSED" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // loadPlan — the single front-door parser. YAML is the authored format; JSON is a
 // subset of YAML, so a legacy .json plan must parse to the identical object the
 // zod validator then receives. One parser, no schema fork.
 // ---------------------------------------------------------------------------
+
 describe("loadPlan (YAML front door)", () => {
   let dir: string;
   beforeEach(() => {
@@ -1509,6 +1603,12 @@ campaignStatus:
     // Spot-check the value the validator downstream depends on survived the parse.
     expect(fromYaml.customerId).toBe("1111111111");
     expect(fromYaml.negatives?.[0]?.add).toEqual(["free", { text: "talk to ai", matchType: "PHRASE" }]);
+  });
+
+  it("loads a quoted id as the same number an unquoted one parses to (#84)", () => {
+    const p = join(dir, "quoted.yaml");
+    writeFileSync(p, 'budgets:\n  - campaignId: "24362682893"\n    dailyMicros: 30000000\n');
+    expect(loadPlan(p).budgets?.[0]?.campaignId).toBe(24362682893);
   });
 });
 
