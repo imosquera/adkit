@@ -61,7 +61,10 @@
           "speckit.progress.implement"
         ]
       },
-      "registered_skills": [],
+      "registered_skills": [
+        "speckit-progress-tasks",
+        "speckit-progress-implement"
+      ],
       "installed_at": "2026-10-27T23:36:36.813276+00:00"
     },
     "review": {
