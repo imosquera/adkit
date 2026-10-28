@@ -911,7 +911,7 @@ async function removeCampaignAssets(
     })),
   );
   for (const { text } of resolved) {
-    console.log(`  - ${label} ${pyRepr(text)} removed from campaign ${pyStr(block.campaignId)}`);
+    console.error(`  - ${label} ${pyRepr(text)} removed from campaign ${pyStr(block.campaignId)}`);
   }
 }
 
@@ -1110,9 +1110,9 @@ export async function main(
     liveSitelinks,
   );
   if (errs.length > 0) {
-    console.log("VALIDATION FAILED:");
+    console.error("VALIDATION FAILED:");
     for (const e of errs) {
-      console.log("  -", e);
+      console.error("  -", e);
     }
     return 1;
   }
@@ -1161,7 +1161,7 @@ export async function main(
     }));
   } catch (exc) {
     if (exc instanceof StepError) {
-      console.log(`VALIDATION FAILED:\n  - ${exc.message}`);
+      console.error(`VALIDATION FAILED:\n  - ${exc.message}`);
       emitJson(errorEnvelope(exc.message, { step: exc.step }));
       return 1;
     }
@@ -1196,35 +1196,35 @@ export async function main(
 
   for (const s of staged) {
     if (s.skipReason === "collision") {
-      console.log(`WARNING: ${s.message}`);
+      console.error(`WARNING: ${s.message}`);
       continue;
     }
     if (s.skipReason === "missing-brief") {
-      console.log(
+      console.error(
         `WARNING: ${briefsDir}/${s.slug}.state.yaml exists but ${briefsDir}/${s.slug}.yaml does not — ` +
           "skipping brief staging for this campaign",
       );
       continue;
     }
     if (s.skipReason === "invalid-brief" || s.skipReason === "invalid-result") {
-      console.log(`WARNING: ${s.message}`);
+      console.error(`WARNING: ${s.message}`);
       continue;
     }
     const path = briefPathForSlug(adbriefsRoot, s.slug, briefsDir);
     if (s.diff!.changed) {
-      console.log(`\nadbriefs brief ${path} (+${s.diff!.added}/-${s.diff!.removed}):`);
-      console.log(s.diff!.render);
+      console.error(`\nadbriefs brief ${path} (+${s.diff!.added}/-${s.diff!.removed}):`);
+      console.error(s.diff!.render);
     } else {
-      console.log(`\nadbriefs brief ${path} unchanged`);
+      console.error(`\nadbriefs brief ${path} unchanged`);
     }
   }
   if (unresolvedIds.length > 0) {
-    console.log(
+    console.error(
       "\nWARNING: plan references id(s) with no record in any adbriefs/*.state.yaml " +
         "(brief staging skipped for these; live mutation proceeds unaffected):",
     );
     for (const u of unresolvedIds) {
-      console.log(`  - ${u.kind} ${u.id}`);
+      console.error(`  - ${u.kind} ${u.id}`);
     }
   }
   const briefStagingSkipReason: "no-state-file" | "unresolvable-id" | BriefStagingSkipReason | null =
@@ -1354,28 +1354,28 @@ export async function main(
         : `languages campaign ${pyStr(l.campaignId)}: already English only, skipped`,
     ),
   ];
-  console.log("validation ok. planned actions:");
+  console.error("validation ok. planned actions:");
   for (const a of actions) {
-    console.log("  -", a);
+    console.error("  -", a);
   }
   if (enableChanges.length > 0) {
     // ENABLE starts live spend — make it impossible to miss (the permission layer
     // gates the actual mutation; this just guarantees it is never silent).
-    console.log(
+    console.error(
       "WARNING: ENABLE starts live spend on campaign(s): " +
         enableChanges.map((c) => String(c.campaignId)).join(", "),
     );
   }
   if (agEnableChanges.length > 0) {
     // Enabling an ad group resumes live spend on its keywords — same loud surface.
-    console.log(
+    console.error(
       "WARNING: ENABLE resumes live spend on ad group(s): " +
         agEnableChanges.map((g) => String(g.adGroupId)).join(", "),
     );
   }
   if (adEnableChanges.length > 0) {
     // Enabling an ad makes it eligible to serve (live spend) — same loud surface.
-    console.log(
+    console.error(
       "WARNING: ENABLE starts live serving of ad(s): " +
         adEnableChanges.map((a) => String(a.adId)).join(", "),
     );
@@ -1383,7 +1383,7 @@ export async function main(
   if (spEnableChanges.length > 0) {
     // Turning Search Partners ON increases reach (and spend) — loud surface, same as
     // ENABLE. Turning it OFF only narrows reach, so it never warns.
-    console.log(
+    console.error(
       "WARNING: search partners ON increases reach on campaign(s): " +
         spEnableChanges.map((c) => String(c.campaignId)).join(", "),
     );
@@ -1392,7 +1392,7 @@ export async function main(
     // A geo set that reaches MORE people than the live one (a bigger radius, an added
     // location, PRESENCE_OR_INTEREST, or all targeting dropped) spends more — same
     // loud surface as ENABLE. Narrowing only reduces reach, so it never warns.
-    console.log(
+    console.error(
       "WARNING: geo change widens reach (more live spend) on campaign(s): " +
         geoWidening.map((g) => String(g.campaignId)).join(", "),
     );
@@ -1407,7 +1407,7 @@ export async function main(
     }
     const avgCpc = bidding.get(asId(b.campaignId))?.avgCpcMicros30d;
     if (typeof avgCpc === "number" && ceiling < avgCpc) {
-      console.log(
+      console.error(
         `WARNING: cpcBidCeilingMicros for campaign ${pyStr(b.campaignId)} (${dollars(ceiling)}) is below its ` +
           `trailing-30-day average CPC (${dollars(avgCpc)}) — this may starve the campaign of traffic.`,
       );
@@ -1425,13 +1425,13 @@ export async function main(
     .filter((b) => SPEND_AFFECTING_STRATEGIES.has(b.strategy as string))
     .map((b) => b.campaignId);
   if (bidStrategyChangeAffectsSpendIds.length > 0) {
-    console.log(
+    console.error(
       "WARNING: bid strategy change affects spend optimization on campaign(s): " +
         bidStrategyChangeAffectsSpendIds.map((id) => pyStr(id)).join(", "),
     );
   }
   if (!apply) {
-    console.log("\nDry run. Re-run with --apply.");
+    console.error("\nDry run. Re-run with --apply.");
     // Dry-run NEVER writes adbriefs/ (FR-004) — every staged brief reports unsynced,
     // carrying only the preview diff computed above.
     emitStatusEnvelope(
@@ -1452,7 +1452,7 @@ export async function main(
   const stepFailures: StepFailure[] = [];
   const recordFailure = (step: string, error: unknown, slugs: string[]): void => {
     stepFailures.push({ step, error, slugs });
-    console.log(`  FAILED: ${step}: ${formatGoogleAdsError(error)}`);
+    console.error(`  FAILED: ${step}: ${formatGoogleAdsError(error)}`);
   };
 
   // 1) RSA rewrites + appends — one batched mutate across every rewrite/append in the
@@ -1482,7 +1482,7 @@ export async function main(
     }
     if (adOps.length > 0) {
       for (const r of (await client.mutate(customer, adOps)).results) {
-        console.log("  mutated", r.resource_name);
+        console.error("  mutated", r.resource_name);
       }
     }
   } catch (exc) {
@@ -1521,7 +1521,7 @@ export async function main(
           },
         };
         await client.mutate(customer, [linkOp]);
-        console.log(`  sitelink ${pyRepr(s.text)} -> campaign ${pyStr(sl.campaignId)}`);
+        console.error(`  sitelink ${pyRepr(s.text)} -> campaign ${pyStr(sl.campaignId)}`);
       }
       await removeCampaignAssets(client, customer, sl, liveSitelinks, "sitelink");
     } catch (exc) {
@@ -1550,7 +1550,7 @@ export async function main(
           },
         };
         await client.mutate(customer, [linkOp]);
-        console.log(`  callout ${pyRepr(text)} -> campaign ${pyStr(co.campaignId)}`);
+        console.error(`  callout ${pyRepr(text)} -> campaign ${pyStr(co.campaignId)}`);
       }
       await removeCampaignAssets(client, customer, co, liveCallouts, "callout");
     } catch (exc) {
@@ -1564,12 +1564,12 @@ export async function main(
     try {
       const kws = newNegatives(ng, liveNeg);
       if (kws.length === 0) {
-        console.log(`  negatives campaign ${pyStr(cid)}: all ${lenOf(ng.add)} already present, skipped`);
+        console.error(`  negatives campaign ${pyStr(cid)}: all ${lenOf(ng.add)} already present, skipped`);
         continue;
       }
       const ops = buildNegativeKeywordOps(`customers/${customer}/campaigns/${pyStr(cid)}`, kws);
       await client.mutate(customer, ops);
-      console.log(
+      console.error(
         `  +${kws.length} negative keywords -> campaign ${pyStr(cid)}: ` +
           kws.map((k) => `${k.text}[${k.matchType[0]}]`).join(", "),
       );
@@ -1592,11 +1592,11 @@ export async function main(
       const pauseRns = (Array.isArray(kb.pause) ? kb.pause : []).map(rn);
       const ops = buildKeywordOps(`customers/${customer}/adGroups/${pyStr(agid)}`, adds, removeRns, pauseRns);
       if (ops.length === 0) {
-        console.log(`  keywords adGroup ${pyStr(agid)}: nothing to do (all adds already present)`);
+        console.error(`  keywords adGroup ${pyStr(agid)}: nothing to do (all adds already present)`);
         continue;
       }
       await client.mutate(customer, ops);
-      console.log(
+      console.error(
         `  keywords adGroup ${pyStr(agid)}: +${adds.length} add, -${removeRns.length} remove, ~${pauseRns.length} pause`,
       );
     } catch (exc) {
@@ -1617,7 +1617,7 @@ export async function main(
         },
       };
       await client.mutate(customer, [op]);
-      console.log(`  budget campaign ${pyStr(cid)} -> ${dollars(b.dailyMicros as number)}/day`);
+      console.error(`  budget campaign ${pyStr(cid)} -> ${dollars(b.dailyMicros as number)}/day`);
     } catch (exc) {
       recordFailure(`budgets (campaign ${pyStr(cid)})`, exc, slugsForIds([cid], stateIndex.byCampaignId));
     }
@@ -1648,7 +1648,7 @@ export async function main(
       }
       const op: AdsMutateOperation = { entity: "campaign", operation: "update", resource };
       await client.mutate(customer, [op]);
-      console.log(`  bidding campaign ${pyStr(cid)} -> ${pyStr(b.strategy)}`);
+      console.error(`  bidding campaign ${pyStr(cid)} -> ${pyStr(b.strategy)}`);
     } catch (exc) {
       recordFailure(`bidding (campaign ${pyStr(cid)})`, exc, slugsForIds([cid], stateIndex.byCampaignId));
     }
@@ -1659,26 +1659,26 @@ export async function main(
   for (const c of statusChanges) {
     try {
       await setCampaignStatus(client, customer, String(c.campaignId), c.status as "ENABLED" | "PAUSED");
-      console.log(`  campaign ${pyStr(c.campaignId)}: status ${pyStr(c.current)} -> ${pyStr(c.status)}`);
+      console.error(`  campaign ${pyStr(c.campaignId)}: status ${pyStr(c.current)} -> ${pyStr(c.status)}`);
     } catch (exc) {
       recordFailure(`campaignStatus (campaign ${pyStr(c.campaignId)})`, exc, slugsForIds([c.campaignId], stateIndex.byCampaignId));
     }
   }
   for (const c of statusSkips) {
-    console.log(`  campaign ${pyStr(c.campaignId)}: status already ${pyStr(c.status)}, skipped`);
+    console.error(`  campaign ${pyStr(c.campaignId)}: status already ${pyStr(c.status)}, skipped`);
   }
 
   // 7) ad group on/off. Same idempotent + loud-ENABLE contract, one level down.
   for (const g of agStatusChanges) {
     try {
       await setAdGroupStatus(client, customer, String(g.adGroupId), g.status as "ENABLED" | "PAUSED");
-      console.log(`  adGroup ${pyStr(g.adGroupId)}: status ${pyStr(g.current)} -> ${pyStr(g.status)}`);
+      console.error(`  adGroup ${pyStr(g.adGroupId)}: status ${pyStr(g.current)} -> ${pyStr(g.status)}`);
     } catch (exc) {
       recordFailure(`adGroupStatus (adGroup ${pyStr(g.adGroupId)})`, exc, slugsForIds([g.adGroupId], stateIndex.byAdGroupId));
     }
   }
   for (const g of agStatusSkips) {
-    console.log(`  adGroup ${pyStr(g.adGroupId)}: status already ${pyStr(g.status)}, skipped`);
+    console.error(`  adGroup ${pyStr(g.adGroupId)}: status already ${pyStr(g.status)}, skipped`);
   }
 
   // 7b) individual ad on/off. Resolve the parent adGroupId from live state (the
@@ -1687,13 +1687,13 @@ export async function main(
     try {
       const adGroupId = liveAdSt.adGroup.get(asId(a.adId));
       await setAdGroupAdStatus(client, customer, String(adGroupId), String(a.adId), a.status as "ENABLED" | "PAUSED");
-      console.log(`  ad ${pyStr(a.adId)}: status ${pyStr(a.current)} -> ${pyStr(a.status)}`);
+      console.error(`  ad ${pyStr(a.adId)}: status ${pyStr(a.current)} -> ${pyStr(a.status)}`);
     } catch (exc) {
       recordFailure(`adStatus (ad ${pyStr(a.adId)})`, exc, slugsForIds([a.adId], stateIndex.byAdId));
     }
   }
   for (const a of adStatusSkips) {
-    console.log(`  ad ${pyStr(a.adId)}: status already ${pyStr(a.status)}, skipped`);
+    console.error(`  ad ${pyStr(a.adId)}: status already ${pyStr(a.status)}, skipped`);
   }
 
   // 8) search partners on/off. No-op flips were already filtered into spSkips and
@@ -1701,13 +1701,13 @@ export async function main(
   for (const c of spChanges) {
     try {
       await setSearchPartners(client, customer, String(c.campaignId), c.enabled as boolean);
-      console.log(`  campaign ${pyStr(c.campaignId)}: search partners ${pyStr(c.current)} -> ${pyStr(c.enabled)}`);
+      console.error(`  campaign ${pyStr(c.campaignId)}: search partners ${pyStr(c.current)} -> ${pyStr(c.enabled)}`);
     } catch (exc) {
       recordFailure(`searchPartners (campaign ${pyStr(c.campaignId)})`, exc, slugsForIds([c.campaignId], stateIndex.byCampaignId));
     }
   }
   for (const c of spSkips) {
-    console.log(`  campaign ${pyStr(c.campaignId)}: search partners already ${pyStr(c.enabled)}, skipped`);
+    console.error(`  campaign ${pyStr(c.campaignId)}: search partners already ${pyStr(c.enabled)}, skipped`);
   }
 
   // 8c) language targeting: make each listed campaign English-only. Idempotent — an
@@ -1716,11 +1716,11 @@ export async function main(
     try {
       const ops = buildLanguageOps(`customers/${customer}/campaigns/${pyStr(l.campaignId)}`, l.addEnglish, l.remove);
       if (ops.length === 0) {
-        console.log(`  languages campaign ${pyStr(l.campaignId)}: already English only, skipped`);
+        console.error(`  languages campaign ${pyStr(l.campaignId)}: already English only, skipped`);
         continue;
       }
       await client.mutate(customer, ops);
-      console.log(
+      console.error(
         `  languages campaign ${pyStr(l.campaignId)}: English only (+${l.addEnglish ? 1 : 0} add, -${l.remove.length} remove)`,
       );
     } catch (exc) {
@@ -1742,7 +1742,7 @@ export async function main(
       if (g.geoTargetType !== undefined) {
         await setGeoTargetType(client, customer, campaignRn, g.geoTargetType);
       }
-      console.log(
+      console.error(
         ops.length === 0 && g.geoTargetType === undefined
           ? `  geo campaign ${pyStr(g.campaignId)}: already matches, skipped`
           : `  geo campaign ${pyStr(g.campaignId)}: +${g.plan.addGeoTargets.length} locations, ` +
@@ -1765,7 +1765,7 @@ export async function main(
       const campaignRn = `customers/${customer}/campaigns/${pyStr(g.campaignId)}`;
       const agRn = await createAdGroup(client, customer, g.adGroup, campaignRn);
       const { rsaIds, kwRns } = await fillAdGroupRsasAndKeywords(client, customer, agRn, g.adGroup);
-      console.log(
+      console.error(
         `  + ad group ${pyRepr(g.name)} -> campaign ${pyStr(g.campaignId)}: ` +
           `${rsaIds.length}x RSA 15H/4D + ${kwRns.length} keywords (ad PAUSED)`,
       );
@@ -1785,17 +1785,17 @@ export async function main(
       const campaignRn = `customers/${customer}/campaigns/${pyStr(g.campaignId)}`;
       const agRn = await findExistingAdGroup(client, customer, g.adGroup, campaignRn);
       if (!agRn) {
-        console.log(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
+        console.error(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
         continue;
       }
       const { rsaIds, kwRns } = await fillAdGroupRsasAndKeywords(client, customer, agRn, g.adGroup);
       if (rsaIds.length > 0 || kwRns.length > 0) {
-        console.log(
+        console.error(
           `  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}: completed ` +
             `${rsaIds.length}x RSA + ${kwRns.length} keywords it was missing`,
         );
       } else {
-        console.log(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
+        console.error(`  ad group ${pyRepr(g.name)} already in campaign ${pyStr(g.campaignId)}, skipped`);
       }
     } catch (exc) {
       recordFailure(`adGroups (existing group in campaign ${pyStr(g.campaignId)})`, exc, slugsForIds([g.campaignId], stateIndex.byCampaignId));
@@ -1836,26 +1836,26 @@ export async function main(
   const allFailedSlugs = new Set([...failedSlugs, ...writeFailedSlugs]);
 
   if (stepFailures.length > 0) {
-    console.log(
+    console.error(
       "\nWARNING: local adbriefs brief(s) and the live account have diverged — " +
         `${stepFailures.length} mutation step(s) failed partway through this run:`,
     );
     for (const f of stepFailures) {
-      console.log(`  - ${f.step}: ${formatGoogleAdsError(f.error)}`);
+      console.error(`  - ${f.step}: ${formatGoogleAdsError(f.error)}`);
       if (f.slugs.length > 0) {
-        console.log(`    affected brief(s): ${f.slugs.join(", ")}`);
+        console.error(`    affected brief(s): ${f.slugs.join(", ")}`);
       }
     }
     for (const s of staged) {
       if (s.skipReason === null && s.diff && s.diff.changed && allFailedSlugs.has(s.slug)) {
-        console.log(`  - adbriefs/${s.slug}.yaml NOT updated (would have changed +${s.diff.added}/-${s.diff.removed})`);
+        console.error(`  - adbriefs/${s.slug}.yaml NOT updated (would have changed +${s.diff.added}/-${s.diff.removed})`);
       }
     }
     const syncedSlugs = staged
       .filter((s) => s.skipReason === null && s.diff !== null && !allFailedSlugs.has(s.slug))
       .map((s) => s.slug);
     if (syncedSlugs.length > 0) {
-      console.log(`  brief(s) synced successfully despite the above failure(s): ${syncedSlugs.join(", ")}`);
+      console.error(`  brief(s) synced successfully despite the above failure(s): ${syncedSlugs.join(", ")}`);
     }
     emitJson(
       errorEnvelope(stepFailures.map((f) => `${f.step}: ${formatGoogleAdsError(f.error)}`).join("; "), {
