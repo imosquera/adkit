@@ -1,11 +1,9 @@
 ---
 name: speckit-review-errors
-description: Error handling review — silent failure detection, catch block analysis,
-  error logging; for Swift/iOS also try?/try!, typed throws, async/Task error propagation,
-  completion handlers and user-facing error states.
+description: Error handling review — silent failure detection, catch block analysis, error logging; for Swift/iOS also try?/try!, typed throws, async/Task error propagation, completion handlers and user-facing error states.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: beadbits
   source: review:commands/errors.md
 ---
 

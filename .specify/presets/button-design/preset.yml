@@ -14,13 +14,13 @@ requires:
 
 provides:
   scripts:
-    - name: "check-buttons.ts"
+    - name: "check-buttons"
       file: "scripts/ts/check-buttons.ts"
       executable: true
-    - name: "selftest-button-design.ts"
+    - name: "selftest-button-design"
       file: "scripts/ts/selftest-button-design.ts"
       executable: true
-    - name: "jev.ts"
+    - name: "jev"
       file: "scripts/ts/jev.ts"
       executable: true
 

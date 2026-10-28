@@ -3,7 +3,7 @@ name: speckit-stale-tasks-guard-implement
 description: Halt /speckit-implement when spec.md is newer than tasks.md
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: speckit-squads
   source: stale-tasks-guard:commands/implement.md
 ---
 

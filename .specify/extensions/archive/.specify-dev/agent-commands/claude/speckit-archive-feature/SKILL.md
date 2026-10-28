@@ -1,10 +1,9 @@
 ---
 name: speckit-archive-feature
-description: Archive the current feature directory under specs/archive/YYYY-MM-DD-{slug}/,
-  update CHANGES.md, and close associated GitHub issues.
+description: Archive the current feature directory under specs/archive/YYYY-MM-DD-{slug}/, update CHANGES.md, and close associated GitHub issues.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: imosquera
   source: archive:commands/speckit.archive.feature.md
 ---
 

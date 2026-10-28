@@ -2,9 +2,9 @@
   "schema_version": "1.0",
   "extensions": {
     "archive": {
-      "version": "1.1.0",
+      "version": "1.1.1",
       "source": "local",
-      "manifest_hash": "sha256:a8dc6ac1d7caee96550e5aa2f564d8328f8655e0577a84b2c9118e6eacbcae77",
+      "manifest_hash": "sha256:27e59e008eb2538e9e79d5e8dc64599e47eacb168e3795ffc79d7a525cc3136f",
       "enabled": true,
       "priority": 10,
       "registered_commands": {
@@ -13,12 +13,12 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-10-27T23:36:28.484397+00:00"
+      "installed_at": "2026-10-28T00:39:47.600482+00:00"
     },
     "autopilot": {
-      "version": "0.4.0",
+      "version": "0.4.1",
       "source": "local",
-      "manifest_hash": "sha256:dda9b4d53ba1b5772a3cbe943f46ed72a233062fb6b00cefbb5b448a3a4f498c",
+      "manifest_hash": "sha256:6a4ef8a35998362890b6e7ef3809536d66316086ef727e39bf6a58e35e8301f0",
       "enabled": true,
       "priority": 10,
       "registered_commands": {
@@ -28,12 +28,12 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-10-27T23:36:30.642396+00:00"
+      "installed_at": "2026-10-28T00:39:48.464320+00:00"
     },
     "git": {
-      "version": "1.9.0",
+      "version": "1.9.1",
       "source": "local",
-      "manifest_hash": "sha256:ed06348faec6ec2d6490cb3c6132e9ddf6b8e03ecb3c1903fd4de1d6169dc829",
+      "manifest_hash": "sha256:302e6f1bf358a47ff727f216b844de130545ee35f8d3d3631da8e8621faa4117",
       "enabled": true,
       "priority": 10,
       "registered_commands": {
@@ -47,7 +47,7 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-10-27T23:36:33.080758+00:00"
+      "installed_at": "2026-10-28T00:39:49.339854+00:00"
     },
     "progress": {
       "version": "1.0.0",
@@ -61,16 +61,13 @@
           "speckit.progress.implement"
         ]
       },
-      "registered_skills": [
-        "speckit-progress-tasks",
-        "speckit-progress-implement"
-      ],
-      "installed_at": "2026-10-27T23:36:36.813276+00:00"
+      "registered_skills": [],
+      "installed_at": "2026-10-28T00:39:50.209132+00:00"
     },
     "review": {
-      "version": "2.2.0",
+      "version": "2.2.1",
       "source": "local",
-      "manifest_hash": "sha256:d3a39abdfe822385f30d02e60e96693fb154139c48e5de6d5ef0782f04bba392",
+      "manifest_hash": "sha256:cadea0c2fdf0c702418bb8a8e59fd567ed097290f1e584931f251f7af464c46d",
       "enabled": true,
       "priority": 10,
       "registered_commands": {
@@ -86,12 +83,12 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-10-27T23:36:45.039350+00:00"
+      "installed_at": "2026-10-28T00:39:51.078671+00:00"
     },
     "stale-tasks-guard": {
-      "version": "1.1.0",
+      "version": "1.1.1",
       "source": "local",
-      "manifest_hash": "sha256:5a28a14bfee10b3234e7ae111b7412d1ebccf6469c1f0e6e77cb2265d2cee31a",
+      "manifest_hash": "sha256:2e512d3ba6b30baccd2aa4c9721d8072093ef8551cf683cd29d7c142687a565d",
       "enabled": true,
       "priority": 10,
       "registered_commands": {
@@ -100,7 +97,7 @@
         ]
       },
       "registered_skills": [],
-      "installed_at": "2026-10-27T23:36:48.403748+00:00"
+      "installed_at": "2026-10-28T00:39:51.954003+00:00"
     }
   }
 }

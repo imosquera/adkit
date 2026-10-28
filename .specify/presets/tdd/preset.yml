@@ -14,15 +14,15 @@ requires:
 
 provides:
   scripts:
-    - name: "check-tests-accompany.ts"
+    - name: "check-tests-accompany"
       file: "scripts/ts/check-tests-accompany.ts"
       command: "speckit.implement"
       executable: true
-    - name: "jev.ts"
+    - name: "jev"
       file: "scripts/ts/jev.ts"
       command: "speckit.implement"
       executable: true
-    - name: "selftest-tdd.ts"
+    - name: "selftest-tdd"
       file: "scripts/ts/selftest-tdd.ts"
       executable: true
 

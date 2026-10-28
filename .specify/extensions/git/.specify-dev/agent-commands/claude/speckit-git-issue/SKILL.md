@@ -1,15 +1,9 @@
 ---
 name: speckit-git-issue
-description: Sync the linked GitHub issue's body from the current feature's spec,
-  set its priority (p0..p3) / kind (bug|feature) / layer (frontend|backend|integration)
-  labels, and split a full-stack feature into mock-first frontend, backend, and wire-up
-  children (a manual run with no linked issue and no feature spec scans for duplicates
-  and files directly from the description you give it — no /speckit-specify or /speckit-clarify
-  required; a manual run inside a feature scans for duplicates and clarifies the spec
-  with you first, then creates it)
+description: Sync the linked GitHub issue's body from the current feature's spec, set its priority (p0..p3) / kind (bug|feature) / layer (frontend|backend|integration) labels, and split a full-stack feature into mock-first frontend, backend, and wire-up children (a manual run with no linked issue and no feature spec scans for duplicates and files directly from the description you give it — no /speckit-specify or /speckit-clarify required; a manual run inside a feature scans for duplicates and clarifies the spec with you first, then creates it)
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: spec-kit-core
   source: git:commands/speckit.git.issue.md
 ---
 

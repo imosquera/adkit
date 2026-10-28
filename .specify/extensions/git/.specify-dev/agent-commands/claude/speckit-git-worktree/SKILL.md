@@ -1,10 +1,9 @@
 ---
 name: speckit-git-worktree
-description: Create a new git worktree under the project's ${PROJ}.worktrees collector
-  directory
+description: Create a new git worktree under the project's ${PROJ}.worktrees collector directory
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: spec-kit-core
   source: git:commands/speckit.git.worktree.md
 ---
 

@@ -1,12 +1,9 @@
 ---
 name: speckit-git-pr
-description: 'Open a GitHub PR for the current feature branch, auto-appending Closes
-  #N from .specify/feature.json when source_issue is set, copying the issue''s labels
-  onto the PR and stamping the agent session that produced it; --draft opens it as
-  a draft and leaves the issue open'
+description: 'Open a GitHub PR for the current feature branch, auto-appending Closes #N from .specify/feature.json when source_issue is set, copying the issue''s labels onto the PR and stamping the agent session that produced it; --draft opens it as a draft and leaves the issue open'
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: spec-kit-core
   source: git:commands/speckit.git.pr.md
 ---
 

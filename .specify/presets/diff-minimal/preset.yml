@@ -14,18 +14,18 @@ requires:
 
 provides:
   scripts:
-    - name: "scope-common.ts"
+    - name: "scope-common"
       file: "scripts/ts/scope-common.ts"
       executable: false
-    - name: "check-scope-sections.ts"
+    - name: "check-scope-sections"
       file: "scripts/ts/check-scope-sections.ts"
       executable: true
       command: "speckit.specify"
-    - name: "check-plan-scope.ts"
+    - name: "check-plan-scope"
       file: "scripts/ts/check-plan-scope.ts"
       executable: true
       command: "speckit.plan"
-    - name: "selftest-diff-minimal.ts"
+    - name: "selftest-diff-minimal"
       file: "scripts/ts/selftest-diff-minimal.ts"
       executable: true
 

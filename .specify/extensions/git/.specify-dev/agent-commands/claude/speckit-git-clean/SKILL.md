@@ -1,10 +1,9 @@
 ---
 name: speckit-git-clean
-description: Clean up the current feature worktree, branch, issue, and any uncommitted
-  changes.
+description: Clean up the current feature worktree, branch, issue, and any uncommitted changes.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: spec-kit-core
   source: git:commands/speckit.git.clean.md
 ---
 

@@ -3,7 +3,7 @@ name: speckit-progress-implement
 description: 'Hook: mark the implement phase active on the dashboard card'
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: imosquera
   source: progress:commands/implement.md
 ---
 

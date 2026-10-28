@@ -182,7 +182,7 @@ description of the mechanism; do not restate it elsewhere.
 
 ### Documentation Rule (MANDATORY — NO EXCEPTIONS)
 
-The feature directory MUST contain ONLY these files at the top level:
+The feature directory MUST contain ONLY these entries at the top level:
 
 - `spec.md`
 - `plan.md`
@@ -190,6 +190,8 @@ The feature directory MUST contain ONLY these files at the top level:
 - `quickstart.md` (optional but allowed)
 - `research.md` (optional but allowed — e.g. written by the `library-research`
   preset; nothing pre-creates it)
+- `checklists/` (allowed — core Spec Kit's `/speckit-specify` mandates
+  `checklists/requirements.md`)
 
 `data-model.md` and `contracts/` **MUST NOT be created** — not as files, not as
 directories, not in any form. There is no escape hatch. Any content that the
@@ -219,7 +221,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 **Check for extension hooks (before planning)**:
 - Check if `.specify/extensions.yml` exists in the project root.
 - If it exists, read it and look for entries under the `hooks.before_plan` key
-- If the YAML cannot be parsed or is invalid, skip hook checking silently and continue normally
+- If the YAML cannot be parsed or is invalid, do not skip silently: tell the user that `.specify/extensions.yml` could not be read (include the parser error) and that no hooks were checked, including any mandatory (`optional: false`) hooks registered there, then continue normally
 - Filter out hooks where `enabled` is explicitly `false`. Treat hooks without an `enabled` field as enabled by default.
 - For each remaining hook, do **not** attempt to interpret or evaluate hook `condition` expressions:
   - If the hook has no `condition` field, or it is null/empty, treat the hook as executable
@@ -251,7 +253,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 ## Outline
 
-1. **Setup**: Run `{SCRIPT}` from repo root and parse JSON for FEATURE_SPEC, IMPL_PLAN, SPECS_DIR, BRANCH. For single quotes in args like "I'm Groot", use escape syntax: e.g 'I'\''m Groot' (or double-quote if possible: "I'm Groot").
+1. **Setup**: Run `{SCRIPT}` from repo root and parse JSON for FEATURE_SPEC, IMPL_PLAN, FEATURE_DIR, BRANCH. For single quotes in args like "I'm Groot", use escape syntax: e.g 'I'\''m Groot' (or double-quote if possible: "I'm Groot").
 
 2. **Load context**: Read FEATURE_SPEC and `/memory/constitution.md`. Load IMPL_PLAN template (already copied).
 
@@ -270,7 +272,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 Check if `.specify/extensions.yml` exists in the project root.
 - If it does not exist, or no hooks are registered under `hooks.after_plan`, skip to the Completion Report.
 - If it exists, read it and look for entries under the `hooks.after_plan` key.
-- If the YAML cannot be parsed or is invalid, skip hook checking silently and continue to the Completion Report.
+- If the YAML cannot be parsed or is invalid, do not skip silently: tell the user that `.specify/extensions.yml` could not be read (include the parser error) and that no hooks were checked, including any mandatory (`optional: false`) hooks registered there, then continue to the Completion Report.
 - Filter out hooks where `enabled` is explicitly `false`. Treat hooks without an `enabled` field as enabled by default.
 - For each remaining hook, do **not** attempt to interpret or evaluate hook `condition` expressions:
   - If the hook has no `condition` field, or it is null/empty, treat the hook as executable
@@ -368,7 +370,7 @@ After the entire core flow above has completed, and before reporting success, ru
 the enforcer as the final step:
 
 ```bash
-.specify/presets/spec-minimal/scripts/bash/enforce-minimal-tree.sh "$SPECIFY_FEATURE_DIRECTORY"
+bun .specify/presets/spec-minimal/scripts/ts/enforce-minimal-tree.ts "$SPECIFY_FEATURE_DIRECTORY"
 ```
 
 The enforcer is self-healing: if a forbidden artifact is on disk it folds the

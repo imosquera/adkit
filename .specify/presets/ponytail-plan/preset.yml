@@ -14,11 +14,11 @@ requires:
 
 provides:
   scripts:
-    - name: "check-ladder.ts"
+    - name: "check-ladder"
       file: "scripts/ts/check-ladder.ts"
       executable: true
       command: "speckit.plan"
-    - name: "selftest-ponytail-plan.ts"
+    - name: "selftest-ponytail-plan"
       file: "scripts/ts/selftest-ponytail-plan.ts"
       executable: true
 

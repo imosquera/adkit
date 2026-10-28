@@ -1,12 +1,9 @@
 ---
 name: speckit-autopilot-schedule
-description: Schedule /speckit-autopilot-run to run unattended on a recurring launchd
-  timer (default every 2 hours, configurable) so the backlog drains itself. Also unschedule,
-  check status, or fire one pass now. macOS only. Opt-in — nothing recurring is installed
-  until you run this.
+description: Schedule /speckit-autopilot-run to run unattended on a recurring launchd timer (default every 2 hours, configurable) so the backlog drains itself. Also unschedule, check status, or fire one pass now. macOS only. Opt-in — nothing recurring is installed until you run this.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: imosquera
   source: autopilot:commands/speckit.autopilot.schedule.md
 ---
 
