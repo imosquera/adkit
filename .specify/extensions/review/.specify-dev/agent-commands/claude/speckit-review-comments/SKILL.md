@@ -1,11 +1,9 @@
 ---
 name: speckit-review-comments
-description: Code comment accuracy verification, documentation completeness assessment,
-  comment rot detection; for Swift/iOS also DocC `///` accuracy vs signatures, symbol
-  links and public API documentation.
+description: Code comment accuracy verification, documentation completeness assessment, comment rot detection; for Swift/iOS also DocC `///` accuracy vs signatures, symbol links and public API documentation.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: beadbits
   source: review:commands/comments.md
 ---
 

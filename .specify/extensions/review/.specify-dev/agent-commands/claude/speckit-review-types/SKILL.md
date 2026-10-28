@@ -1,11 +1,9 @@
 ---
 name: speckit-review-types
-description: Type design analysis — encapsulation, invariant expression, usefulness,
-  and enforcement; for Swift/iOS also value vs reference semantics, enums with associated
-  values, Sendable and actor isolation under strict concurrency.
+description: Type design analysis — encapsulation, invariant expression, usefulness, and enforcement; for Swift/iOS also value vs reference semantics, enums with associated values, Sendable and actor isolation under strict concurrency.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: beadbits
   source: review:commands/types.md
 ---
 

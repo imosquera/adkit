@@ -3,7 +3,7 @@ name: speckit-review-run
 description: 'Spec-kit workflow command: speckit-review-run'
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: beadbits
   source: review:commands/run.md
 ---
 

@@ -1,13 +1,9 @@
 ---
 name: speckit-review-simplify
-description: Code simplification review — clarity, unnecessary complexity, redundant
-  abstractions, over-engineering; for Swift/iOS also Swift idioms, SwiftUI view extraction
-  and Apple-framework reinventions; runs ponytail-review on the change and ponytail-audit
-  on the touched files when available. Advisory only — the coordinator applies the
-  cuts.
+description: Code simplification review — clarity, unnecessary complexity, redundant abstractions, over-engineering; for Swift/iOS also Swift idioms, SwiftUI view extraction and Apple-framework reinventions; runs ponytail-review on the change and ponytail-audit on the touched files when available. Advisory only — the coordinator applies the cuts.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: beadbits
   source: review:commands/simplify.md
 ---
 

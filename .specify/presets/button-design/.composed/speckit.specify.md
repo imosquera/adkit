@@ -206,7 +206,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 **Check for extension hooks (before specification)**:
 - Check if `.specify/extensions.yml` exists in the project root.
 - If it exists, read it and look for entries under the `hooks.before_specify` key
-- If the YAML cannot be parsed or is invalid, skip hook checking silently and continue normally
+- If the YAML cannot be parsed or is invalid, do not skip silently: tell the user that `.specify/extensions.yml` could not be read (include the parser error) and that no hooks were checked, including any mandatory (`optional: false`) hooks registered there, then continue normally
 - Filter out hooks where `enabled` is explicitly `false`. Treat hooks without an `enabled` field as enabled by default.
 - For each remaining hook, do **not** attempt to interpret or evaluate hook `condition` expressions:
   - If the hook has no `condition` field, or it is null/empty, treat the hook as executable
@@ -423,7 +423,7 @@ Given that feature description, do this:
 Check if `.specify/extensions.yml` exists in the project root.
 - If it does not exist, or no hooks are registered under `hooks.after_specify`, skip to the Completion Report.
 - If it exists, read it and look for entries under the `hooks.after_specify` key.
-- If the YAML cannot be parsed or is invalid, skip hook checking silently and continue to the Completion Report.
+- If the YAML cannot be parsed or is invalid, do not skip silently: tell the user that `.specify/extensions.yml` could not be read (include the parser error) and that no hooks were checked, including any mandatory (`optional: false`) hooks registered there, then continue to the Completion Report.
 - Filter out hooks where `enabled` is explicitly `false`. Treat hooks without an `enabled` field as enabled by default.
 - For each remaining hook, do **not** attempt to interpret or evaluate hook `condition` expressions:
   - If the hook has no `condition` field, or it is null/empty, treat the hook as executable
@@ -540,6 +540,18 @@ core flow's post-execution hooks have not yet fired when you reach this point,
 insert the preview first and then fire them. If a hook already published an issue
 body without the preview, re-run that hook afterward.
 
+First, ask Jev whether the spec touches UI:
+
+```bash
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
+bun "$PROJECT_DIR/.specify/presets/spec-ui-preview/scripts/ts/jev.ts" applies-ui --spec "$SPECIFY_FEATURE_DIRECTORY/spec.md"
+```
+
+Exit 0 with `decision: "skip"` → add nothing (see the last paragraph). Exit 0
+with `"applies"` → insert the preview. Exit 3 (or any other exit) → decide from
+the spec yourself, as without Jev. Quote the printed `record` line in your
+final report.
+
 If the feature touches user-facing UI, insert a new top-level `## UI Preview (Requirement)` section immediately after `## User Scenarios & Testing` and before `## Functional Requirements`.
 
 The preview must be a self-contained HTML fragment with inline `style="..."` attributes only. Do not use `<style>`, `<script>`, `<link>`, remote assets, or external fonts.
@@ -577,7 +589,7 @@ After the entire core flow above has completed and `spec.md` has been written, a
 before reporting success, run the deterministic section stripper as the final step:
 
 ```bash
-.specify/presets/spec-minimal/scripts/bash/strip-spec-sections.sh "$SPECIFY_FEATURE_DIRECTORY/spec.md"
+bun .specify/presets/spec-minimal/scripts/ts/strip-spec-sections.ts "$SPECIFY_FEATURE_DIRECTORY/spec.md"
 ```
 
 This MUST run **before any post-execution hook renders `spec.md` into a GitHub

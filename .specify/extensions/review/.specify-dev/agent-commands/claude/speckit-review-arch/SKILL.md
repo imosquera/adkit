@@ -1,12 +1,9 @@
 ---
 name: speckit-review-arch
-description: Architecture & API design review — public interfaces, exported types,
-  contract and backward-compatibility changes, consistency with existing patterns,
-  simpler designs; for Swift/iOS also SwiftUI/MVVM/TCA boundaries, state ownership,
-  dependency injection, module/package boundaries and persisted-format migrations.
+description: Architecture & API design review — public interfaces, exported types, contract and backward-compatibility changes, consistency with existing patterns, simpler designs; for Swift/iOS also SwiftUI/MVVM/TCA boundaries, state ownership, dependency injection, module/package boundaries and persisted-format migrations.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: beadbits
   source: review:commands/arch.md
 ---
 

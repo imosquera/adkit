@@ -14,15 +14,15 @@ requires:
 
 provides:
   scripts:
-    - name: "strip-spec-sections.ts"
+    - name: "strip-spec-sections"
       file: "scripts/ts/strip-spec-sections.ts"
       executable: true
       command: "speckit.specify"
-    - name: "enforce-minimal-tree.ts"
+    - name: "enforce-minimal-tree"
       file: "scripts/ts/enforce-minimal-tree.ts"
       executable: true
       command: "speckit.plan"
-    - name: "selftest-enforce-minimal-tree.ts"
+    - name: "selftest-enforce-minimal-tree"
       file: "scripts/ts/selftest-enforce-minimal-tree.ts"
       executable: true
 

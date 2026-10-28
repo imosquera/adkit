@@ -3,7 +3,7 @@ schema_version: "1.0"
 extension:
   id: git
   name: "Git Branching Workflow"
-  version: "1.9.0"
+  version: "1.9.1"
   description: "Feature branch creation, worktree management, feature cleanup, auto-commit hooks, and PR creation"
   author: spec-kit-core
   repository: https://github.com/github/spec-kit
@@ -17,77 +17,77 @@ requires:
 
 provides:
   scripts:
-    - name: create-new-feature.ts
+    - name: create-new-feature
       file: scripts/ts/create-new-feature.ts
       executable: true
       command: speckit.git.feature
-    - name: worktree-add.ts
+    - name: worktree-add
       file: scripts/ts/worktree-add.ts
       executable: true
       command: speckit.git.worktree
-    - name: seed-graph.ts
+    - name: seed-graph
       file: scripts/ts/seed-graph.ts
       executable: true
-    - name: unexclude-graph.ts
+    - name: unexclude-graph
       file: scripts/ts/unexclude-graph.ts
       executable: true
-    - name: install-deps.ts
+    - name: install-deps
       file: scripts/ts/install-deps.ts
       executable: true
-    - name: clean.ts
+    - name: clean
       file: scripts/ts/clean.ts
       executable: true
       command: speckit.git.clean
-    - name: verify-landed.ts
+    - name: verify-landed
       file: scripts/ts/verify-landed.ts
       executable: true
       command: speckit.git.clean
-    - name: auto-commit.ts
+    - name: auto-commit
       file: scripts/ts/auto-commit.ts
       executable: true
       command: speckit.git.commit
-    - name: create-pr.ts
+    - name: create-pr
       file: scripts/ts/create-pr.ts
       executable: true
       command: speckit.git.pr
-    - name: label-issue.ts
+    - name: label-issue
       file: scripts/ts/label-issue.ts
       executable: true
       command: speckit.git.issue
-    - name: sync-issue-body.ts
+    - name: sync-issue-body
       file: scripts/ts/sync-issue-body.ts
       executable: true
       command: speckit.git.issue
-    - name: render-spec.ts
+    - name: render-spec
       file: scripts/ts/render-spec.ts
       executable: true
       command: speckit.git.issue
-    - name: split-issue.ts
+    - name: split-issue
       file: scripts/ts/split-issue.ts
       executable: true
       command: speckit.git.issue
     # The one handler for `commit_exclude` churn; called by auto-commit.ts,
     # create-pr.ts and clean.ts, and runnable on its own (issues #62, #55).
-    - name: scrub-commit-exclude.ts
+    - name: scrub-commit-exclude
       file: scripts/ts/scrub-commit-exclude.ts
       executable: true
-    - name: selftest-split-issue.ts
+    - name: selftest-split-issue
       file: scripts/ts/selftest-split-issue.ts
       executable: true
-    - name: find-duplicate-issues.ts
+    - name: find-duplicate-issues
       file: scripts/ts/find-duplicate-issues.ts
       executable: true
       command: speckit.git.issue
     # Byte-identical copy of the repo-root scripts/jev.ts (never edit here).
-    - name: jev.ts
+    - name: jev
       file: scripts/ts/jev.ts
       executable: true
       command: speckit.git.issue
     # Libraries sourced by the scripts above; no command invokes them directly.
-    - name: git-common.ts
+    - name: git-common
       file: scripts/ts/git-common.ts
       executable: false
-    - name: initialize-repo.ts
+    - name: initialize-repo
       file: scripts/ts/initialize-repo.ts
       executable: true
 

@@ -3,7 +3,7 @@ schema_version: "1.0"
 extension:
   id: autopilot
   name: "Issue Backlog Autopilot"
-  version: "0.4.0"
+  version: "0.4.1"
   description: "Take the highest-priority eligible open GitHub issue from backlog to a reviewed draft PR by driving the full speckit pipeline unattended (specify → clarify → plan → tasks → implement → review), auto-answering clarify questions, gating on the project's own build/test commands (web/Node/Python typecheck, tests, lint; or xcodebuild against an iOS Simulator / swift build/test for an iOS/Swift repo), and posting progress to the issue at every stage."
   author: imosquera
   license: MIT
@@ -20,47 +20,47 @@ requires:
 
 provides:
   scripts:
-    - name: autopilot-schedule.ts
+    - name: autopilot-schedule
       file: scripts/ts/autopilot-schedule.ts
       executable: true
-    - name: autopilot-run.ts
+    - name: autopilot-run
       file: scripts/ts/autopilot-run.ts
       executable: true
-    - name: stream-decode.ts
+    - name: stream-decode
       file: scripts/ts/stream-decode.ts
       executable: true
-    - name: bind-feature-issue.ts
+    - name: bind-feature-issue
       file: scripts/ts/bind-feature-issue.ts
       executable: true
       command: speckit.autopilot.run
-    - name: fetch-open-issues.ts
+    - name: fetch-open-issues
       file: scripts/ts/fetch-open-issues.ts
       executable: true
       command: speckit.autopilot.run
-    - name: preflight-issues.ts
+    - name: preflight-issues
       file: scripts/ts/preflight-issues.ts
       executable: true
       command: speckit.autopilot.run
-    - name: park-issue.ts
+    - name: park-issue
       file: scripts/ts/park-issue.ts
       executable: true
       command: speckit.autopilot.run
-    - name: check-target-repo.ts
+    - name: check-target-repo
       file: scripts/ts/check-target-repo.ts
       executable: true
       command: speckit.autopilot.run
-    - name: jev.ts
+    - name: jev
       file: scripts/ts/jev.ts
       executable: true
       command: speckit.autopilot.run
-    - name: sim-destination.ts
+    - name: sim-destination
       file: scripts/ts/sim-destination.ts
       executable: true
       command: speckit.autopilot.run
-    - name: resolve-path.ts
+    - name: resolve-path
       file: scripts/ts/resolve-path.ts
       executable: true
-    - name: py.ts
+    - name: py
       file: scripts/ts/py.ts
       executable: false
 

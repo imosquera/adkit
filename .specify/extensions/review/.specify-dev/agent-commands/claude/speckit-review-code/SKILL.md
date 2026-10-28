@@ -1,12 +1,9 @@
 ---
 name: speckit-review-code
-description: General code quality review — project guideline compliance, bug detection,
-  data flow, security (injection, auth, data exposure, input validation), performance
-  and resource cleanup; for Swift/iOS also crash sites, retain cycles, main-thread
-  UI, Keychain/ATS, SwiftUI performance and accessibility.
+description: General code quality review — project guideline compliance, bug detection, data flow, security (injection, auth, data exposure, input validation), performance and resource cleanup; for Swift/iOS also crash sites, retain cycles, main-thread UI, Keychain/ATS, SwiftUI performance and accessibility.
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: beadbits
   source: review:commands/code.md
 ---
 

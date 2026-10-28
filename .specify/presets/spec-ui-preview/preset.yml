@@ -14,7 +14,7 @@ requires:
 
 provides:
   scripts:
-    - name: "jev.ts"
+    - name: "jev"
       file: "scripts/ts/jev.ts"
       command: "speckit.specify"
       executable: true

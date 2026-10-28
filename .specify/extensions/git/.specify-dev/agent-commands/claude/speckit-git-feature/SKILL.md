@@ -1,10 +1,9 @@
 ---
 name: speckit-git-feature
-description: Create a feature branch + worktree and a linked GitHub issue numbered
-  to match the spec
+description: Create a feature branch + worktree and a linked GitHub issue numbered to match the spec
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: spec-kit-core
   source: git:commands/speckit.git.feature.md
 ---
 

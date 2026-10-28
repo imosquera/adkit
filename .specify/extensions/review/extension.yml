@@ -3,7 +3,7 @@ schema_version: "1.0"
 extension:
   id: "review"
   name: "Review Extension"
-  version: "2.2.0"
+  version: "2.2.1"
   description: "Multi-agent code review with one engine for every scope — the current feature branch, the working directory, or a GitHub pull request (/speckit-review-run --pr N). Specialized agents cover code quality (incl. security and performance), architecture & API design, comments, tests, error handling, type design, and simplification; the simplify agent runs the `ponytail` review and audit skills (DietrichGebert/ponytail marketplace) when available, and the coordinator applies their behaviour-preserving cuts unless --no-fix. 2.0.0 removes /speckit-review-pr: use /speckit-review-run --pr N. 2.1.0 adds optional Jev assist (the shared jev.ts helper, @typesafe-ai/sdk installed lazily on first use) to dedupe and triage findings when TYPESAFE_API_KEY is set; SPECKIT_JEV=off disables it. 2.2.0 adds Swift/iOS projects: every agent gains a Swift/iOS subsection (crash sites, retain cycles, main-thread UI, Keychain/ATS, SwiftUI performance, accessibility, SwiftUI/MVVM/TCA boundaries, DocC, XCTest/Swift Testing, typed throws, Sendable/actor isolation), the coordinator runs xcodebuild/swift test/swiftlint gates, and Xcode churn (*.pbxproj, *.xcassets, xcuserdata, workspace plumbing, __Snapshots__ images, .DS_Store) moves from changed_files to a new ignored_files list; Package.swift stays reviewable."
   author: "beadbits"
   repository: "local"
@@ -29,10 +29,10 @@ provides:
       required: false
 
   scripts:
-    - name: "detect-changed-files.ts"
+    - name: "detect-changed-files"
       file: "scripts/ts/detect-changed-files.ts"
       executable: true
-    - name: "jev.ts"
+    - name: "jev"
       file: "scripts/ts/jev.ts"
       command: "speckit.review.run"
       executable: true

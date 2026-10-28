@@ -1,14 +1,9 @@
 ---
 name: speckit-autopilot-run
-description: 'Take the highest-priority eligible open GitHub issue (or a given issue
-  number) from backlog to a reviewed draft PR by driving the full speckit pipeline
-  unattended: pick → worktree → specify → clarify (auto-answered) → plan → tasks →
-  implement → review → draft PR, gating on the project''s own checks (typecheck/tests/lint
-  for web, Node or Python; xcodebuild against an iOS Simulator or swift build/test
-  for an iOS/Swift repo), and posting progress to the issue at every stage.'
+description: 'Take the highest-priority eligible open GitHub issue (or a given issue number) from backlog to a reviewed draft PR by driving the full speckit pipeline unattended: pick → worktree → specify → clarify (auto-answered) → plan → tasks → implement → review → draft PR, gating on the project''s own checks (typecheck/tests/lint for web, Node or Python; xcodebuild against an iOS Simulator or swift build/test for an iOS/Swift repo), and posting progress to the issue at every stage.'
 compatibility: Requires spec-kit project structure with .specify/ directory
 metadata:
-  author: github-spec-kit
+  author: imosquera
   source: autopilot:commands/speckit.autopilot.run.md
 ---
 
